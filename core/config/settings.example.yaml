@@ -1,0 +1,29 @@
+# Example neutral configuration for Alfred V7.1 Lean
+project_name: "Alfred Personal Chief of Staff"
+timezone: "Europe/Paris"
+language: "fr-FR"
+
+google:
+  referentiel_drive_folder_name: "_ALFRED_REFERENTIEL_"
+  nounou_calendar_name: "Garde Nounou"
+  primary_calendar_id: "primary"
+  oauth_scopes:
+    - "https://www.googleapis.com/auth/drive"
+    - "https://www.googleapis.com/auth/gmail.modify"
+    - "https://www.googleapis.com/auth/gmail.compose"
+    - "https://www.googleapis.com/auth/calendar"
+
+antigravity:
+  binary_path: "agy"
+  workspaces:
+    life: "alfred-life"
+    inbox: "alfred-inbox"
+    calendar: "alfred-calendar"
+    evolve: "alfred-evolve"
+
+knowledge:
+  max_body_lines: 150
+
+evolve:
+  core_base_branch: "main"
+  instance_base_branch: "main"

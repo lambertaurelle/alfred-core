@@ -1,0 +1,28 @@
+repos:
+  - repo: local
+    hooks:
+      - id: check-code-architecture
+        name: Clean Architecture OOP, Line Limits & Google Docstrings
+        entry: .venv/bin/python core/scripts/check_code_architecture.py
+        language: system
+        pass_filenames: false
+      - id: check-upstream-leak
+        name: Zero Personal Data & Zero Upstream Leak Guard
+        entry: bash core/scripts/check-upstream-leak.sh
+        language: system
+        pass_filenames: false
+      - id: ruff-check
+        name: Ruff Linter (Google Docstrings & Style)
+        entry: .venv/bin/ruff check core
+        language: system
+        pass_filenames: false
+      - id: mypy-strict
+        name: Mypy Strict Type Check
+        entry: .venv/bin/mypy --strict core/alfred core/scripts
+        language: system
+        pass_filenames: false
+      - id: pytest-coverage
+        name: Pytest TDD Gate (>= 90% Coverage)
+        entry: .venv/bin/pytest --cov=core --cov-fail-under=90
+        language: system
+        pass_filenames: false

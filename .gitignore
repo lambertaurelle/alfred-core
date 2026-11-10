@@ -1,0 +1,44 @@
+# ==============================================================================
+# ALFRED V7.1 LEAN — ZERO UPSTREAM LEAK INVARIANT (.gitignore)
+# ==============================================================================
+instance/
+worktrees/
+.venv/
+venv/
+ENV/
+
+# Private & runtime artifacts
+secrets/
+**/secrets/
+**/cache/
+*.lock
+*.env
+*.env.*
+!*.env.example
+*.pem
+*.key
+*.token
+*.enc
+credentials*.json
+client_secret*.json
+token*.json
+
+# Python build, test & cache artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# OS & editor files
+.DS_Store
+*.swp
+*.tmp
+*.log

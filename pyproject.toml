@@ -1,0 +1,92 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alfred-core"
+version = "7.1.0"
+description = "Alfred V7.1 Lean — Personal Chief of Staff (100% Antigravity Web, 3-Tier YAML Knowledge & Google Workspace)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "pypdf>=4.0",
+    "google-api-python-client>=2.100",
+    "google-auth>=2.20",
+    "google-auth-oauthlib>=1.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "types-PyYAML>=6.0",
+]
+
+[project.scripts]
+alfred = "alfred.main:main"
+
+[tool.setuptools]
+package-dir = { "" = "core" }
+
+[tool.setuptools.packages.find]
+where = ["core"]
+include = ["alfred*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["core"]
+testpaths = ["core/tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+branch = false
+omit = [
+    "core/tests/*",
+    "*/tests/*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["core"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "D"]
+ignore = ["D203", "D213"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+mypy_path = "core"
+explicit_package_bases = true
+warn_return_any = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "googleapiclient.*",
+    "google.auth.*",
+    "google.oauth2.*",
+    "google_auth_oauthlib.*",
+    "pypdf",
+    "pypdf.*",
+]
+ignore_missing_imports = true
