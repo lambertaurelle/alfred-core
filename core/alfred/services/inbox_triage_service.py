@@ -70,6 +70,7 @@ class InboxTriageService:
             tuple[InboxOutputType, str, str | None],
         ]
         | None = None,
+        spawn_live_agy: bool = False,
     ) -> None:
         """Initialize the inbox triage service.
 
@@ -80,6 +81,7 @@ class InboxTriageService:
             drive_service: Google Drive metadata index and native reader service.
             agy_manager: Antigravity Web session manager and silent auto-archiver.
             cognitive_fn: Optional LLM cognitive classifier/drafter override.
+            spawn_live_agy: When True, spawn live Antigravity Web sessions on DRAFT/ACTION.
         """
         self._state_store = state_store
         self._gmail = gmail_service
@@ -87,9 +89,18 @@ class InboxTriageService:
         self._drive = drive_service
         self._agy = agy_manager
         self._cognitive_fn = cognitive_fn
+        self._spawn_live_agy = spawn_live_agy
 
-    def poll_new_messages(self) -> list[InboxTriageDecision]:
+    def poll_new_messages(
+        self,
+        spawn_live_agy: bool | None = None,
+        use_cognitive_agy: bool = False,
+    ) -> list[InboxTriageDecision]:
         """Bookmark Gmail historyId on First-Run or process only newly arrived messages.
+
+        Args:
+            spawn_live_agy: Optional override to spawn live Antigravity Web Gate sessions.
+            use_cognitive_agy: When True, invoke agy CLI cognitive triage on human emails.
 
         Returns:
             List of InboxTriageDecision outcomes for newly arrived messages.
@@ -107,7 +118,13 @@ class InboxTriageService:
         for msg in messages:
             if self._state_store.has_processed_item("gmail", msg.message_id):
                 continue
-            decisions.append(self.process_message(msg))
+            decisions.append(
+                self.process_message(
+                    msg,
+                    spawn_live_agy=spawn_live_agy,
+                    use_cognitive_agy=use_cognitive_agy,
+                )
+            )
 
         self._state_store.bookmarks.update(
             lambda b: b.model_copy(
@@ -126,24 +143,38 @@ class InboxTriageService:
         )
         return []
 
-    def process_message(self, msg: EmailMessage) -> InboxTriageDecision:
+    def process_message(
+        self,
+        msg: EmailMessage,
+        spawn_live_agy: bool | None = None,
+        use_cognitive_agy: bool = False,
+    ) -> InboxTriageDecision:
         """Route one incoming email into SILENT_NO_ACTION, DRAFT_REPLY, or USER_ACTION_REQUIRED.
 
         Args:
             msg: Normalized incoming Gmail message.
+            spawn_live_agy: Optional override to spawn live Antigravity Web Gate sessions.
+            use_cognitive_agy: When True, invoke agy CLI cognitive triage on human emails.
 
         Returns:
             Completed InboxTriageDecision with Gmail & Antigravity side effects applied.
         """
+        effective_spawn = self._spawn_live_agy if spawn_live_agy is None else spawn_live_agy
         relevant_docs = self._load_relevant_knowledge(msg)
-        output_type, reason, custom_draft = self._classify_message(msg, relevant_docs)
+        output_type, reason, custom_draft = self._classify_message(
+            msg, relevant_docs, use_cognitive_agy=use_cognitive_agy
+        )
 
         if output_type == InboxOutputType.SILENT_NO_ACTION:
             decision = self._handle_silent(msg, reason)
         elif output_type == InboxOutputType.USER_ACTION_REQUIRED:
-            decision = self._handle_action_required(msg, reason, relevant_docs)
+            decision = self._handle_action_required(
+                msg, reason, relevant_docs, spawn_live=effective_spawn
+            )
         else:
-            decision = self._handle_draft_reply(msg, reason, relevant_docs, custom_draft)
+            decision = self._handle_draft_reply(
+                msg, reason, relevant_docs, custom_draft, spawn_live=effective_spawn
+            )
 
         self._state_store.record_processed_item(
             item_type="gmail",
@@ -167,8 +198,9 @@ class InboxTriageService:
         self,
         msg: EmailMessage,
         docs: list[KnowledgeDocument],
+        use_cognitive_agy: bool = False,
     ) -> tuple[InboxOutputType, str, str | None]:
-        """Classify an email deterministically first, delegating to cognitive_fn when provided."""
+        """Classify an email deterministically first, delegating to cognitive_fn or agy CLI."""
         combined = fold_accents(f"{msg.subject}\n{msg.snippet}\n{msg.body_text}")
         for pat in ACTION_REQUIRED_PATTERNS:
             if re.search(pat, combined):
@@ -202,6 +234,8 @@ class InboxTriageService:
 
         if self._cognitive_fn is not None:
             return self._cognitive_fn(msg, docs)
+        if use_cognitive_agy:
+            return self._agy.classify_email_with_agy(msg, docs)
 
         return (
             InboxOutputType.DRAFT_REPLY,
@@ -212,7 +246,9 @@ class InboxTriageService:
     def _handle_silent(self, msg: EmailMessage, reason: str) -> InboxTriageDecision:
         """Execute SILENT_NO_ACTION: 0 Gmail edits + immediate Antigravity auto-archive."""
         session = self._agy.create_session(
-            workspace="alfred-inbox", source_message_id=msg.message_id
+            workspace="alfred-inbox",
+            source_message_id=msg.message_id,
+            spawn_live=False,
         )
         self._agy.auto_archive_silent_session(session.session_id, reason=reason)
         return InboxTriageDecision(
@@ -230,6 +266,7 @@ class InboxTriageService:
         reason: str,
         docs: list[KnowledgeDocument],
         custom_draft: str | None,
+        spawn_live: bool = False,
     ) -> InboxTriageDecision:
         """Execute DRAFT_REPLY: create Gmail draft + active Gate implementation_plan.md."""
         reply_subject = (
@@ -262,6 +299,7 @@ class InboxTriageService:
             workspace="alfred-inbox",
             source_message_id=msg.message_id,
             implementation_plan_md=plan_md,
+            spawn_live=spawn_live,
         )
         return InboxTriageDecision(
             message_id=msg.message_id,
@@ -280,6 +318,7 @@ class InboxTriageService:
         msg: EmailMessage,
         reason: str,
         docs: list[KnowledgeDocument],
+        spawn_live: bool = False,
     ) -> InboxTriageDecision:
         """Execute USER_ACTION_REQUIRED: STARRED in Gmail + active session + thorough brief."""
         self._gmail.star_message(msg.message_id)
@@ -318,6 +357,7 @@ class InboxTriageService:
             workspace="alfred-inbox",
             source_message_id=msg.message_id,
             implementation_plan_md=plan_md,
+            spawn_live=spawn_live,
         )
         return InboxTriageDecision(
             message_id=msg.message_id,

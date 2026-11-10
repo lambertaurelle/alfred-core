@@ -58,7 +58,7 @@ def build_controller(root_override: str | None = None) -> CliController:
         store,
         gmail_service=gmail,
         oauth_service=oauth,
-        timezone=settings.timezone,
+        settings=settings,
     )
 
 

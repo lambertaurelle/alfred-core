@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import base64
+import json
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from alfred.domain.models import AlfredPaths, AlfredSettings, CalendarEventItem
+from alfred.domain.models import (
+    AlfredPaths,
+    AlfredSettings,
+    CalendarEventItem,
+    EmailMessage,
+    FrontmatterSchema,
+    InboxOutputType,
+    KnowledgeDocument,
+)
 from alfred.repositories.state_store import StateStore
 from alfred.services.agy_session_manager import AgySessionManager
 from alfred.services.calendar_service import CalendarService
@@ -222,3 +232,102 @@ def test_agy_session_manager_active_plan_and_silent_auto_archive(tmp_path: Path)
     reloaded = store.conversations.load().sessions[active.session_id]
     assert reloaded.status == "ACTIVE"
     assert reloaded.plan_path == str(plan_file)
+
+
+def test_agy_live_spawn_conversation_id_and_unavailable_fallback(tmp_path: Path) -> None:
+    """Verify spawn_live invokes agy plan-synthesizer and falls back cleanly if unavailable."""
+    paths = AlfredPaths.from_env(tmp_path)
+    settings = AlfredSettings.load(paths)
+    store = StateStore(paths)
+    recorded_cmds: list[list[str]] = []
+
+    def _fake_runner(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        """Simulate agy plan-synthesizer returning a live conversation_id JSON."""
+        recorded_cmds.append(cmd)
+        out = json.dumps({"conversation_id": "conv_live_99", "status": "ok"})
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=out, stderr="")
+
+    agy = AgySessionManager(
+        paths, settings, store, runner_fn=_fake_runner, agy_locator_fn=lambda: "/usr/local/bin/agy"
+    )
+    live_rec = agy.create_session("alfred-inbox", "msg_42", "# Gate Plan\n", spawn_live=True)
+    assert live_rec.session_id == "conv_live_99" and Path(live_rec.plan_path).exists()
+    assert recorded_cmds[0][:10] == [
+        "/usr/local/bin/agy",
+        "--project",
+        "Alfred",
+        "--agent",
+        "plan-synthesizer",
+        "--mode",
+        "plan",
+        "--output-format",
+        "json",
+        "-p",
+    ]
+    assert "UserFacing: true" in recorded_cmds[0][10]
+    assert "RequestFeedback: true" in recorded_cmds[0][10]
+
+    agy_missing = AgySessionManager(
+        paths,
+        settings.model_copy(update={"agy_binary": "/nonexistent/agy_bin"}),
+        store,
+        runner_fn=_fake_runner,
+    )
+    fb_rec = agy_missing.create_session("alfred-inbox", "msg_43", "# Fallback\n", spawn_live=True)
+    assert fb_rec.session_id.startswith("agy_alfred_inbox_") and Path(fb_rec.plan_path).exists()
+    assert len(recorded_cmds) == 1
+
+
+def test_agy_classify_email_with_json_schema_and_error_fallback(tmp_path: Path) -> None:
+    """Verify classify_email_with_agy passes Tier-2 docs and JSON schema to agy --print."""
+    paths = AlfredPaths.from_env(tmp_path)
+    settings = AlfredSettings.load(paths)
+    store = StateStore(paths)
+    captured: list[list[str]] = []
+
+    def _cognitive_runner(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        """Return structured JSON triage output matching schema."""
+        captured.append(cmd)
+        payload = {
+            "output_type": "DRAFT_REPLY",
+            "reason": "Question humaine sur contrat nounou",
+            "draft_body": "Bonjour Nounou, oui pour vendredi 18h30.",
+        }
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=0, stdout=json.dumps(payload), stderr=""
+        )
+
+    agy = AgySessionManager(
+        paths, settings, store, runner_fn=_cognitive_runner, agy_locator_fn=lambda: "/bin/agy"
+    )
+    doc = KnowledgeDocument(
+        frontmatter=FrontmatterSchema(
+            id="nounou", title="Contrat Nounou", domain="famille", summary="Horaires 08h30-18h30"
+        ),
+        body="# Contrat\nFin à 18h30.\n",
+        file_name="02_assistante_maternelle.md",
+        body_line_count=2,
+    )
+    msg = EmailMessage(
+        message_id="m_cog",
+        thread_id="th_cog",
+        sender="nounou@example.com",
+        subject="Vendredi soir",
+        body_text="À quelle heure venez-vous vendredi ?",
+    )
+    out_type, reason, draft = agy.classify_email_with_agy(msg, [doc])
+    assert out_type == InboxOutputType.DRAFT_REPLY and "contrat nounou" in reason
+    assert draft == "Bonjour Nounou, oui pour vendredi 18h30."
+    assert captured[0][:5] == ["/bin/agy", "--print", "--output-format", "json", "--json-schema"]
+    assert "output_type" in json.loads(captured[0][5])["properties"]
+    assert "02_assistante_maternelle.md" in captured[0][7]
+
+    agy_err = AgySessionManager(
+        paths,
+        settings,
+        store,
+        runner_fn=lambda c: subprocess.CompletedProcess(c, 1, "", "err"),
+        agy_locator_fn=lambda: "/bin/agy",
+    )
+    fb_type, _, fb_draft = agy_err.classify_email_with_agy(msg, [doc])
+    assert fb_type == InboxOutputType.DRAFT_REPLY and fb_draft is None

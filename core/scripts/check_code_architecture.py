@@ -287,6 +287,9 @@ def run_architecture_check(
     for target in targets:
         if not target.exists():
             continue
+        if target.is_file() and target.suffix == ".py":
+            all_violations.extend(inspect_python_file(target, repo_root=root))
+            continue
         for py_file in sorted(target.rglob("*.py")):
             if "__pycache__" in py_file.parts or ".venv" in py_file.parts:
                 continue
@@ -307,18 +310,46 @@ def run_architecture_check(
 def _parse_cli_args(argv: list[str]) -> argparse.Namespace:
     """Parse optional CLI directory flags for targeted or worktree architecture checks."""
     parser = argparse.ArgumentParser(description="Clean Architecture AST verifier")
+    parser.add_argument("--root", default=None)
     parser.add_argument("--repo-root", default=None)
     parser.add_argument("--extra-dir", action="append", default=[])
     parser.add_argument("--only-dir", action="append", default=[])
     return parser.parse_args(argv)
 
 
+def _resolve_cli_targets(
+    ns: argparse.Namespace,
+) -> tuple[Path | None, list[Path], list[Path] | None]:
+    """Resolve (repo_root, extra_targets, only_targets) from CLI flags including --root."""
+    repo_root = Path(ns.repo_root).resolve() if ns.repo_root else None
+    extra_targets = [Path(p) for p in ns.extra_dir]
+    only_targets: list[Path] | None = [Path(p) for p in ns.only_dir] if ns.only_dir else None
+
+    if ns.root:
+        root_target = Path(ns.root).resolve()
+        if (root_target / "core").is_dir():
+            if repo_root is None:
+                repo_root = root_target
+        else:
+            if repo_root is None:
+                inferred = next(
+                    (anc for anc in root_target.parents if (anc / "core" / "alfred").is_dir()),
+                    None,
+                )
+                repo_root = inferred or resolve_default_root()
+            only_targets = [*(only_targets or []), Path(ns.root)]
+
+    return repo_root, extra_targets, only_targets
+
+
 if __name__ == "__main__":
-    ns = _parse_cli_args(sys.argv[1:])
+    resolved_root, resolved_extra, resolved_only = _resolve_cli_targets(
+        _parse_cli_args(sys.argv[1:])
+    )
     sys.exit(
         run_architecture_check(
-            repo_root=Path(ns.repo_root) if ns.repo_root else None,
-            extra_targets=[Path(p) for p in ns.extra_dir],
-            only_targets=[Path(p) for p in ns.only_dir] if ns.only_dir else None,
+            repo_root=resolved_root,
+            extra_targets=resolved_extra,
+            only_targets=resolved_only,
         )
     )

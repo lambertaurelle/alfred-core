@@ -252,3 +252,70 @@ def test_leak_script_blocks_staged_data_dir_and_partial_staging(tmp_path: Path) 
     )
     assert res_partial.returncode != 0
     assert "Staged Index" in res_partial.stderr
+
+
+def test_architecture_cli_supports_root_flag_on_subdir(tmp_path: Path) -> None:
+    """Verify --root core/ infers repo_root for layer checks and scopes only_targets."""
+    import sys
+
+    script_path = Path("/root/Alfred/core/scripts/check_code_architecture.py")
+    real_res = subprocess.run(
+        [sys.executable, str(script_path), "--root", "core/"],
+        cwd=Path("/root/Alfred"),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert real_res.returncode == 0, real_res.stderr + real_res.stdout
+
+    domain_dir = tmp_path / "core" / "alfred" / "domain"
+    domain_dir.mkdir(parents=True)
+    good_domain = domain_dir / "entity.py"
+    good_domain.write_text('"""Entity module."""\n', encoding="utf-8")
+
+    ext_dir = tmp_path / "instance" / "extensions"
+    ext_dir.mkdir(parents=True)
+    (ext_dir / "broken_ext.py").write_text("def syntax_err(:\n", encoding="utf-8")
+
+    sub_ok = subprocess.run(
+        [sys.executable, str(script_path), "--root", "core/"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert sub_ok.returncode == 0, sub_ok.stderr
+
+    good_domain.write_text(
+        '"""Bad domain import."""\n\nfrom alfred.services.drive_service import DriveService\n',
+        encoding="utf-8",
+    )
+    sub_layer_fail = subprocess.run(
+        [sys.executable, str(script_path), "--root", "core/"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert sub_layer_fail.returncode == 1
+    assert "Layer Violation" in sub_layer_fail.stderr
+
+
+def test_architecture_cli_root_flag_repo_root_and_fallback(tmp_path: Path) -> None:
+    """Verify --root handles repository roots and falls back to resolve_default_root()."""
+    from scripts.check_code_architecture import _parse_cli_args, _resolve_cli_targets
+
+    (tmp_path / "core" / "alfred").mkdir(parents=True)
+    ns_repo = _parse_cli_args(["--root", str(tmp_path)])
+    repo_root, extra, only = _resolve_cli_targets(ns_repo)
+    assert repo_root == tmp_path.resolve()
+    assert extra == []
+    assert only is None
+
+    standalone = tmp_path / "isolated_pkg"
+    standalone.mkdir()
+    ns_sub = _parse_cli_args(["--root", str(standalone)])
+    fb_root, fb_extra, fb_only = _resolve_cli_targets(ns_sub)
+    assert fb_root is not None
+    assert fb_extra == []
+    assert fb_only == [Path(str(standalone))]

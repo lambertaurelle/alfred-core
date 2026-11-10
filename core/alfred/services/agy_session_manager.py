@@ -1,7 +1,10 @@
-"""Antigravity Web UI session manager and SILENT_NO_ACTION auto-archiver."""
+"""Antigravity Web UI session manager, live agy CLI bridge, and silent auto-archiver."""
 
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -10,10 +13,81 @@ from alfred.domain.models import (
     ActiveSessionRecord,
     AlfredPaths,
     AlfredSettings,
+    EmailMessage,
+    InboxOutputType,
+    KnowledgeDocument,
     utc_now_iso,
 )
 from alfred.repositories.json_repository import atomic_write_text
 from alfred.repositories.state_store import StateStore
+
+COGNITIVE_TRIAGE_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "output_type": {
+            "type": "string",
+            "enum": [
+                InboxOutputType.SILENT_NO_ACTION.value,
+                InboxOutputType.DRAFT_REPLY.value,
+                InboxOutputType.USER_ACTION_REQUIRED.value,
+            ],
+        },
+        "reason": {"type": "string"},
+        "draft_body": {"type": ["string", "null"]},
+    },
+    "required": ["output_type", "reason"],
+    "additionalProperties": False,
+}
+
+
+def _parse_json_object(raw_stdout: str) -> dict[str, object] | None:
+    """Parse a JSON object from stdout, tolerating leading diagnostic lines."""
+    stripped = raw_stdout.strip()
+    if not stripped:
+        return None
+    for candidate in (stripped, *reversed(stripped.splitlines())):
+        text = candidate.strip()
+        if not text.startswith("{"):
+            continue
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return {str(k): v for k, v in parsed.items()}
+    return None
+
+
+def _extract_conversation_id(payload: dict[str, object]) -> str | None:
+    """Extract a path-safe conversation ID from an agy JSON response."""
+    containers: list[dict[str, object]] = [payload]
+    for wrap_key in ("result", "data"):
+        nested = payload.get(wrap_key)
+        if isinstance(nested, dict):
+            containers.append({str(k): v for k, v in nested.items()})
+    for obj in containers:
+        for key in ("conversation_id", "conversationId", "session_id", "sessionId", "id"):
+            val = obj.get(key)
+            if isinstance(val, str):
+                cleaned = val.strip()
+                if cleaned and Path(cleaned).name == cleaned and cleaned not in {".", ".."}:
+                    return cleaned
+    return None
+
+
+def _unwrap_triage_payload(payload: dict[str, object]) -> dict[str, object]:
+    """Unwrap nested structured output envelopes returned by CLI JSON formatters."""
+    if "output_type" in payload:
+        return payload
+    for key in ("structured_output", "result", "data", "output", "response"):
+        nested = payload.get(key)
+        if isinstance(nested, dict) and "output_type" in nested:
+            return {str(k): v for k, v in nested.items()}
+        if isinstance(nested, str):
+            parsed = _parse_json_object(nested)
+            if parsed is not None and "output_type" in parsed:
+                return parsed
+    return payload
 
 
 class AgySessionManager:
@@ -25,6 +99,8 @@ class AgySessionManager:
         settings: AlfredSettings,
         state_store: StateStore,
         archive_hook: Callable[[str], None] | None = None,
+        runner_fn: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
+        agy_locator_fn: Callable[[], str | None] | None = None,
     ) -> None:
         """Initialize the Antigravity Web session manager.
 
@@ -33,11 +109,15 @@ class AgySessionManager:
             settings: Runtime structural settings.
             state_store: Atomic local state store.
             archive_hook: Optional callback invoked when archiving an Antigravity Web session.
+            runner_fn: Optional subprocess runner override for deterministic offline tests.
+            agy_locator_fn: Optional binary locator override returning agy executable path.
         """
         self._paths = paths
         self._settings = settings
         self._state_store = state_store
         self._archive_hook = archive_hook
+        self._runner_fn = runner_fn
+        self._agy_locator_fn = agy_locator_fn
         self._plans_dir = self._paths.state_dir / "plans"
         self._plans_dir.mkdir(parents=True, exist_ok=True)
 
@@ -46,6 +126,7 @@ class AgySessionManager:
         workspace: str,
         source_message_id: str = "",
         implementation_plan_md: str | None = None,
+        spawn_live: bool = False,
     ) -> ActiveSessionRecord:
         """Spawn a tracked Antigravity Web conversation and optionally materialize its Gate plan.
 
@@ -53,11 +134,20 @@ class AgySessionManager:
             workspace: Target workspace slug ('alfred-inbox', 'alfred-calendar', etc.).
             source_message_id: Optional triggering message or event identifier.
             implementation_plan_md: Optional Markdown content written to implementation_plan.md.
+            spawn_live: When True and a plan is given, spawn a live agy Web Gate conversation.
 
         Returns:
             Created ActiveSessionRecord with ACTIVE status.
         """
-        session_id = f"agy_{workspace.replace('-', '_')}_{uuid.uuid4().hex[:10]}"
+        live_id: str | None = None
+        if spawn_live and implementation_plan_md is not None:
+            live_id = self._spawn_live_plan_session(
+                workspace=workspace,
+                source_message_id=source_message_id,
+                implementation_plan_md=implementation_plan_md,
+            )
+
+        session_id = live_id or f"agy_{workspace.replace('-', '_')}_{uuid.uuid4().hex[:10]}"
         plan_path_str = ""
         if implementation_plan_md is not None:
             session_dir = self._plans_dir / session_id
@@ -77,6 +167,67 @@ class AgySessionManager:
             lambda cur: cur.model_copy(update={"sessions": {**cur.sessions, session_id: record}})
         )
         return record
+
+    def classify_email_with_agy(
+        self,
+        msg: EmailMessage,
+        docs: list[KnowledgeDocument],
+    ) -> tuple[InboxOutputType, str, str | None]:
+        """Classify an ambiguous email and draft a reply via agy CLI grounded in Tier-2 .md docs.
+
+        Args:
+            msg: Normalized incoming Gmail message.
+            docs: Loaded Tier-2 reference KnowledgeDocument list for factual grounding.
+
+        Returns:
+            Tuple of (InboxOutputType, rationale string, optional draft reply body).
+        """
+        agy_bin = self._locate_agy_binary()
+        if agy_bin is None:
+            return (
+                InboxOutputType.DRAFT_REPLY,
+                "Direct human inquiry requiring a reply draft (agy unavailable)",
+                None,
+            )
+        schema_json = json.dumps(COGNITIVE_TRIAGE_SCHEMA, ensure_ascii=False)
+        prompt = self._build_cognitive_triage_prompt(msg, docs)
+        cmd = [
+            agy_bin,
+            "--print",
+            "--output-format",
+            "json",
+            "--json-schema",
+            schema_json,
+            "-p",
+            prompt,
+        ]
+        completed = self._run_agy_command(cmd)
+        if completed is None or completed.returncode != 0:
+            return (
+                InboxOutputType.DRAFT_REPLY,
+                "Direct human inquiry requiring a reply draft (agy fallback)",
+                None,
+            )
+        parsed = _parse_json_object(completed.stdout)
+        if parsed is None:
+            return (
+                InboxOutputType.DRAFT_REPLY,
+                "Direct human inquiry requiring a reply draft (invalid agy JSON)",
+                None,
+            )
+        unwrapped = _unwrap_triage_payload(parsed)
+        try:
+            output_type = InboxOutputType(str(unwrapped.get("output_type", "")))
+        except ValueError:
+            return (
+                InboxOutputType.DRAFT_REPLY,
+                "Direct human inquiry requiring a reply draft (unknown agy output_type)",
+                None,
+            )
+        reason = str(unwrapped.get("reason") or "Classified via agy cognitive triage")
+        raw_draft = unwrapped.get("draft_body")
+        draft_body = raw_draft.strip() if isinstance(raw_draft, str) and raw_draft.strip() else None
+        return (output_type, reason, draft_body)
 
     def write_session_plan(self, session_id: str, implementation_plan_md: str) -> Path:
         """Write or update implementation_plan.md for an active Antigravity Web session.
@@ -140,3 +291,88 @@ class AgySessionManager:
         if self._archive_hook is not None:
             self._archive_hook(session_id)
         return archived
+
+    def _locate_agy_binary(self) -> str | None:
+        """Resolve the agy CLI executable via override, PATH, or /root/.local/bin/agy."""
+        if self._agy_locator_fn is not None:
+            return self._agy_locator_fn()
+        configured = self._settings.agy_binary
+        which_hit = shutil.which(configured)
+        if which_hit:
+            return which_hit
+        if "/" in configured:
+            candidate = Path(configured)
+            return str(candidate) if candidate.is_file() else None
+        default_bin = Path("/root/.local/bin/agy")
+        return str(default_bin) if default_bin.is_file() else None
+
+    def _run_agy_command(self, cmd: list[str]) -> subprocess.CompletedProcess[str] | None:
+        """Execute an agy CLI command via injected runner or subprocess with safe error handling."""
+        try:
+            if self._runner_fn is not None:
+                return self._runner_fn(cmd)
+            return subprocess.run(
+                cmd,
+                cwd=self._paths.root_dir,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=120,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    def _spawn_live_plan_session(
+        self,
+        workspace: str,
+        source_message_id: str,
+        implementation_plan_md: str,
+    ) -> str | None:
+        """Spawn a live Antigravity Web Gate session via agy CLI and return conversation ID."""
+        agy_bin = self._locate_agy_binary()
+        if agy_bin is None:
+            return None
+        prompt = (
+            f"Workspace: {workspace} | Source: {source_message_id}\n"
+            "Materialize the blocking Gate artifact `implementation_plan.md` with "
+            "`UserFacing: true` and `RequestFeedback: true` using the following exact Markdown:\n\n"
+            f"{implementation_plan_md}"
+        )
+        cmd = [
+            agy_bin,
+            "--project",
+            "Alfred",
+            "--agent",
+            "plan-synthesizer",
+            "--mode",
+            "plan",
+            "--output-format",
+            "json",
+            "-p",
+            prompt,
+        ]
+        completed = self._run_agy_command(cmd)
+        if completed is None or completed.returncode != 0:
+            return None
+        parsed = _parse_json_object(completed.stdout)
+        return _extract_conversation_id(parsed) if parsed is not None else None
+
+    def _build_cognitive_triage_prompt(
+        self,
+        msg: EmailMessage,
+        docs: list[KnowledgeDocument],
+    ) -> str:
+        """Build a Tier-2 grounded cognitive triage prompt for agy --print."""
+        doc_blocks = [
+            f"### {d.file_name} ({d.frontmatter.title})\n{d.frontmatter.summary}\n{d.body}"
+            for d in docs
+        ]
+        ref_context = "\n\n".join(doc_blocks) if doc_blocks else "(Aucune fiche correspondante)"
+        return (
+            "Classe cet e-mail entrant dans l'une des 3 sorties exclusives d'Alfred V7.1 Lean "
+            "(SILENT_NO_ACTION, DRAFT_REPLY, USER_ACTION_REQUIRED). Si DRAFT_REPLY, rédige "
+            "un brouillon concis et poli en français dans draft_body.\n\n"
+            f"Expéditeur: {msg.sender}\nObjet: {msg.subject}\n"
+            f"Extrait: {msg.snippet}\nCorps:\n{msg.body_text[:2000]}\n\n"
+            f"Fiches de référence Tier-2:\n{ref_context}"
+        )

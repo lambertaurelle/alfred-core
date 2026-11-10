@@ -250,3 +250,58 @@ def test_expired_history_id_recovery_and_reply_to_threading(tmp_path: Path) -> N
     )
     assert reply_dec.output_type == InboxOutputType.DRAFT_REPLY
     assert "directeur@ecole.example.com" in (reply_dec.implementation_plan_markdown or "")
+
+
+def test_inbox_spawn_live_agy_skips_silent_and_spawns_on_draft_and_action(tmp_path: Path) -> None:
+    """Verify SILENT_NO_ACTION never spawns live agy while DRAFT and ACTION do when enabled."""
+    import json
+    import subprocess
+
+    paths = AlfredPaths.from_env(tmp_path)
+    settings = AlfredSettings.load(paths)
+    store = StateStore(paths)
+    gmail_client = MagicMock()
+    gmail_client.users.return_value.drafts.return_value.create.return_value.execute.return_value = {
+        "id": "dr_live"
+    }
+    spawned_cmds: list[list[str]] = []
+
+    def _runner(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        """Dispatch fake agy --print cognitive triage vs --mode plan session spawn."""
+        spawned_cmds.append(cmd)
+        if "--print" in cmd:
+            body = {
+                "output_type": "DRAFT_REPLY",
+                "reason": "Cognitive reply",
+                "draft_body": "Bonjour, bien reçu via agy.",
+            }
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(body), "")
+        return subprocess.CompletedProcess(
+            cmd, 0, json.dumps({"conversation_id": f"live_conv_{len(spawned_cmds)}"}), ""
+        )
+
+    knowledge = KnowledgeService(paths, settings, store)
+    drive = DriveService(paths, settings, store, drive_client=MagicMock())
+    gmail = GmailService(paths, settings, gmail_client=gmail_client)
+    agy = AgySessionManager(paths, settings, store, runner_fn=_runner, agy_locator_fn=lambda: "agy")
+    triage = InboxTriageService(store, gmail, knowledge, drive, agy, spawn_live_agy=True)
+
+    sil = EmailMessage(
+        message_id="m_sil", thread_id="t1", sender="no-reply@news.example.com", subject="Newsletter"
+    )
+    silent_dec = triage.process_message(sil)
+    assert silent_dec.output_type == InboxOutputType.SILENT_NO_ACTION and spawned_cmds == []
+
+    hum = EmailMessage(
+        message_id="m_hum", thread_id="t2", sender="ami@example.com", subject="Dîner samedi"
+    )
+    draft_dec = triage.process_message(hum, use_cognitive_agy=True)
+    assert draft_dec.draft_body == "Bonjour, bien reçu via agy."
+    assert draft_dec.session_id == "live_conv_2"
+
+    act = EmailMessage(
+        message_id="m_act", thread_id="t3", sender="a@example.com", subject="Action requise : doc"
+    )
+    act_dec = triage.process_message(act)
+    assert act_dec.output_type == InboxOutputType.USER_ACTION_REQUIRED
+    assert act_dec.session_id == "live_conv_3"
