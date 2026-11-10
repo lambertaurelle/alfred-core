@@ -327,7 +327,15 @@ def _resolve_cli_targets(
 
     if ns.root:
         root_target = Path(ns.root).resolve()
-        if (root_target / "core").is_dir():
+        is_nested_wt_container = (
+            (root_target / "core" / "core" / "alfred").is_dir()
+            and not (root_target / "core" / "alfred").is_dir()
+        )
+        if is_nested_wt_container:
+            if repo_root is None:
+                repo_root = root_target / "core"
+            only_targets = [*(only_targets or []), Path(ns.root)]
+        elif (root_target / "core").is_dir():
             if repo_root is None:
                 repo_root = root_target
         else:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import uuid
@@ -21,6 +22,10 @@ from alfred.domain.models import (
 from alfred.repositories.json_repository import atomic_write_text
 from alfred.repositories.state_store import StateStore
 
+ERROR_ENVELOPE_STATUSES = frozenset(
+    {"ERROR", "FAILED", "DEADLINE_EXCEEDED", "CANCELLED", "TIMEOUT"}
+)
+
 COGNITIVE_TRIAGE_SCHEMA: dict[str, object] = {
     "type": "object",
     "properties": {
@@ -33,38 +38,61 @@ COGNITIVE_TRIAGE_SCHEMA: dict[str, object] = {
             ],
         },
         "reason": {"type": "string"},
-        "draft_body": {"type": ["string", "null"]},
+        "draft_body": {"type": "string"},
     },
     "required": ["output_type", "reason"],
     "additionalProperties": False,
 }
 
 
+def _is_error_envelope(payload: dict[str, object]) -> bool:
+    """Return True when an agy JSON envelope reports an execution error status."""
+    status = payload.get("status")
+    return isinstance(status, str) and status.strip().upper() in ERROR_ENVELOPE_STATUSES
+
+
 def _parse_json_object(raw_stdout: str) -> dict[str, object] | None:
-    """Parse a JSON object from stdout, tolerating leading diagnostic lines."""
+    """Parse a single- or multi-line JSON object from stdout, tolerating log lines."""
     stripped = raw_stdout.strip()
     if not stripped:
         return None
-    for candidate in (stripped, *reversed(stripped.splitlines())):
-        text = candidate.strip()
-        if not text.startswith("{"):
+    try:
+        direct = json.loads(stripped)
+        if isinstance(direct, dict):
+            return {str(k): v for k, v in direct.items()}
+    except json.JSONDecodeError:
+        pass
+    decoder = json.JSONDecoder()
+    offsets = [0, *(i + 1 for i, ch in enumerate(stripped) if ch == "\n" and i + 1 < len(stripped))]
+    for start in reversed(offsets):
+        sub = stripped[start:].lstrip(" \t")
+        if not sub.startswith("{"):
             continue
         try:
-            parsed = json.loads(text)
+            parsed, end_idx = decoder.raw_decode(sub)
         except json.JSONDecodeError:
             continue
-        if isinstance(parsed, dict):
+        rem = sub[end_idx:].lstrip(" \t")
+        if (
+            isinstance(parsed, dict)
+            and (not rem or rem.startswith("\n"))
+            and not rem.lstrip().startswith(("}", "]", ","))
+        ):
             return {str(k): v for k, v in parsed.items()}
     return None
 
 
 def _extract_conversation_id(payload: dict[str, object]) -> str | None:
-    """Extract a path-safe conversation ID from an agy JSON response."""
+    """Extract a path-safe conversation ID from a non-error agy JSON response."""
+    if _is_error_envelope(payload):
+        return None
     containers: list[dict[str, object]] = [payload]
     for wrap_key in ("result", "data"):
         nested = payload.get(wrap_key)
         if isinstance(nested, dict):
-            containers.append({str(k): v for k, v in nested.items()})
+            nested_dict = {str(k): v for k, v in nested.items()}
+            if not _is_error_envelope(nested_dict):
+                containers.append(nested_dict)
     for obj in containers:
         for key in ("conversation_id", "conversationId", "session_id", "sessionId", "id"):
             val = obj.get(key)
@@ -193,12 +221,11 @@ class AgySessionManager:
         prompt = self._build_cognitive_triage_prompt(msg, docs)
         cmd = [
             agy_bin,
-            "--print",
             "--output-format",
             "json",
             "--json-schema",
             schema_json,
-            "-p",
+            "--print",
             prompt,
         ]
         completed = self._run_agy_command(cmd)
@@ -209,7 +236,7 @@ class AgySessionManager:
                 None,
             )
         parsed = _parse_json_object(completed.stdout)
-        if parsed is None:
+        if parsed is None or _is_error_envelope(parsed):
             return (
                 InboxOutputType.DRAFT_REPLY,
                 "Direct human inquiry requiring a reply draft (invalid agy JSON)",
@@ -293,18 +320,23 @@ class AgySessionManager:
         return archived
 
     def _locate_agy_binary(self) -> str | None:
-        """Resolve the agy CLI executable via override, PATH, or /root/.local/bin/agy."""
+        """Resolve an executable agy CLI binary via override, PATH, or /root/.local/bin/agy."""
         if self._agy_locator_fn is not None:
             return self._agy_locator_fn()
-        configured = self._settings.agy_binary
+        configured = self._settings.agy_binary.strip()
+        if not configured:
+            return None
         which_hit = shutil.which(configured)
         if which_hit:
             return which_hit
         if "/" in configured:
             candidate = Path(configured)
-            return str(candidate) if candidate.is_file() else None
-        default_bin = Path("/root/.local/bin/agy")
-        return str(default_bin) if default_bin.is_file() else None
+            return str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
+        if configured == "agy":
+            default_bin = Path("/root/.local/bin/agy")
+            if default_bin.is_file() and os.access(default_bin, os.X_OK):
+                return str(default_bin)
+        return None
 
     def _run_agy_command(self, cmd: list[str]) -> subprocess.CompletedProcess[str] | None:
         """Execute an agy CLI command via injected runner or subprocess with safe error handling."""
@@ -314,10 +346,11 @@ class AgySessionManager:
             return subprocess.run(
                 cmd,
                 cwd=self._paths.root_dir,
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=120,
+                timeout=180,
             )
         except (OSError, subprocess.SubprocessError):
             return None
@@ -334,8 +367,10 @@ class AgySessionManager:
             return None
         prompt = (
             f"Workspace: {workspace} | Source: {source_message_id}\n"
-            "Materialize the blocking Gate artifact `implementation_plan.md` with "
-            "`UserFacing: true` and `RequestFeedback: true` using the following exact Markdown:\n\n"
+            "Stage-1 research is complete; do not read workspace files or run shell/search "
+            "commands. Materialize the blocking Gate artifact `implementation_plan.md` with "
+            "`UserFacing: true` and `RequestFeedback: true` using the following exact Markdown, "
+            "then stop immediately:\n\n"
             f"{implementation_plan_md}"
         )
         cmd = [
@@ -369,9 +404,11 @@ class AgySessionManager:
         ]
         ref_context = "\n\n".join(doc_blocks) if doc_blocks else "(Aucune fiche correspondante)"
         return (
-            "Classe cet e-mail entrant dans l'une des 3 sorties exclusives d'Alfred V7.1 Lean "
-            "(SILENT_NO_ACTION, DRAFT_REPLY, USER_ACTION_REQUIRED). Si DRAFT_REPLY, rédige "
-            "un brouillon concis et poli en français dans draft_body.\n\n"
+            "Mode classifieur JSON interne (pas d'artefact implementation_plan.md, zéro appel "
+            "d'outil ni lecture/écriture de fichier). Classe cet e-mail entrant dans l'une des "
+            "3 sorties exclusives d'Alfred V7.1 Lean (SILENT_NO_ACTION, DRAFT_REPLY, "
+            "USER_ACTION_REQUIRED). Si DRAFT_REPLY, rédige un brouillon concis et poli en "
+            "français dans draft_body.\n\n"
             f"Expéditeur: {msg.sender}\nObjet: {msg.subject}\n"
             f"Extrait: {msg.snippet}\nCorps:\n{msg.body_text[:2000]}\n\n"
             f"Fiches de référence Tier-2:\n{ref_context}"

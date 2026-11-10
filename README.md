@@ -45,7 +45,7 @@
 
 # 3. Référentiel 3-Étages & Google Drive (0-OCR natif)
 .venv/bin/alfred scan-knowledge --query "nounou"
-.venv/bin/alfred load-knowledge --doc "02_assistante_maternelle_contrat.md"
+.venv/bin/alfred load-knowledge --doc "02_assistante_maternelle.md"
 .venv/bin/alfred upsert-knowledge --file "03_dossiers_actifs_et_administratif.md" \
   --id "dossiers_actifs_et_administratif" --title "Dossiers Actifs" \
   --domain "admin" --summary "Suivi administratif à jour" --body-file /tmp/body.md

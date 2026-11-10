@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import calendar as pycal
 import json
+import sys
 from collections.abc import Callable
 from datetime import date, datetime
 from pathlib import Path
@@ -234,7 +235,11 @@ class CliController:
             keywords=[str(k) for k in args.keyword],
             drive_source_ids=[str(d) for d in args.drive_source_id],
         )
-        body = Path(args.body_file).read_text(encoding="utf-8")
+        body = (
+            sys.stdin.read()
+            if str(args.body_file) == "-"
+            else Path(args.body_file).read_text(encoding="utf-8")
+        )
         doc = self._knowledge.upsert_document(str(args.file), fm, body)
         print(json.dumps(doc.model_dump(mode="json"), indent=2, ensure_ascii=False))
         return 0
@@ -281,7 +286,8 @@ class CliController:
             )
         else:
             decisions = self._inbox.poll_new_messages()
-        print(json.dumps([d.model_dump(mode="json") for d in decisions], indent=2))
+        payload = [d.model_dump(mode="json") for d in decisions]
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0
 
     def _handle_send_draft(self, args: argparse.Namespace) -> int:
@@ -301,24 +307,46 @@ class CliController:
         print(json.dumps({"draft_id": draft_id, "sent_message_id": sent_id}, indent=2))
         return 0
 
+    def _normalize_calendar_bound(self, raw_iso: str, is_end: bool) -> tuple[str, datetime]:
+        """Normalize an ISO date or timestamp into an RFC3339 string and aware datetime."""
+        text = raw_iso.strip()
+        tz = ZoneInfo(self._timezone)
+        if "T" not in text and " " not in text:
+            day = date.fromisoformat(text)
+            hour, minute, second = (23, 59, 59) if is_end else (0, 0, 0)
+            aware = datetime(day.year, day.month, day.day, hour, minute, second, tzinfo=tz)
+            return aware.isoformat(), aware
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            aware = parsed.replace(tzinfo=tz)
+            return aware.isoformat(), aware
+        return text, parsed
+
     def _handle_list_events(self, args: argparse.Namespace) -> int:
         """Resolve primary/nounou/explicit calendar ID and print listed events as JSON."""
         cal_spec = str(args.calendar)
         if cal_spec == "primary":
             cal_id = self._settings.primary_calendar_id
         elif cal_spec == "nounou":
-            cal_id = (
+            contract_cal_id = (
                 self._store.nounou_contract.load().calendar_id
                 if self._store.nounou_contract.exists()
-                else (self._store.bookmarks.load().nounou_calendar_id or "")
+                else ""
             )
+            cal_id = contract_cal_id or (self._store.bookmarks.load().nounou_calendar_id or "")
             if not cal_id:
                 raise ValueError(
                     "Garde Nounou calendar is not initialized; run 'alfred init-nounou --execute'."
                 )
         else:
             cal_id = cal_spec
-        events = self._calendar.list_events(cal_id, str(args.from_iso), str(args.to_iso))
+        t_min, start_dt = self._normalize_calendar_bound(str(args.from_iso), is_end=False)
+        t_max, end_dt = self._normalize_calendar_bound(str(args.to_iso), is_end=True)
+        if end_dt < start_dt:
+            raise ValueError(
+                f"Calendar --to '{args.to_iso}' precedes --from '{args.from_iso}'."
+            )
+        events = self._calendar.list_events(cal_id, t_min, t_max)
         print(json.dumps([e.model_dump(mode="json") for e in events], indent=2, ensure_ascii=False))
         return 0
 

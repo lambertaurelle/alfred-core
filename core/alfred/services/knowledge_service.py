@@ -187,15 +187,25 @@ class KnowledgeService:
         )
 
     def _resolve_doc_path(self, doc_id_or_filename: str) -> Path:
-        """Locate a knowledge .md file by exact file name or frontmatter id."""
-        if Path(doc_id_or_filename).name == doc_id_or_filename:
-            direct = self._paths.knowledge_dir / doc_id_or_filename
-            if direct.exists():
+        """Locate a knowledge .md file by exact file name, stem, or frontmatter id."""
+        cleaned = doc_id_or_filename.strip()
+        if cleaned and Path(cleaned).name == cleaned and cleaned not in {".", ".."}:
+            direct = self._paths.knowledge_dir / cleaned
+            if direct.is_file():
                 return direct
-        for md_path in sorted(self._paths.knowledge_dir.glob("*.md")):
-            fm = self._read_frontmatter_only(md_path)
-            if fm.id == doc_id_or_filename:
-                return md_path
+            if not cleaned.endswith(".md"):
+                with_ext = self._paths.knowledge_dir / f"{cleaned}.md"
+                if with_ext.is_file():
+                    return with_ext
+            if cleaned == "02_assistante_maternelle_contrat.md":
+                alias = self._paths.knowledge_dir / "02_assistante_maternelle.md"
+                if alias.is_file():
+                    return alias
+        if cleaned:
+            for md_path in sorted(self._paths.knowledge_dir.glob("*.md")):
+                fm = self._read_frontmatter_only(md_path)
+                if fm.id == cleaned:
+                    return md_path
         raise FileNotFoundError(f"Knowledge document '{doc_id_or_filename}' not found.")
 
     def _read_frontmatter_only(self, md_path: Path) -> FrontmatterSchema:

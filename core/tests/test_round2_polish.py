@@ -329,4 +329,148 @@ def test_subagent_manifests_and_readme_document_all_cli_commands() -> None:
 
     readme = (root / "README.md").read_text(encoding="utf-8")
     assert "Onboarding & CLI Quickstart" in readme
+    assert ".venv/bin/alfred load-knowledge --doc \"02_assistante_maternelle.md\"" in readme
+    assert (root / "core/templates/knowledge/02_assistante_maternelle.md").is_file()
     assert ".venv/bin/alfred poll-inbox --spawn-agy --cognitive-agy" in readme
+
+
+def test_knowledge_empty_doc_guard_stem_alias_and_stdin_upsert(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Verify load-knowledge rejects empty/dot args cleanly, resolves stems/alias, and reads '-'."""
+    import io
+
+    cli, _ = _make_cli_stack(tmp_path)
+    for invalid_doc in ("", "   ", ".", ".."):
+        with pytest.raises(FileNotFoundError):
+            cli.run(["load-knowledge", "--doc", invalid_doc])
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("# Contrat\nHoraires validés.\n"))
+    ups_argv = [
+        "upsert-knowledge",
+        "--file",
+        "02_assistante_maternelle.md",
+        "--id",
+        "assistante_maternelle",
+        "--title",
+        "Contrat Nounou",
+        "--domain",
+        "childcare",
+        "--summary",
+        "Synthèse",
+        "--body-file",
+        "-",
+    ]
+    assert cli.run(ups_argv) == 0
+    capsys.readouterr()
+    assert cli.run(["load-knowledge", "--doc", "02_assistante_maternelle"]) == 0
+    assert json.loads(capsys.readouterr().out)["file_name"] == "02_assistante_maternelle.md"
+    assert cli.run(["load-knowledge", "--doc", "02_assistante_maternelle_contrat.md"]) == 0
+    assert json.loads(capsys.readouterr().out)["frontmatter"]["id"] == "assistante_maternelle"
+
+
+def test_list_events_normalizes_iso_dates_and_bookmark_fallback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Verify list-events expands plain ISO dates/naive datetimes and falls back to bookmarks."""
+    cal_client = MagicMock()
+    cal_client.events.return_value.list.return_value.execute.return_value = {"items": []}
+    cli, store = _make_cli_stack(tmp_path, cal_client=cal_client)
+    store.nounou_contract.save(
+        NounouContract(
+            contract_id="c1",
+            employee_name="Nounou",
+            child_name="Enfant",
+            calendar_id="",
+            hourly_rate_net=4.5,
+            base_monthly_net_salary=630.0,
+            base_monthly_hours=140,
+            base_monthly_days=14,
+            maintenance_allowance_daily=3.8,
+            meal_allowance_daily=4.5,
+        )
+    )
+    store.bookmarks.update(lambda b: b.model_copy(update={"nounou_calendar_id": "bk_nounou_1"}))
+
+    nounou_argv = [
+        "list-events",
+        "--calendar",
+        "nounou",
+        "--from",
+        "2026-05-01",
+        "--to",
+        "2026-05-31",
+    ]
+    assert cli.run(nounou_argv) == 0
+    capsys.readouterr()
+    call_kw = cal_client.events.return_value.list.call_args.kwargs
+    assert call_kw["calendarId"] == "bk_nounou_1"
+    assert call_kw["timeMin"].startswith("2026-05-01T00:00:00+")
+    assert call_kw["timeMax"].startswith("2026-05-31T23:59:59+")
+
+    naive_argv = ["list-events", "--from", "2026-05-02T08:30:00", "--to", "2026-05-02T18:00:00"]
+    assert cli.run(naive_argv) == 0
+    capsys.readouterr()
+    naive_kw = cal_client.events.return_value.list.call_args.kwargs
+    assert naive_kw["timeMin"].startswith("2026-05-02T08:30:00+")
+
+    with pytest.raises(ValueError, match="precedes"):
+        cli.run(["list-events", "--from", "2026-05-10", "--to", "2026-05-01"])
+
+
+def test_agy_multiline_json_error_status_and_binary_validation(tmp_path: Path) -> None:
+    """Verify multi-line JSON parsing, ERROR status rejection, and executable binary checks."""
+    paths = AlfredPaths.from_env(tmp_path)
+    settings = AlfredSettings.load(paths)
+    store = StateStore(paths)
+    msg = EmailMessage(message_id="m1", thread_id="t1", sender="x@example.com", subject="S")
+
+    pretty_stdout = (
+        "WARN: refreshing session\n"
+        + json.dumps(
+            {
+                "conversation_id": "conv_pretty_1",
+                "status": "SUCCESS",
+                "items": [{"nested": 1}],
+                "structured_output": {
+                    "output_type": "SILENT_NO_ACTION",
+                    "reason": "Passive",
+                    "draft_body": None,
+                },
+            },
+            indent=2,
+        )
+        + "\n trailing note"
+    )
+    agy_ok = AgySessionManager(
+        paths,
+        settings,
+        store,
+        runner_fn=lambda c: subprocess.CompletedProcess(c, 0, pretty_stdout, ""),
+        agy_locator_fn=lambda: "agy",
+    )
+    live_ok = agy_ok.create_session("alfred-inbox", "m1", "# Plan\n", spawn_live=True)
+    assert live_ok.session_id == "conv_pretty_1"
+    assert agy_ok.classify_email_with_agy(msg, [])[0] == InboxOutputType.SILENT_NO_ACTION
+
+    err_json = json.dumps(
+        {"conversation_id": "conv_err", "status": "ERROR", "output_type": "SILENT_NO_ACTION"}
+    )
+    agy_err = AgySessionManager(
+        paths,
+        settings,
+        store,
+        runner_fn=lambda c: subprocess.CompletedProcess(c, 0, err_json, ""),
+        agy_locator_fn=lambda: "agy",
+    )
+    live_err = agy_err.create_session("alfred-inbox", "m2", "# Plan\n", spawn_live=True)
+    assert live_err.session_id.startswith("agy_")
+    assert agy_err.classify_email_with_agy(msg, [])[0] == InboxOutputType.DRAFT_REPLY
+
+    non_exec = tmp_path / "fake_agy"
+    non_exec.write_text("#!/bin/sh\n", encoding="utf-8")
+    non_exec.chmod(0o644)
+    cfg_non_exec = settings.model_copy(update={"agy_binary": str(non_exec)})
+    assert AgySessionManager(paths, cfg_non_exec, store)._locate_agy_binary() is None
+    cfg_custom = settings.model_copy(update={"agy_binary": "missing_custom_agy_bin"})
+    assert AgySessionManager(paths, cfg_custom, store)._locate_agy_binary() is None

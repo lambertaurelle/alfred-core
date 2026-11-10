@@ -187,7 +187,7 @@ class InboxTriageService:
 
     def _load_relevant_knowledge(self, msg: EmailMessage) -> list[KnowledgeDocument]:
         """Tier-1 -> Tier-2 progressive lookup of reference .md files matching the email."""
-        query = f"{msg.subject} {msg.snippet} {msg.body_text[:200]}"
+        query = f"{msg.sender} {msg.subject} {msg.snippet} {msg.body_text[:200]}"
         matches = self._knowledge.select_relevant_frontmatters(query)[:2]
         docs: list[KnowledgeDocument] = []
         for file_name, _ in matches:

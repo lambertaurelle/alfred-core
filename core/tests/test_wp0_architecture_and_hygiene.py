@@ -319,3 +319,35 @@ def test_architecture_cli_root_flag_repo_root_and_fallback(tmp_path: Path) -> No
     assert fb_root is not None
     assert fb_extra == []
     assert fb_only == [Path(str(standalone))]
+
+
+def test_architecture_cli_root_flag_worktree_container_and_symlinks(tmp_path: Path) -> None:
+    """Verify --root resolves Dual-Repo worktree containers and symlinked subdirectories."""
+    from scripts.check_code_architecture import (
+        _parse_cli_args,
+        _resolve_cli_targets,
+        run_architecture_check,
+    )
+
+    # Outer parent repo with core/alfred AND nested worktree worktrees/p1/core/core/alfred
+    (tmp_path / "core" / "alfred" / "domain").mkdir(parents=True)
+    wt_container = tmp_path / "worktrees" / "p1"
+    wt_domain = wt_container / "core" / "core" / "alfred" / "domain"
+    wt_domain.mkdir(parents=True)
+    bad_wt_file = wt_domain / "leak_import.py"
+    bad_wt_file.write_text(
+        '"""Bad worktree domain."""\n\nfrom alfred.services.drive_service import DriveService\n',
+        encoding="utf-8",
+    )
+
+    # 1. Passing --root worktrees/p1 (container with core/core/alfred) catches layer violation
+    c_root, _, c_only = _resolve_cli_targets(_parse_cli_args(["--root", str(wt_container)]))
+    assert c_root == (wt_container / "core").resolve()
+    assert run_architecture_check(repo_root=c_root, only_targets=c_only) == 1
+
+    # 2. Symlinked path pointing inside worktree resolves worktree repo_root, not parent repo
+    sym_link = tmp_path / "sym_wt_sub"
+    sym_link.symlink_to(wt_container / "core" / "core")
+    s_root, _, s_only = _resolve_cli_targets(_parse_cli_args(["--root", str(sym_link)]))
+    assert s_root == (wt_container / "core").resolve()
+    assert run_architecture_check(repo_root=s_root, only_targets=s_only) == 1
