@@ -27,3 +27,10 @@ knowledge:
 evolve:
   core_base_branch: "main"
   instance_base_branch: "main"
+
+routines:
+  inbox_interval_sec: 120
+  periodic_interval_sec: 1800
+  spawn_agy: true
+  cognitive_agy: true
+  vacation_lookahead_days: 45

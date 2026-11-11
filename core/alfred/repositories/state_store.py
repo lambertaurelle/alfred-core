@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from alfred.domain.models import (
     ActiveConversationsState,
@@ -15,6 +18,7 @@ from alfred.domain.models import (
     NounouContract,
     ProcessedItemEvent,
 )
+from alfred.domain.routine_models import RoutineExecutionState
 from alfred.repositories.json_repository import JsonlEventLog, JsonStateRepository
 
 
@@ -52,6 +56,10 @@ class StateStore:
             paths.state_dir / "nounou_contract.json",
             NounouContract,
         )
+        self.routines = JsonStateRepository(
+            paths.state_dir / "routine_state.json",
+            RoutineExecutionState,
+        )
         self.drive_index = JsonStateRepository(
             paths.drive_index_path,
             DriveMetadataIndex,
@@ -60,6 +68,33 @@ class StateStore:
             paths.drive_read_cache_path,
             DriveReadCache,
         )
+
+    @contextmanager
+    def acquire_routine_lock(self, lock_name: str) -> Iterator[bool]:
+        """Acquire a non-blocking exclusive flock for a periodic routine scope.
+
+        Args:
+            lock_name: Alphanumeric lock identifier (e.g. 'alfred_inbox').
+
+        Yields:
+            True when the lock was acquired exclusively, False if already held.
+        """
+        locks_dir = self._paths.state_dir / "locks"
+        locks_dir.mkdir(parents=True, exist_ok=True)
+        lock_file = locks_dir / f"{lock_name}.lock"
+        handle = lock_file.open("a+", encoding="utf-8")
+        acquired = False
+        try:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            except BlockingIOError:
+                acquired = False
+            yield acquired
+        finally:
+            if acquired:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
 
     def has_processed_item(self, item_type: str, item_id: str) -> bool:
         """Check whether an incoming item ID has already been recorded in the JSONL history.

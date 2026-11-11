@@ -17,6 +17,7 @@ from alfred.services.inbox_triage_service import InboxTriageService
 from alfred.services.knowledge_service import KnowledgeService
 from alfred.services.nounou_service import NounouService
 from alfred.services.pajemploi_calculator import PajemploiCalculator
+from alfred.services.routine_service import RoutineService
 from alfred.services.workspace_service import WorkspaceService
 
 
@@ -37,10 +38,7 @@ def build_controller(root_override: str | None = None) -> CliController:
     token_file = paths.secrets_dir / "token.json"
     backup = drive.backup_markdown_file
     knowledge = KnowledgeService(
-        paths=paths,
-        settings=settings,
-        state_store=store,
-        backup_fn=lambda fn, raw: backup(fn, raw) if token_file.exists() else "",
+        paths, settings, store, lambda fn, raw: backup(fn, raw) if token_file.exists() else ""
     )
     gmail = GmailService(paths=paths, settings=settings, oauth_service=oauth)
     calendar = CalendarService(paths=paths, settings=settings, oauth_service=oauth)
@@ -48,11 +46,15 @@ def build_controller(root_override: str | None = None) -> CliController:
     workspaces = WorkspaceService(paths=paths, settings=settings, agy_manager=agy)
     inbox = InboxTriageService(store, gmail, knowledge, drive, agy)
     nounou = NounouService(store, calendar, knowledge, settings)
+    pajemploi = PajemploiCalculator()
+    routines = RoutineService(
+        paths, settings, store, inbox, drive, nounou, pajemploi, calendar, agy
+    )
     evolve = EvolveWorktreeService(paths=paths, settings=settings, state_store=store)
     return CliController(
-        knowledge, drive, inbox, nounou, PajemploiCalculator(), calendar, evolve, store,
+        knowledge, drive, inbox, nounou, pajemploi, calendar, evolve, store,
         gmail_service=gmail, oauth_service=oauth, settings=settings,
-        workspace_service=workspaces, agy_manager=agy,
+        workspace_service=workspaces, agy_manager=agy, routine_service=routines,
     )
 
 

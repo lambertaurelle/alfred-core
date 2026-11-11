@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import uuid
 from collections.abc import Callable
@@ -129,6 +130,7 @@ class AgySessionManager:
         archive_hook: Callable[[str], None] | None = None,
         runner_fn: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
         agy_locator_fn: Callable[[], str | None] | None = None,
+        antigravity_data_dir: Path | None = None,
     ) -> None:
         """Initialize the Antigravity Web session manager.
 
@@ -139,6 +141,7 @@ class AgySessionManager:
             archive_hook: Optional callback invoked when archiving an Antigravity Web session.
             runner_fn: Optional subprocess runner override for deterministic offline tests.
             agy_locator_fn: Optional binary locator override returning agy executable path.
+            antigravity_data_dir: Optional override for ~/.gemini/antigravity-cli data dir.
         """
         self._paths = paths
         self._settings = settings
@@ -146,8 +149,28 @@ class AgySessionManager:
         self._archive_hook = archive_hook
         self._runner_fn = runner_fn
         self._agy_locator_fn = agy_locator_fn
+        self._agy_data_dir = antigravity_data_dir or (Path.home() / ".gemini" / "antigravity-cli")
         self._plans_dir = self._paths.state_dir / "plans"
         self._plans_dir.mkdir(parents=True, exist_ok=True)
+
+    def resolve_workspace_cwd(self, workspace: str | None) -> Path:
+        """Resolve the physical workspace directory for agy CLI execution or fallback to root_dir.
+
+        Args:
+            workspace: Optional workspace role or slug (e.g. 'alfred-inbox').
+
+        Returns:
+            Existing workspace directory Path or Alfred root_dir.
+        """
+        if workspace:
+            project_slug = self._settings.resolve_workspace_project(workspace)
+            for candidate in (
+                self._paths.workspaces_dir / project_slug,
+                self._paths.workspaces_dir / workspace.strip(),
+            ):
+                if candidate.is_dir():
+                    return candidate
+        return self._paths.root_dir
 
     def create_session(
         self,
@@ -200,12 +223,14 @@ class AgySessionManager:
         self,
         msg: EmailMessage,
         docs: list[KnowledgeDocument],
+        user_addresses: frozenset[str] = frozenset(),
     ) -> tuple[InboxOutputType, str, str | None]:
         """Classify an ambiguous email and draft a reply via agy CLI grounded in Tier-2 .md docs.
 
         Args:
             msg: Normalized incoming Gmail message.
             docs: Loaded Tier-2 reference KnowledgeDocument list for factual grounding.
+            user_addresses: Optional authenticated user addresses/aliases for self-mail context.
 
         Returns:
             Tuple of (InboxOutputType, rationale string, optional draft reply body).
@@ -218,7 +243,7 @@ class AgySessionManager:
                 None,
             )
         schema_json = json.dumps(COGNITIVE_TRIAGE_SCHEMA, ensure_ascii=False)
-        prompt = self._build_cognitive_triage_prompt(msg, docs)
+        prompt = self._build_cognitive_triage_prompt(msg, docs, user_addresses=user_addresses)
         cmd = [
             agy_bin,
             "--output-format",
@@ -227,8 +252,9 @@ class AgySessionManager:
             schema_json,
             "--print",
             prompt,
+            "--disable-slash-commands",
         ]
-        completed = self._run_agy_command(cmd)
+        completed = self._run_agy_command(cmd, cwd=self.resolve_workspace_cwd("alfred-inbox"))
         if completed is None or completed.returncode != 0:
             return (
                 InboxOutputType.DRAFT_REPLY,
@@ -242,6 +268,9 @@ class AgySessionManager:
                 "Direct human inquiry requiring a reply draft (invalid agy JSON)",
                 None,
             )
+        ephemeral_id = _extract_conversation_id(parsed)
+        if ephemeral_id:
+            self._purge_ephemeral_cli_conversation(ephemeral_id)
         unwrapped = _unwrap_triage_payload(parsed)
         try:
             output_type = InboxOutputType(str(unwrapped.get("output_type", "")))
@@ -328,7 +357,7 @@ class AgySessionManager:
         return self._locate_agy_binary()
 
     def _locate_agy_binary(self) -> str | None:
-        """Resolve an executable agy CLI binary via override, PATH, or /root/.local/bin/agy."""
+        """Resolve an executable agy CLI binary via override, PATH, or ~/.local/bin/agy."""
         if self._agy_locator_fn is not None:
             return self._agy_locator_fn()
         configured = self._settings.agy_binary.strip()
@@ -341,19 +370,23 @@ class AgySessionManager:
             candidate = Path(configured)
             return str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
         if configured == "agy":
-            default_bin = Path("/root/.local/bin/agy")
+            default_bin = Path.home() / ".local" / "bin" / "agy"
             if default_bin.is_file() and os.access(default_bin, os.X_OK):
                 return str(default_bin)
         return None
 
-    def _run_agy_command(self, cmd: list[str]) -> subprocess.CompletedProcess[str] | None:
-        """Execute an agy CLI command via injected runner or subprocess with safe error handling."""
+    def _run_agy_command(
+        self,
+        cmd: list[str],
+        cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str] | None:
+        """Execute an agy CLI command via injected runner or subprocess in target cwd."""
         try:
             if self._runner_fn is not None:
                 return self._runner_fn(cmd)
             return subprocess.run(
                 cmd,
-                cwd=self._paths.root_dir,
+                cwd=cwd or self._paths.root_dir,
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
@@ -362,6 +395,34 @@ class AgySessionManager:
             )
         except (OSError, subprocess.SubprocessError):
             return None
+
+    def _purge_ephemeral_cli_conversation(self, conv_id: str) -> None:
+        """Remove transient classifier conversation rows/files so UI stays clutter-free."""
+        if not conv_id or Path(conv_id).name != conv_id:
+            return
+        (self._agy_data_dir / "conversations" / f"{conv_id}.db").unlink(missing_ok=True)
+        shutil.rmtree(self._agy_data_dir / "brain" / conv_id, ignore_errors=True)
+        summary_db = self._agy_data_dir / "conversation_summaries.db"
+        if not summary_db.is_file():
+            return
+        try:
+            conn = sqlite3.connect(summary_db, timeout=5.0)
+            try:
+                conn.execute(
+                    "DELETE FROM conversation_summaries WHERE conversation_id = ?", (conv_id,)
+                )
+                fts_exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name = 'conversations_fts'"
+                ).fetchone()
+                if fts_exists:
+                    conn.execute(
+                        "DELETE FROM conversations_fts WHERE conversation_id = ?", (conv_id,)
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return
 
     def _spawn_live_plan_session(
         self,
@@ -397,7 +458,7 @@ class AgySessionManager:
             "-p",
             prompt,
         ]
-        completed = self._run_agy_command(cmd)
+        completed = self._run_agy_command(cmd, cwd=self.resolve_workspace_cwd(workspace))
         if completed is None or completed.returncode != 0:
             return None
         parsed = _parse_json_object(completed.stdout)
@@ -407,6 +468,7 @@ class AgySessionManager:
         self,
         msg: EmailMessage,
         docs: list[KnowledgeDocument],
+        user_addresses: frozenset[str] = frozenset(),
     ) -> str:
         """Build a Tier-2 grounded cognitive triage prompt for agy --print."""
         doc_blocks = [
@@ -414,13 +476,20 @@ class AgySessionManager:
             for d in docs
         ]
         ref_context = "\n\n".join(doc_blocks) if doc_blocks else "(Aucune fiche correspondante)"
+        identity_line = (
+            f"Adresses de l'utilisateur propriétaire (ne jamais créer de DRAFT_REPLY vers soi) : "
+            f"{', '.join(sorted(user_addresses))}\n"
+            if user_addresses
+            else ""
+        )
         return (
             "Mode classifieur JSON interne (pas d'artefact implementation_plan.md, zéro appel "
             "d'outil ni lecture/écriture de fichier). Classe cet e-mail entrant dans l'une des "
             "3 sorties exclusives d'Alfred V7.1 Lean (SILENT_NO_ACTION, DRAFT_REPLY, "
             "USER_ACTION_REQUIRED). Si DRAFT_REPLY, rédige un brouillon concis et poli en "
             "français dans draft_body.\n\n"
-            f"Expéditeur: {msg.sender}\nObjet: {msg.subject}\n"
+            f"{identity_line}"
+            f"Expéditeur: {msg.sender}\nDestinataires: {msg.recipient}\nObjet: {msg.subject}\n"
             f"Extrait: {msg.snippet}\nCorps:\n{msg.body_text[:2000]}\n\n"
             f"Fiches de référence Tier-2:\n{ref_context}"
         )

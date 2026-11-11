@@ -11,7 +11,8 @@ from typing import Any
 from alfred.domain.models import AlfredPaths, AlfredSettings, EmailMessage
 from alfred.services.google_auth import GoogleOAuthService
 
-IGNORED_GMAIL_LABELS = frozenset({"DRAFT", "SENT", "SPAM", "TRASH"})
+STRICT_IGNORED_GMAIL_LABELS = frozenset({"DRAFT", "SPAM", "TRASH"})
+IGNORED_GMAIL_LABELS = STRICT_IGNORED_GMAIL_LABELS
 
 
 class GmailHistoryExpiredError(RuntimeError):
@@ -22,6 +23,13 @@ def _is_http_404(exc: BaseException) -> bool:
     """Return True when an exception represents a Google API HTTP 404 response."""
     resp = getattr(exc, "resp", None)
     return getattr(resp, "status", None) == 404 or getattr(exc, "status_code", None) == 404
+
+
+def _is_incoming_candidate(labels: set[str], added_in_inbox: bool = False) -> bool:
+    """Return True for incoming mail, keeping self-sent (SENT+INBOX) and dropping pure SENT."""
+    if not STRICT_IGNORED_GMAIL_LABELS.isdisjoint(labels):
+        return False
+    return not ("SENT" in labels and "INBOX" not in labels and not added_in_inbox)
 
 
 def _decode_base64url(data: str) -> str:
@@ -62,6 +70,7 @@ class GmailService:
         self._settings = settings
         self._gmail_client = gmail_client
         self._oauth = oauth_service or GoogleOAuthService(paths, settings)
+        self._cached_addresses: frozenset[str] | None = None
 
     def get_current_history_id(self) -> str:
         """Fetch the current mailbox historyId without touching past messages.
@@ -72,6 +81,35 @@ class GmailService:
         client = self._require_client()
         profile = client.users().getProfile(userId="me").execute()
         return str(profile["historyId"])
+
+    def get_authenticated_addresses(self) -> frozenset[str]:
+        """Return lowercase primary and sendAs alias email addresses for the mailbox owner.
+
+        Returns:
+            Cached frozenset of lowercase email addresses owned by the authenticated user.
+        """
+        if self._cached_addresses is not None:
+            return self._cached_addresses
+        found: set[str] = set()
+        client = self._require_client()
+        try:
+            profile = client.users().getProfile(userId="me").execute()
+            primary = profile.get("emailAddress") if isinstance(profile, dict) else None
+            if isinstance(primary, str) and "@" in primary:
+                found.add(primary.strip().lower())
+        except Exception:
+            pass
+        try:
+            resp = client.users().settings().sendAs().list(userId="me").execute()
+            items = resp.get("sendAs", []) if isinstance(resp, dict) else []
+            for entry in items:
+                alias = entry.get("sendAsEmail") if isinstance(entry, dict) else None
+                if isinstance(alias, str) and "@" in alias:
+                    found.add(alias.strip().lower())
+        except Exception:
+            pass
+        self._cached_addresses = frozenset(found)
+        return self._cached_addresses
 
     def list_new_messages_since(
         self,
@@ -89,13 +127,69 @@ class GmailService:
             GmailHistoryExpiredError: If Gmail reports HTTP 404 on expired start_history_id.
         """
         client = self._require_client()
-        seen_ids, latest_history_id = self._collect_added_message_ids(client, start_history_id)
+        candidates, latest_history_id = self._collect_added_message_ids(client, start_history_id)
         messages: list[EmailMessage] = []
-        for msg_id in seen_ids:
+        for msg_id, added_in_inbox in candidates:
             fetched = self._fetch_message_or_none(client, msg_id)
-            if fetched is not None and IGNORED_GMAIL_LABELS.isdisjoint(fetched.label_ids):
+            if fetched is not None and _is_incoming_candidate(
+                set(fetched.label_ids), added_in_inbox=added_in_inbox
+            ):
                 messages.append(fetched)
         return messages, latest_history_id
+
+    def search_messages(self, query: str, max_results: int = 10) -> list[EmailMessage]:
+        """Search Gmail messages read-only using standard Gmail query syntax.
+
+        Args:
+            query: Gmail search query string (e.g. 'from:user@example.com').
+            max_results: Maximum number of messages to retrieve.
+
+        Returns:
+            Ordered list of matching normalized EmailMessage records.
+        """
+        client = self._require_client()
+        resp = (
+            client.users()
+            .messages()
+            .list(userId="me", q=query, maxResults=max(1, int(max_results)))
+            .execute()
+        )
+        results: list[EmailMessage] = []
+        for stub in resp.get("messages", []):
+            msg_id = str(stub.get("id", ""))
+            if not msg_id:
+                continue
+            fetched = self._fetch_message_or_none(client, msg_id)
+            if fetched is not None:
+                results.append(fetched)
+        return results
+
+    def get_thread_messages(self, thread_id: str) -> list[EmailMessage]:
+        """Fetch all messages in a Gmail thread read-only in chronological order.
+
+        Args:
+            thread_id: Target Gmail thread identifier.
+
+        Returns:
+            List of normalized EmailMessage records belonging to thread_id.
+        """
+        client = self._require_client()
+        req = client.users().threads().get(userId="me", id=thread_id, format="full")
+        raw_thread = req.execute()
+        return [self._parse_raw_message(raw_m) for raw_m in raw_thread.get("messages", [])]
+
+    def restore_inbox_label(self, message_id: str) -> None:
+        """Re-apply the INBOX label to an archived Gmail message.
+
+        Args:
+            message_id: Target Gmail message identifier.
+        """
+        client = self._require_client()
+        client.users().messages().modify(
+            userId="me",
+            id=message_id,
+            body={"addLabelIds": ["INBOX"]},
+        ).execute()
 
     def create_draft(
         self,
@@ -204,9 +298,10 @@ class GmailService:
         self,
         client: Any,
         start_history_id: str,
-    ) -> tuple[list[str], str]:
-        """Paginate users.history.list and return deduplicated candidate message IDs."""
-        seen_ids: list[str] = []
+    ) -> tuple[list[tuple[str, bool]], str]:
+        """Paginate users.history.list and return deduplicated (msg_id, added_in_inbox) pairs."""
+        seen_order: list[str] = []
+        inbox_flags: dict[str, bool] = {}
         latest_history_id = start_history_id
         page_token: str | None = None
         while True:
@@ -231,26 +326,30 @@ class GmailService:
                     msg_stub = added.get("message", {})
                     labels = {str(lbl) for lbl in msg_stub.get("labelIds", [])}
                     msg_id = str(msg_stub.get("id", ""))
-                    allowed = IGNORED_GMAIL_LABELS.isdisjoint(labels)
-                    if msg_id and allowed and msg_id not in seen_ids:
-                        seen_ids.append(msg_id)
+                    in_inbox = "INBOX" in labels
+                    if msg_id and _is_incoming_candidate(labels, added_in_inbox=in_inbox):
+                        if msg_id not in inbox_flags:
+                            seen_order.append(msg_id)
+                            inbox_flags[msg_id] = in_inbox
+                        elif in_inbox:
+                            inbox_flags[msg_id] = True
             page_token = resp.get("nextPageToken")
             if not page_token:
                 break
-        return seen_ids, latest_history_id
+        return [(mid, inbox_flags[mid]) for mid in seen_order], latest_history_id
 
     def _fetch_message_or_none(self, client: Any, message_id: str) -> EmailMessage | None:
         """Fetch a Gmail message payload, returning None if deleted concurrently (HTTP 404)."""
         try:
-            return self._fetch_message(client, message_id)
+            raw = client.users().messages().get(userId="me", id=message_id, format="full").execute()
+            return self._parse_raw_message(raw)
         except Exception as exc:
             if _is_http_404(exc):
                 return None
             raise
 
-    def _fetch_message(self, client: Any, message_id: str) -> EmailMessage:
-        """Fetch and normalize a full Gmail message payload."""
-        raw = client.users().messages().get(userId="me", id=message_id, format="full").execute()
+    def _parse_raw_message(self, raw: dict[str, Any]) -> EmailMessage:
+        """Normalize a raw Gmail API message dictionary into an EmailMessage."""
         payload = raw.get("payload", {})
         headers = {
             str(h.get("name", "")).lower(): str(h.get("value", ""))

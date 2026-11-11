@@ -12,6 +12,14 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from alfred.controllers.routine_cli import (
+    handle_install_routines,
+    handle_read_thread,
+    handle_run_routines,
+    handle_search_gmail,
+    handle_status_routines,
+    register_routine_and_gmail_parsers,
+)
 from alfred.domain.models import (
     AlfredSettings,
     FrontmatterSchema,
@@ -29,6 +37,7 @@ from alfred.services.inbox_triage_service import InboxTriageService
 from alfred.services.knowledge_service import KnowledgeService
 from alfred.services.nounou_service import NounouService
 from alfred.services.pajemploi_calculator import PajemploiCalculator
+from alfred.services.routine_service import RoutineService
 from alfred.services.workspace_service import WorkspaceService
 
 
@@ -51,6 +60,7 @@ class CliController:
         settings: AlfredSettings | None = None,
         workspace_service: WorkspaceService | None = None,
         agy_manager: AgySessionManager | None = None,
+        routine_service: RoutineService | None = None,
     ) -> None:
         """Initialize the CLI controller with injected domain services.
 
@@ -69,6 +79,7 @@ class CliController:
             settings: Optional AlfredSettings instance for calendar and runtime config.
             workspace_service: Optional Antigravity workspace project provisioner.
             agy_manager: Optional Antigravity session manager for live Gate spawning.
+            routine_service: Optional RoutineService orchestrating systemd & periodic jobs.
         """
         self._knowledge = knowledge_service
         self._drive = drive_service
@@ -84,6 +95,7 @@ class CliController:
         self._timezone = settings.timezone if settings is not None else timezone
         self._workspaces = workspace_service
         self._agy = agy_manager
+        self._routines = routine_service
 
     def run(self, argv: list[str]) -> int:
         """Parse CLI arguments and execute the requested Alfred workflow.
@@ -116,6 +128,11 @@ class CliController:
             "check-vacation": self._handle_check_vacation,
             "close-pajemploi": self._handle_close_pajemploi_cmd,
             "evolve": self._handle_evolve,
+            "run-routines": lambda a: handle_run_routines(self._routines, a),
+            "install-routines": lambda a: handle_install_routines(self._routines, a),
+            "status-routines": lambda a: handle_status_routines(self._routines, a),
+            "search-gmail": lambda a: handle_search_gmail(self._gmail, a),
+            "read-thread": lambda a: handle_read_thread(self._gmail, a),
         }
         handler = handlers.get(str(args.command))
         return handler(args) if handler is not None else 1
@@ -135,6 +152,7 @@ class CliController:
         self._register_knowledge_and_drive_parsers(sub)
         self._register_inbox_and_calendar_parsers(sub)
         self._register_nounou_and_evolve_parsers(sub)
+        register_routine_and_gmail_parsers(sub)
         return parser
 
     def _register_knowledge_and_drive_parsers(self, sub: Any) -> None:

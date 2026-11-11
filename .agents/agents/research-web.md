@@ -1,6 +1,9 @@
 ---
 name: research-web
 description: Stage 1 (Turbo Read-Only) agent performing targeted external web and administrative documentation research.
+subagent: true
+mainAgent: false
+tools: [search_web, read_file, send_message]
 ---
 
 # `research-web` — Agent de Recherche Documentaire & Réglementaire Web (Étape 1 Read-Only)

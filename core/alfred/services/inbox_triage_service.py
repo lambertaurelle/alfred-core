@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from email.utils import getaddresses
 
 from alfred.domain.models import (
     EmailMessage,
@@ -53,6 +54,11 @@ DRIVE_SEARCH_STOPWORDS = frozenset(
         "echeance",
     }
 )
+
+
+def _extract_email_set(raw_header: str) -> set[str]:
+    """Extract lowercase email addresses from an RFC 2822 address header string."""
+    return {addr.strip().lower() for _, addr in getaddresses([raw_header]) if "@" in addr}
 
 
 class InboxTriageService:
@@ -161,13 +167,19 @@ class InboxTriageService:
         """
         effective_spawn = self._spawn_live_agy if spawn_live_agy is None else spawn_live_agy
         relevant_docs = self._load_relevant_knowledge(msg)
+        is_from_self, is_self_only, user_addrs = self._resolve_self_context(msg)
         output_type, reason, custom_draft = self._classify_message(
-            msg, relevant_docs, use_cognitive_agy=use_cognitive_agy
+            msg,
+            relevant_docs,
+            use_cognitive_agy=use_cognitive_agy,
+            is_from_self=is_from_self,
+            is_self_only=is_self_only,
+            user_addrs=user_addrs,
         )
 
         if output_type == InboxOutputType.SILENT_NO_ACTION:
             decision = self._handle_silent(msg, reason)
-        elif output_type == InboxOutputType.USER_ACTION_REQUIRED:
+        elif output_type == InboxOutputType.USER_ACTION_REQUIRED or is_from_self:
             decision = self._handle_action_required(
                 msg, reason, relevant_docs, spawn_live=effective_spawn
             )
@@ -185,20 +197,33 @@ class InboxTriageService:
         )
         return decision
 
+    def _resolve_self_context(self, msg: EmailMessage) -> tuple[bool, bool, frozenset[str]]:
+        """Detect whether msg was sent by the user (and whether exclusively to user addresses)."""
+        raw_addrs = self._gmail.get_authenticated_addresses()
+        user_addrs = raw_addrs if isinstance(raw_addrs, frozenset) else frozenset()
+        sender_addrs = _extract_email_set(msg.sender)
+        rcpt_addrs = _extract_email_set(f"{msg.recipient}, {msg.headers.get('cc', '')}")
+        if user_addrs:
+            is_from_self = bool(sender_addrs & user_addrs)
+            is_self_only = is_from_self and (not rcpt_addrs or rcpt_addrs.issubset(user_addrs))
+            return (is_from_self, is_self_only, user_addrs)
+        implicit_self = bool(sender_addrs) and rcpt_addrs == sender_addrs
+        return (implicit_self, implicit_self, user_addrs)
+
     def _load_relevant_knowledge(self, msg: EmailMessage) -> list[KnowledgeDocument]:
         """Tier-1 -> Tier-2 progressive lookup of reference .md files matching the email."""
         query = f"{msg.sender} {msg.subject} {msg.snippet} {msg.body_text[:200]}"
         matches = self._knowledge.select_relevant_frontmatters(query)[:2]
-        docs: list[KnowledgeDocument] = []
-        for file_name, _ in matches:
-            docs.append(self._knowledge.load_document(file_name))
-        return docs
+        return [self._knowledge.load_document(file_name) for file_name, _ in matches]
 
     def _classify_message(
         self,
         msg: EmailMessage,
         docs: list[KnowledgeDocument],
         use_cognitive_agy: bool = False,
+        is_from_self: bool = False,
+        is_self_only: bool = False,
+        user_addrs: frozenset[str] = frozenset(),
     ) -> tuple[InboxOutputType, str, str | None]:
         """Classify an email deterministically first, delegating to cognitive_fn or agy CLI."""
         combined = fold_accents(f"{msg.subject}\n{msg.snippet}\n{msg.body_text}")
@@ -209,39 +234,53 @@ class InboxTriageService:
                     f"Matched user-action signal: '{pat}'",
                     None,
                 )
-
-        has_unsub = "list-unsubscribe" in {k.lower() for k in msg.headers}
-        auto_sub = msg.headers.get("auto-submitted", "no").lower() != "no"
-        sender_lower = msg.sender.lower()
-        is_noreply = (
-            "no-reply" in sender_lower
-            or "ne-pas-repondre" in sender_lower
-            or "noreply" in sender_lower
-        )
-        for pat in PASSIVE_PORTAL_PATTERNS:
-            if re.search(pat, combined):
-                return (
-                    InboxOutputType.SILENT_NO_ACTION,
-                    "Passive portal or routine subscription notification without anomaly",
-                    None,
-                )
-        if has_unsub or auto_sub or is_noreply:
+        if is_self_only:
+            return (
+                InboxOutputType.USER_ACTION_REQUIRED,
+                "Self-sent memo or personal reminder requiring user follow-up",
+                None,
+            )
+        if not is_from_self and self._is_passive_or_automated(msg, combined):
             return (
                 InboxOutputType.SILENT_NO_ACTION,
-                "Automated bulk/newsletter header or no-reply sender without action signal",
+                "Passive portal or automated bulk notification without action signal",
                 None,
             )
 
+        out_type, reason, draft = self._run_cognitive_or_default(
+            msg, docs, use_cognitive_agy=use_cognitive_agy, user_addrs=user_addrs
+        )
+        if is_from_self and out_type == InboxOutputType.DRAFT_REPLY:
+            return (
+                InboxOutputType.USER_ACTION_REQUIRED,
+                "Self-authored email requiring personal follow-up (no self-reply draft)",
+                None,
+            )
+        return (out_type, reason, draft)
+
+    def _is_passive_or_automated(self, msg: EmailMessage, combined_folded: str) -> bool:
+        """Return True for passive portal notices, newsletters, or no-reply bulk headers."""
+        if any(re.search(pat, combined_folded) for pat in PASSIVE_PORTAL_PATTERNS):
+            return True
+        has_unsub = "list-unsubscribe" in {k.lower() for k in msg.headers}
+        auto_sub = msg.headers.get("auto-submitted", "no").lower() != "no"
+        sender_lower = msg.sender.lower()
+        is_noreply = any(tok in sender_lower for tok in ("no-reply", "ne-pas-repondre", "noreply"))
+        return has_unsub or auto_sub or is_noreply
+
+    def _run_cognitive_or_default(
+        self,
+        msg: EmailMessage,
+        docs: list[KnowledgeDocument],
+        use_cognitive_agy: bool,
+        user_addrs: frozenset[str],
+    ) -> tuple[InboxOutputType, str, str | None]:
+        """Invoke injected cognitive_fn, agy CLI classifier, or deterministic human fallback."""
         if self._cognitive_fn is not None:
             return self._cognitive_fn(msg, docs)
         if use_cognitive_agy:
-            return self._agy.classify_email_with_agy(msg, docs)
-
-        return (
-            InboxOutputType.DRAFT_REPLY,
-            "Direct human inquiry requiring a reply draft",
-            None,
-        )
+            return self._agy.classify_email_with_agy(msg, docs, user_addresses=user_addrs)
+        return (InboxOutputType.DRAFT_REPLY, "Direct human inquiry requiring a reply draft", None)
 
     def _handle_silent(self, msg: EmailMessage, reason: str) -> InboxTriageDecision:
         """Execute SILENT_NO_ACTION: 0 Gmail edits + immediate Antigravity auto-archive."""
@@ -346,6 +385,7 @@ class InboxTriageService:
             f"# Action Utilisateur Requise (`USER_ACTION_REQUIRED`)\n\n"
             f"- **E-mail étoilé (`STARRED`)** : `{msg.message_id}`\n"
             f"- **Expéditeur** : `{msg.sender}`\n"
+            f"- **Destinataires** : `{msg.recipient}`\n"
             f"- **Objet** : {msg.subject}\n"
             f"- **Motif** : {reason}\n\n"
             f"## Défrichage Complet & Contexte Rassemblé\n"

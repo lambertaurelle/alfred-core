@@ -316,11 +316,14 @@ class EvolveWorktreeService:
             if arch_res.returncode != 0:
                 raise RuntimeError(f"Architecture gate failed:\n{arch_res.stderr}")
         if (venv_bin / "ruff").exists() and (core_worktree / "core").exists():
-            ruff_targets = [str(core_worktree / "core")]
+            ruff_cmd = [str(venv_bin / "ruff"), "check"]
+            if (core_worktree / "pyproject.toml").exists():
+                ruff_cmd.extend(["--config", str(core_worktree / "pyproject.toml")])
+            ruff_cmd.append(str(core_worktree / "core"))
             if (instance_worktree / "extensions").exists():
-                ruff_targets.append(str(instance_worktree / "extensions"))
+                ruff_cmd.append(str(instance_worktree / "extensions"))
             ruff_res = subprocess.run(
-                [str(venv_bin / "ruff"), "check", *ruff_targets],
+                ruff_cmd,
                 cwd=core_worktree,
                 capture_output=True,
                 text=True,

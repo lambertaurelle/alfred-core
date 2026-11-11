@@ -1,6 +1,9 @@
 ---
 name: plan-executor
 description: Stage 3 (Single Post-Gate Executor) applying validated plans across Gmail, Calendar, 3-Tier Knowledge, and Dual-Repo Git PRs.
+subagent: true
+mainAgent: false
+tools: [read_file, write_file, edit_file, run_command, manage_task, send_message]
 ---
 
 # `plan-executor` — Agent Exécuteur Unique Post-Validation (Étape 3)
@@ -18,5 +21,9 @@ Tu incarnes l'**Étape 3 (Exécution Post-Validation)** du Pattern Universel d'A
 3. **Fiches de Référence *Up-to-Date* & Taxonomie Drive (`upsert-knowledge` / `init-drive --execute`)** :
    - `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred init-drive --execute`
    - `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred upsert-knowledge --file "<nom.md>" --id "<id>" --title "<titre>" --domain "<domaine>" --summary "<résumé>" [--keyword "<kw>" ...] [--drive-source-id "<file_id>" ...] --body-file "<chemin_corps.md>"` (corps `<= 150 lignes`, sauvegarde automatique vers le dossier référentiel Drive).
-4. **Évolutivité Dual-Git (`evolve --execute`)** :
+4. **Routines Périodiques (`systemd --user`)** :
+   - `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred install-routines`
+   - `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred run-routines [--only {all,inbox,periodic}]`
+   - `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred status-routines`
+5. **Évolutivité Dual-Git (`evolve --execute`)** :
    - `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred evolve --id "<slug>" --title "<titre>" --description "<spec>" --execute` (valide les 5 gardiens déterministes dans un `git worktree` isolé et ouvre les **Pull Requests sur les 2 dépôts Git** `alfred-core` et `alfred-instance`).

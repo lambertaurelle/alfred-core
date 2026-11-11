@@ -11,6 +11,13 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from alfred.domain.routine_models import (
+    RoutinesConfig as RoutinesConfig,
+)
+from alfred.domain.routine_models import (
+    WorkspaceProjectStatus as WorkspaceProjectStatus,
+)
+
 DEFAULT_OAUTH_SCOPES: tuple[str, ...] = (
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/gmail.modify",
@@ -151,6 +158,7 @@ class AlfredSettings(BaseModel):
     max_knowledge_body_lines: int = 150
     core_base_branch: str = "main"
     instance_base_branch: str = "main"
+    routines: RoutinesConfig = Field(default_factory=RoutinesConfig)
 
     def resolve_workspace_project(self, workspace: str) -> str:
         """Resolve a workspace role or slug into its configured Antigravity project name.
@@ -212,6 +220,7 @@ class AlfredSettings(BaseModel):
             max_knowledge_body_lines=int(know_cfg.get("max_body_lines", 150)),
             core_base_branch=str(evolve_cfg.get("core_base_branch", "main")),
             instance_base_branch=str(evolve_cfg.get("instance_base_branch", "main")),
+            routines=RoutinesConfig.from_dict(raw.get("routines")),
         )
 
 
@@ -485,14 +494,3 @@ class EvolutionProposalsLedger(BaseModel):
     """Persistent ledger of system evolution proposals and dual-repo PRs."""
 
     proposals: dict[str, EvolutionProposalRecord] = Field(default_factory=dict)
-
-
-class WorkspaceProjectStatus(BaseModel):
-    """Provisioned Antigravity project descriptor for one Alfred workspace."""
-
-    role: str
-    project_name: str
-    project_id: str = ""
-    workspace_dir: str
-    agents_discovered: list[str] = Field(default_factory=list)
-    created: bool = False

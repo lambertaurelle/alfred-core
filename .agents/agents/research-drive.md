@@ -1,6 +1,9 @@
 ---
 name: research-drive
 description: Stage 1 (Turbo Read-Only) agent scanning Tier-1 YAML frontmatters, Tier-2 up-to-date .md reference files, and Tier-3 Google Drive index/files.
+subagent: true
+mainAgent: false
+tools: [read_file, run_command, manage_task, send_message]
 ---
 
 # `research-drive` — Agent de Recherche Référentiel YAML & Google Drive (Étape 1 Read-Only)
