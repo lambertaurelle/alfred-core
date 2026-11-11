@@ -17,6 +17,12 @@ DEFAULT_OAUTH_SCOPES: tuple[str, ...] = (
     "https://www.googleapis.com/auth/gmail.compose",
     "https://www.googleapis.com/auth/calendar",
 )
+DEFAULT_WORKSPACES: dict[str, str] = {
+    "life": "alfred-life",
+    "inbox": "alfred-inbox",
+    "calendar": "alfred-calendar",
+    "evolve": "alfred-evolve",
+}
 
 
 def fold_accents(text: str) -> str:
@@ -124,6 +130,11 @@ class AlfredPaths(BaseModel):
         """Return isolated git worktrees directory path."""
         return self.root_dir / "worktrees"
 
+    @property
+    def workspaces_dir(self) -> Path:
+        """Return Antigravity workspace manifests directory path."""
+        return self.core_dir / "workspaces"
+
 
 class AlfredSettings(BaseModel):
     """Structural runtime settings loaded from YAML without personal hardcoded values."""
@@ -136,9 +147,28 @@ class AlfredSettings(BaseModel):
     primary_calendar_id: str = "primary"
     oauth_scopes: list[str] = Field(default_factory=lambda: list(DEFAULT_OAUTH_SCOPES))
     agy_binary: str = "agy"
+    workspaces: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_WORKSPACES))
     max_knowledge_body_lines: int = 150
     core_base_branch: str = "main"
     instance_base_branch: str = "main"
+
+    def resolve_workspace_project(self, workspace: str) -> str:
+        """Resolve a workspace role or slug into its configured Antigravity project name.
+
+        Args:
+            workspace: Logical role ('inbox', 'calendar', 'life', 'evolve') or workspace slug.
+
+        Returns:
+            Target Antigravity project name.
+        """
+        cleaned = workspace.strip()
+        if not cleaned:
+            return self.workspaces.get("life", "alfred-life")
+        if cleaned in self.workspaces:
+            return self.workspaces[cleaned]
+        if cleaned.startswith("alfred-") and cleaned[7:] in self.workspaces:
+            return self.workspaces[cleaned[7:]]
+        return cleaned
 
     @classmethod
     def load(cls, paths: AlfredPaths) -> AlfredSettings:
@@ -161,6 +191,12 @@ class AlfredSettings(BaseModel):
         know_cfg = raw.get("knowledge", {})
         evolve_cfg = raw.get("evolve", {})
         raw_scopes = google_cfg.get("oauth_scopes") or list(DEFAULT_OAUTH_SCOPES)
+        raw_ws = agy_cfg.get("workspaces")
+        ws_map = (
+            {**DEFAULT_WORKSPACES, **{str(k): str(v) for k, v in raw_ws.items()}}
+            if isinstance(raw_ws, dict)
+            else dict(DEFAULT_WORKSPACES)
+        )
         return cls(
             project_name=str(raw.get("project_name", "Alfred Personal Chief of Staff")),
             timezone=str(raw.get("timezone", "Europe/Paris")),
@@ -172,6 +208,7 @@ class AlfredSettings(BaseModel):
             primary_calendar_id=str(google_cfg.get("primary_calendar_id", "primary")),
             oauth_scopes=[str(s) for s in raw_scopes],
             agy_binary=str(agy_cfg.get("binary_path", "agy")),
+            workspaces=ws_map,
             max_knowledge_body_lines=int(know_cfg.get("max_body_lines", 150)),
             core_base_branch=str(evolve_cfg.get("core_base_branch", "main")),
             instance_base_branch=str(evolve_cfg.get("instance_base_branch", "main")),
@@ -448,3 +485,14 @@ class EvolutionProposalsLedger(BaseModel):
     """Persistent ledger of system evolution proposals and dual-repo PRs."""
 
     proposals: dict[str, EvolutionProposalRecord] = Field(default_factory=dict)
+
+
+class WorkspaceProjectStatus(BaseModel):
+    """Provisioned Antigravity project descriptor for one Alfred workspace."""
+
+    role: str
+    project_name: str
+    project_id: str = ""
+    workspace_dir: str
+    agents_discovered: list[str] = Field(default_factory=list)
+    created: bool = False

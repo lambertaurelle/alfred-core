@@ -1,6 +1,7 @@
 # 🎩 Workspace `alfred-life` — Hub Principal d'Interaction (User-Initiated)
 
 > **Mode d'Ouverture** : **User-Initiated** (point d'entrée libre dans Antigravity Web UI)  
+> **Racine Alfred & CLI** : `/root/Alfred` (`${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`)  
 > **Pipeline Obligatoire** : **Pattern Universel en 3 Étapes (Recherche Adaptative $\rightarrow$ Gate `implementation_plan.md` $\rightarrow$ Exécuteur Unique)**
 
 ## 1. Étape 1 — Analyse & Recherche Adaptative en Mode Turbo (`Read-Only`)

@@ -36,8 +36,9 @@
 ## 🚀 Onboarding & CLI Quickstart
 
 ```bash
-# 1. Authentification OAuth2 Google Workspace (écrit instance/secrets/token.json)
+# 1. Authentification OAuth2 Google Workspace & Initialisation des 4 Projets Antigravity
 .venv/bin/alfred auth-google
+.venv/bin/alfred init-workspaces --prune-legacy
 
 # 2. First-Run Google Drive (Étape 2 Gate -> Étape 3 Persistance Taxonomie)
 .venv/bin/alfred init-drive

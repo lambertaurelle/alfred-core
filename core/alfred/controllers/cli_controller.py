@@ -19,6 +19,7 @@ from alfred.domain.models import (
     VacationPeriod,
 )
 from alfred.repositories.state_store import StateStore
+from alfred.services.agy_session_manager import AgySessionManager
 from alfred.services.calendar_service import CalendarService
 from alfred.services.drive_service import DriveService
 from alfred.services.evolve_worktree_service import EvolveWorktreeService
@@ -28,6 +29,7 @@ from alfred.services.inbox_triage_service import InboxTriageService
 from alfred.services.knowledge_service import KnowledgeService
 from alfred.services.nounou_service import NounouService
 from alfred.services.pajemploi_calculator import PajemploiCalculator
+from alfred.services.workspace_service import WorkspaceService
 
 
 class CliController:
@@ -47,6 +49,8 @@ class CliController:
         oauth_service: GoogleOAuthService | None = None,
         timezone: str = "Europe/Paris",
         settings: AlfredSettings | None = None,
+        workspace_service: WorkspaceService | None = None,
+        agy_manager: AgySessionManager | None = None,
     ) -> None:
         """Initialize the CLI controller with injected domain services.
 
@@ -63,6 +67,8 @@ class CliController:
             oauth_service: Optional GoogleOAuthService for interactive OAuth2 bootstrap.
             timezone: Configured local timezone string (default 'Europe/Paris').
             settings: Optional AlfredSettings instance for calendar and runtime config.
+            workspace_service: Optional Antigravity workspace project provisioner.
+            agy_manager: Optional Antigravity session manager for live Gate spawning.
         """
         self._knowledge = knowledge_service
         self._drive = drive_service
@@ -76,6 +82,8 @@ class CliController:
         self._oauth = oauth_service
         self._settings = settings or AlfredSettings(timezone=timezone)
         self._timezone = settings.timezone if settings is not None else timezone
+        self._workspaces = workspace_service
+        self._agy = agy_manager
 
     def run(self, argv: list[str]) -> int:
         """Parse CLI arguments and execute the requested Alfred workflow.
@@ -90,6 +98,7 @@ class CliController:
         self._knowledge.bootstrap_templates_if_empty()
         handlers: dict[str, Callable[[argparse.Namespace], int]] = {
             "auth-google": lambda a: self._handle_auth_google(int(a.port), not bool(a.no_browser)),
+            "init-workspaces": lambda a: self._handle_init_workspaces(bool(a.prune_legacy)),
             "scan-knowledge": lambda a: self._handle_scan_knowledge(str(a.query)),
             "load-knowledge": lambda a: self._handle_load_knowledge(str(a.doc)),
             "upsert-knowledge": self._handle_upsert_knowledge,
@@ -119,6 +128,9 @@ class CliController:
         p_auth = sub.add_parser("auth-google")
         p_auth.add_argument("--port", type=int, default=0)
         p_auth.add_argument("--no-browser", action="store_true")
+
+        p_ws = sub.add_parser("init-workspaces")
+        p_ws.add_argument("--prune-legacy", action="store_true")
 
         self._register_knowledge_and_drive_parsers(sub)
         self._register_inbox_and_calendar_parsers(sub)
@@ -181,24 +193,48 @@ class CliController:
         p_seed = sub.add_parser("seed-nounou")
         p_seed.add_argument("--date", default="")
         p_seed.add_argument("--apply", action="store_true")
+        p_seed.add_argument("--spawn-agy", action="store_true")
 
         p_vac = sub.add_parser("check-vacation")
         p_vac.add_argument("--start", required=True)
         p_vac.add_argument("--end", required=True)
         p_vac.add_argument("--source", default="parents")
         p_vac.add_argument("--persist", action="store_true")
+        p_vac.add_argument("--spawn-agy", action="store_true")
 
         p_paj = sub.add_parser("close-pajemploi")
         p_paj.add_argument("--year", type=int, default=0)
         p_paj.add_argument("--month", type=int, default=0)
+        p_paj.add_argument("--spawn-agy", action="store_true")
 
         p_ev = sub.add_parser("evolve")
         p_ev.add_argument("--id", required=True)
         p_ev.add_argument("--title", required=True)
         p_ev.add_argument("--description", required=True)
         p_ev.add_argument("--execute", action="store_true")
+        p_ev.add_argument("--spawn-agy", action="store_true")
         p_ev.add_argument("--core-worktree", default="")
         p_ev.add_argument("--instance-worktree", default="")
+
+    def _handle_init_workspaces(self, prune_legacy: bool) -> int:
+        """Provision the 4 distinct Antigravity projects and print JSON status."""
+        if self._workspaces is None:
+            raise RuntimeError("WorkspaceService is not wired on CliController.")
+        statuses = self._workspaces.init_workspaces(prune_legacy=prune_legacy)
+        print(json.dumps([s.model_dump(mode="json") for s in statuses], indent=2))
+        return 0
+
+    def _maybe_spawn_gate(
+        self, workspace: str, source_id: str, plan_md: str, spawn: bool
+    ) -> None:
+        """Optionally materialize a live Antigravity Web Gate session for a workspace."""
+        if spawn and self._agy is not None:
+            self._agy.create_session(
+                workspace=workspace,
+                source_message_id=source_id,
+                implementation_plan_md=plan_md,
+                spawn_live=True,
+            )
 
     def _handle_auth_google(self, port: int, open_browser: bool) -> int:
         """Execute interactive OAuth2 InstalledAppFlow consent and write token.json."""
@@ -365,6 +401,10 @@ class CliController:
         """Seed or preview M+1 Garde Nounou schedule."""
         ref_dt = date.fromisoformat(args.date) if args.date else date.today()
         _, plan_md = self._nounou.seed_next_month_schedule(ref_dt, bool(args.apply))
+        if not args.apply:
+            self._maybe_spawn_gate(
+                "alfred-calendar", f"seed:{ref_dt}", plan_md, bool(args.spawn_agy)
+            )
         print(plan_md)
         return 0
 
@@ -375,6 +415,13 @@ class CliController:
             reference_date=date.today(),
             persist=bool(args.persist),
         )
+        if not args.persist:
+            self._maybe_spawn_gate(
+                "alfred-calendar",
+                f"vacation:{args.start}:{args.end}",
+                alert.implementation_plan_markdown,
+                bool(args.spawn_agy),
+            )
         print(alert.implementation_plan_markdown)
         return 0
 
@@ -383,9 +430,9 @@ class CliController:
         today = date.today()
         yr = int(args.year) if args.year else today.year
         mo = int(args.month) if args.month else today.month
-        return self._handle_close_pajemploi(yr, mo)
+        return self._handle_close_pajemploi(yr, mo, spawn_agy=bool(args.spawn_agy))
 
-    def _handle_close_pajemploi(self, year: int, month: int) -> int:
+    def _handle_close_pajemploi(self, year: int, month: int, spawn_agy: bool = False) -> int:
         """Fetch Garde Nounou events for (year, month) in local TZ and print Pajemploi plan."""
         contract = self._store.nounou_contract.load()
         _, last_day = pycal.monthrange(year, month)
@@ -398,6 +445,12 @@ class CliController:
             else []
         )
         report = self._pajemploi.calculate_monthly_report(year, month, contract, events)
+        self._maybe_spawn_gate(
+            "alfred-calendar",
+            f"pajemploi:{year:04d}-{month:02d}",
+            report.implementation_plan_markdown,
+            spawn_agy,
+        )
         print(report.implementation_plan_markdown)
         return 0
 
@@ -419,5 +472,6 @@ class CliController:
             print(json.dumps([p.model_dump(mode="json") for p in prs], indent=2))
             return 0
         _, plan_md = self._evolve.prepare_evolution_plan(args.id, args.title, args.description)
+        self._maybe_spawn_gate("alfred-evolve", f"evolve:{args.id}", plan_md, bool(args.spawn_agy))
         print(plan_md)
         return 0

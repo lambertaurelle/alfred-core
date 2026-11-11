@@ -17,6 +17,7 @@ from alfred.services.inbox_triage_service import InboxTriageService
 from alfred.services.knowledge_service import KnowledgeService
 from alfred.services.nounou_service import NounouService
 from alfred.services.pajemploi_calculator import PajemploiCalculator
+from alfred.services.workspace_service import WorkspaceService
 
 
 def build_controller(root_override: str | None = None) -> CliController:
@@ -44,21 +45,14 @@ def build_controller(root_override: str | None = None) -> CliController:
     gmail = GmailService(paths=paths, settings=settings, oauth_service=oauth)
     calendar = CalendarService(paths=paths, settings=settings, oauth_service=oauth)
     agy = AgySessionManager(paths=paths, settings=settings, state_store=store)
+    workspaces = WorkspaceService(paths=paths, settings=settings, agy_manager=agy)
     inbox = InboxTriageService(store, gmail, knowledge, drive, agy)
     nounou = NounouService(store, calendar, knowledge, settings)
     evolve = EvolveWorktreeService(paths=paths, settings=settings, state_store=store)
     return CliController(
-        knowledge,
-        drive,
-        inbox,
-        nounou,
-        PajemploiCalculator(),
-        calendar,
-        evolve,
-        store,
-        gmail_service=gmail,
-        oauth_service=oauth,
-        settings=settings,
+        knowledge, drive, inbox, nounou, PajemploiCalculator(), calendar, evolve, store,
+        gmail_service=gmail, oauth_service=oauth, settings=settings,
+        workspace_service=workspaces, agy_manager=agy,
     )
 
 

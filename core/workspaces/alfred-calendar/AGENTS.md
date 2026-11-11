@@ -1,6 +1,7 @@
 # 📅 Workspace `alfred-calendar` — Assistante Maternelle & Calendrier `Garde Nounou`
 
 > **Mode d'Ouverture** : **Agent-Spawned Only** (routines planifiées & événements agenda)  
+> **Racine Alfred & CLI** : `/root/Alfred` (`${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`)  
 > **Pipeline Obligatoire** : **Pattern Universel en 3 Étapes (Recherche Adaptative $\rightarrow$ Gate `implementation_plan.md` $\rightarrow$ Exécuteur Unique)**
 
 ## 1. Les 4 Workflows Déterministes `Garde Nounou`

@@ -252,10 +252,12 @@ def test_agy_live_spawn_conversation_id_and_unavailable_fallback(tmp_path: Path)
     )
     live_rec = agy.create_session("alfred-inbox", "msg_42", "# Gate Plan\n", spawn_live=True)
     assert live_rec.session_id == "conv_live_99" and Path(live_rec.plan_path).exists()
-    assert recorded_cmds[0][:10] == [
+    assert recorded_cmds[0][:12] == [
         "/usr/local/bin/agy",
         "--project",
-        "Alfred",
+        "alfred-inbox",
+        "--add-dir",
+        str(paths.root_dir),
         "--agent",
         "plan-synthesizer",
         "--mode",
@@ -264,8 +266,8 @@ def test_agy_live_spawn_conversation_id_and_unavailable_fallback(tmp_path: Path)
         "json",
         "-p",
     ]
-    assert "UserFacing: true" in recorded_cmds[0][10]
-    assert "RequestFeedback: true" in recorded_cmds[0][10]
+    assert "UserFacing: true" in recorded_cmds[0][12]
+    assert "RequestFeedback: true" in recorded_cmds[0][12]
 
     agy_missing = AgySessionManager(
         paths,

@@ -1,6 +1,7 @@
 # 📬 Workspace `alfred-inbox` — Routine Nouveaux E-mails à 3 Sorties Exclusives
 
 > **Mode d'Ouverture** : **Agent-Spawned Only** (déclenché par `alfred poll-inbox` à partir du `historyId` courant, sans toucher au passé)  
+> **Racine Alfred & CLI** : `/root/Alfred` (`${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`)  
 > **Pipeline Obligatoire** : **Pattern Universel en 3 Étapes + 3 Sorties Exclusives**
 
 ## 1. Les 3 Sorties Exclusives (`InboxTriageService`)

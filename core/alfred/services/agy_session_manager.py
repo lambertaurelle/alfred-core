@@ -319,6 +319,14 @@ class AgySessionManager:
             self._archive_hook(session_id)
         return archived
 
+    def locate_agy_binary(self) -> str | None:
+        """Resolve an executable agy CLI binary path or None when unavailable.
+
+        Returns:
+            Executable path string or None.
+        """
+        return self._locate_agy_binary()
+
     def _locate_agy_binary(self) -> str | None:
         """Resolve an executable agy CLI binary via override, PATH, or /root/.local/bin/agy."""
         if self._agy_locator_fn is not None:
@@ -373,10 +381,13 @@ class AgySessionManager:
             "then stop immediately:\n\n"
             f"{implementation_plan_md}"
         )
+        target_project = self._settings.resolve_workspace_project(workspace)
         cmd = [
             agy_bin,
             "--project",
-            "Alfred",
+            target_project,
+            "--add-dir",
+            str(self._paths.root_dir),
             "--agent",
             "plan-synthesizer",
             "--mode",

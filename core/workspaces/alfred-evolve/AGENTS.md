@@ -1,6 +1,7 @@
 # 🧬 Workspace `alfred-evolve` — Évolutivité TDD en Worktree Isolé & PR Dual-Git
 
 > **Mode d'Ouverture** : **User-Initiated ou Signal Capté**  
+> **Racine Alfred & CLI** : `/root/Alfred` (`${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`)  
 > **Pipeline Obligatoire** : **1. Analyse & Signaux Turbo (`Read-Only`) $\rightarrow$ 2. Gate `implementation_plan.md` $\rightarrow$ 3. Exécution TDD en `git worktree` + Pull Requests sur les 2 Dépôts Git**
 
 ## 1. Étape 1 — Compréhension du Besoin & Captation de Signaux (`Read-Only`)
