@@ -21,6 +21,9 @@ antigravity:
     calendar: "alfred-calendar"
     evolve: "alfred-evolve"
 
+calendar:
+  include_authenticated_owners_in_hold_allowlist: true
+
 knowledge:
   max_body_lines: 150
 

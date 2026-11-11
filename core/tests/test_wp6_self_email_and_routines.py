@@ -311,7 +311,9 @@ def test_agy_workspace_cwd_and_ephemeral_classifier_purge(tmp_path: Path) -> Non
         msg, [], user_addresses=frozenset({"owner@example.com"})
     )
     assert out == InboxOutputType.SILENT_NO_ACTION
-    assert "--disable-slash-commands" in captured[0] and "owner@example.com" in captured[0][6]
+    prompt_idx = captured[0].index("--print") + 1
+    assert "--disable-slash-commands" in captured[0]
+    assert "owner@example.com" in captured[0][prompt_idx]
     assert not (agy_data / "conversations" / "conv_tmp_1.db").exists()
     assert not (agy_data / "brain" / "conv_tmp_1").exists()
 

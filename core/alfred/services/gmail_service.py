@@ -164,6 +164,21 @@ class GmailService:
                 results.append(fetched)
         return results
 
+    def get_message(self, message_id: str) -> EmailMessage | None:
+        """Fetch a single Gmail message by ID read-only, or None when unavailable.
+
+        Args:
+            message_id: Target Gmail message identifier.
+
+        Returns:
+            Normalized EmailMessage or None on HTTP 404 / missing client.
+        """
+        try:
+            client = self._require_client()
+        except Exception:
+            return None
+        return self._fetch_message_or_none(client, message_id)
+
     def get_thread_messages(self, thread_id: str) -> list[EmailMessage]:
         """Fetch all messages in a Gmail thread read-only in chronological order.
 

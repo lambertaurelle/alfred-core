@@ -35,7 +35,7 @@ class WorkspaceService:
         Args:
             paths: Resolved AlfredPaths layout.
             settings: Runtime structural settings including workspace names.
-            agy_manager: Session manager providing executable agy locator.
+            agy_manager: Session manager providing executable agy locator and archive store.
             projects_dir: Optional override for ~/.gemini/config/projects.
             conversations_db: Optional override for conversation_summaries.db.
             runner_fn: Optional subprocess runner override taking (cmd, cwd).
@@ -82,6 +82,7 @@ class WorkspaceService:
             )
 
         if prune_legacy:
+            self._agy.archive_store.prune_orphan_default_cli_project(self._projects_dir)
             self._prune_unused_legacy_projects(keep_ids)
         return statuses
 
@@ -202,20 +203,27 @@ class WorkspaceService:
         return [ln for ln in lines if not ln.lower().startswith("available agents")]
 
     def _load_busy_project_ids(self) -> set[str]:
-        """Query conversation_summaries.db read-only to protect projects that own conversations."""
+        """Query conversation_summaries.db read-only to protect projects with live trajectories."""
         if not self._conversations_db.is_file():
             return set()
+        conv_dir = self._conversations_db.parent / "conversations"
         try:
             conn = sqlite3.connect(f"file:{self._conversations_db}?mode=ro", uri=True)
             try:
                 rows = conn.execute(
-                    "SELECT DISTINCT project_id FROM conversation_summaries"
+                    "SELECT conversation_id, project_id FROM conversation_summaries"
                 ).fetchall()
             finally:
                 conn.close()
         except sqlite3.Error:
             return set()
-        return {str(r[0]) for r in rows if r and r[0]}
+        busy: set[str] = set()
+        for conv_id, proj_id in rows:
+            if not proj_id:
+                continue
+            if not conv_dir.is_dir() or (conv_dir / f"{conv_id}.db").is_file():
+                busy.add(str(proj_id))
+        return busy
 
     def _prune_unused_legacy_projects(self, keep_ids: set[str]) -> None:
         """Remove empty legacy 'Alfred' or 'CLI Project' manifests without conversations."""

@@ -1,16 +1,16 @@
-"""Antigravity Web UI session manager, live agy CLI bridge, and silent auto-archiver."""
+"""Antigravity Web UI session manager, live agy CLI bridge, and native silent auto-archiver."""
 
 from __future__ import annotations
 
 import json
 import os
 import shutil
-import sqlite3
 import subprocess
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 
+from alfred.domain.calendar_models import CalendarTriageAction
 from alfred.domain.models import (
     ActiveSessionRecord,
     AlfredPaths,
@@ -22,105 +22,33 @@ from alfred.domain.models import (
 )
 from alfred.repositories.json_repository import atomic_write_text
 from alfred.repositories.state_store import StateStore
-
-ERROR_ENVELOPE_STATUSES = frozenset(
-    {"ERROR", "FAILED", "DEADLINE_EXCEEDED", "CANCELLED", "TIMEOUT"}
+from alfred.services.agy_archive_store import (
+    COGNITIVE_TRIAGE_SCHEMA as COGNITIVE_TRIAGE_SCHEMA,
 )
-
-COGNITIVE_TRIAGE_SCHEMA: dict[str, object] = {
-    "type": "object",
-    "properties": {
-        "output_type": {
-            "type": "string",
-            "enum": [
-                InboxOutputType.SILENT_NO_ACTION.value,
-                InboxOutputType.DRAFT_REPLY.value,
-                InboxOutputType.USER_ACTION_REQUIRED.value,
-            ],
-        },
-        "reason": {"type": "string"},
-        "draft_body": {"type": "string"},
-    },
-    "required": ["output_type", "reason"],
-    "additionalProperties": False,
-}
-
-
-def _is_error_envelope(payload: dict[str, object]) -> bool:
-    """Return True when an agy JSON envelope reports an execution error status."""
-    status = payload.get("status")
-    return isinstance(status, str) and status.strip().upper() in ERROR_ENVELOPE_STATUSES
-
-
-def _parse_json_object(raw_stdout: str) -> dict[str, object] | None:
-    """Parse a single- or multi-line JSON object from stdout, tolerating log lines."""
-    stripped = raw_stdout.strip()
-    if not stripped:
-        return None
-    try:
-        direct = json.loads(stripped)
-        if isinstance(direct, dict):
-            return {str(k): v for k, v in direct.items()}
-    except json.JSONDecodeError:
-        pass
-    decoder = json.JSONDecoder()
-    offsets = [0, *(i + 1 for i, ch in enumerate(stripped) if ch == "\n" and i + 1 < len(stripped))]
-    for start in reversed(offsets):
-        sub = stripped[start:].lstrip(" \t")
-        if not sub.startswith("{"):
-            continue
-        try:
-            parsed, end_idx = decoder.raw_decode(sub)
-        except json.JSONDecodeError:
-            continue
-        rem = sub[end_idx:].lstrip(" \t")
-        if (
-            isinstance(parsed, dict)
-            and (not rem or rem.startswith("\n"))
-            and not rem.lstrip().startswith(("}", "]", ","))
-        ):
-            return {str(k): v for k, v in parsed.items()}
-    return None
-
-
-def _extract_conversation_id(payload: dict[str, object]) -> str | None:
-    """Extract a path-safe conversation ID from a non-error agy JSON response."""
-    if _is_error_envelope(payload):
-        return None
-    containers: list[dict[str, object]] = [payload]
-    for wrap_key in ("result", "data"):
-        nested = payload.get(wrap_key)
-        if isinstance(nested, dict):
-            nested_dict = {str(k): v for k, v in nested.items()}
-            if not _is_error_envelope(nested_dict):
-                containers.append(nested_dict)
-    for obj in containers:
-        for key in ("conversation_id", "conversationId", "session_id", "sessionId", "id"):
-            val = obj.get(key)
-            if isinstance(val, str):
-                cleaned = val.strip()
-                if cleaned and Path(cleaned).name == cleaned and cleaned not in {".", ".."}:
-                    return cleaned
-    return None
-
-
-def _unwrap_triage_payload(payload: dict[str, object]) -> dict[str, object]:
-    """Unwrap nested structured output envelopes returned by CLI JSON formatters."""
-    if "output_type" in payload:
-        return payload
-    for key in ("structured_output", "result", "data", "output", "response"):
-        nested = payload.get(key)
-        if isinstance(nested, dict) and "output_type" in nested:
-            return {str(k): v for k, v in nested.items()}
-        if isinstance(nested, str):
-            parsed = _parse_json_object(nested)
-            if parsed is not None and "output_type" in parsed:
-                return parsed
-    return payload
+from alfred.services.agy_archive_store import (
+    ERROR_ENVELOPE_STATUSES as ERROR_ENVELOPE_STATUSES,
+)
+from alfred.services.agy_archive_store import (
+    AgyArchiveStore,
+    build_cognitive_triage_prompt,
+    parse_calendar_action,
+)
+from alfred.services.agy_archive_store import (
+    extract_conversation_id as _extract_conversation_id,
+)
+from alfred.services.agy_archive_store import (
+    is_error_envelope as _is_error_envelope,
+)
+from alfred.services.agy_archive_store import (
+    parse_json_object as _parse_json_object,
+)
+from alfred.services.agy_archive_store import (
+    unwrap_triage_payload as _unwrap_triage_payload,
+)
 
 
 class AgySessionManager:
-    """Manage Antigravity Web conversation lifecycle, Gate plans, and silent auto-archiving."""
+    """Manage Antigravity Web conversation lifecycle, Gate plans, and native silent archiving."""
 
     def __init__(
         self,
@@ -150,8 +78,14 @@ class AgySessionManager:
         self._runner_fn = runner_fn
         self._agy_locator_fn = agy_locator_fn
         self._agy_data_dir = antigravity_data_dir or (Path.home() / ".gemini" / "antigravity-cli")
+        self._archive_store = AgyArchiveStore(self._agy_data_dir)
         self._plans_dir = self._paths.state_dir / "plans"
         self._plans_dir.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def archive_store(self) -> AgyArchiveStore:
+        """Return the underlying AgyArchiveStore instance."""
+        return self._archive_store
 
     def resolve_workspace_cwd(self, workspace: str | None) -> Path:
         """Resolve the physical workspace directory for agy CLI execution or fallback to root_dir.
@@ -219,13 +153,61 @@ class AgySessionManager:
         )
         return record
 
+    def create_and_archive_trace(
+        self,
+        workspace: str,
+        title: str,
+        trace_markdown: str,
+        source_message_id: str = "",
+        outcome: str = "",
+        existing_conv_id: str | None = None,
+        spawn_live: bool = False,
+        archived_at: str | None = None,
+    ) -> ActiveSessionRecord:
+        """Materialize and auto-archive a real Antigravity trace conversation in workspace.
+
+        Args:
+            workspace: Target Antigravity project/workspace ('alfred-inbox' or 'alfred-calendar').
+            title: Sidebar title written into annotations/<conv_id>.pbtxt.
+            trace_markdown: Concise audit Markdown rendered inside the conversation when spawned.
+            source_message_id: Optional Gmail message_id or event_id reference.
+            outcome: Outcome summary persisted in ActiveSessionRecord.
+            existing_conv_id: Optional existing conversation UUID to reuse and archive in-place.
+            spawn_live: When True and existing_conv_id is None, spawn a lightweight agy trace.
+            archived_at: Optional explicit archival ISO-8601 timestamp (for historical backfill).
+
+        Returns:
+            Persisted ActiveSessionRecord with status 'ARCHIVED'.
+        """
+        resolved_id = existing_conv_id
+        if not resolved_id and spawn_live:
+            resolved_id = self._spawn_live_trace_session(workspace, title, trace_markdown)
+        session_id = resolved_id or f"agy_{workspace.replace('-', '_')}_{uuid.uuid4().hex[:10]}"
+        ts = archived_at or utc_now_iso()
+        self._archive_store.archive_conversation(session_id, title=title, archived_at_iso=ts)
+        record = ActiveSessionRecord(
+            session_id=session_id,
+            workspace=workspace,
+            status="ARCHIVED",
+            outcome=outcome or title,
+            source_message_id=source_message_id,
+            created_at=ts,
+            archived_at=ts,
+        )
+        self._state_store.conversations.update(
+            lambda cur: cur.model_copy(update={"sessions": {**cur.sessions, session_id: record}})
+        )
+        if self._archive_hook is not None:
+            self._archive_hook(session_id)
+        return record
+
     def classify_email_with_agy(
         self,
         msg: EmailMessage,
         docs: list[KnowledgeDocument],
         user_addresses: frozenset[str] = frozenset(),
     ) -> tuple[InboxOutputType, str, str | None]:
-        """Classify an ambiguous email and draft a reply via agy CLI grounded in Tier-2 .md docs.
+        """Classify an ambiguous email and draft a reply via agy CLI (3-tuple legacy API).
 
         Args:
             msg: Normalized incoming Gmail message.
@@ -235,17 +217,40 @@ class AgySessionManager:
         Returns:
             Tuple of (InboxOutputType, rationale string, optional draft reply body).
         """
+        out_type, reason, draft_body, _cal_action, conv_id = self.classify_email_full(
+            msg, docs, user_addresses=user_addresses
+        )
+        self.purge_classifier_session(conv_id)
+        return (out_type, reason, draft_body)
+
+    def classify_email_full(
+        self,
+        msg: EmailMessage,
+        docs: list[KnowledgeDocument],
+        user_addresses: frozenset[str] = frozenset(),
+        calendar_context: str = "",
+    ) -> tuple[InboxOutputType, str, str | None, CalendarTriageAction, str | None]:
+        """Classify an email inside project alfred-inbox, returning calendar_action & conv_id.
+
+        Args:
+            msg: Normalized incoming Gmail message.
+            docs: Loaded Tier-2 reference KnowledgeDocument list.
+            user_addresses: Optional authenticated owner email addresses.
+            calendar_context: Optional upcoming primary calendar & [HOLD] context block.
+
+        Returns:
+            5-tuple (output_type, reason, draft_body, calendar_action, classifier_conv_id).
+        """
         agy_bin = self._locate_agy_binary()
         if agy_bin is None:
-            return (
-                InboxOutputType.DRAFT_REPLY,
-                "Direct human inquiry requiring a reply draft (agy unavailable)",
-                None,
-            )
+            return self._fallback_triage("agy unavailable")
+        target_project = self._settings.resolve_workspace_project("alfred-inbox")
         schema_json = json.dumps(COGNITIVE_TRIAGE_SCHEMA, ensure_ascii=False)
-        prompt = self._build_cognitive_triage_prompt(msg, docs, user_addresses=user_addresses)
+        prompt = build_cognitive_triage_prompt(msg, docs, user_addresses, calendar_context)
         cmd = [
             agy_bin,
+            "--project",
+            target_project,
             "--output-format",
             "json",
             "--json-schema",
@@ -256,34 +261,43 @@ class AgySessionManager:
         ]
         completed = self._run_agy_command(cmd, cwd=self.resolve_workspace_cwd("alfred-inbox"))
         if completed is None or completed.returncode != 0:
-            return (
-                InboxOutputType.DRAFT_REPLY,
-                "Direct human inquiry requiring a reply draft (agy fallback)",
-                None,
-            )
+            return self._fallback_triage("agy fallback")
         parsed = _parse_json_object(completed.stdout)
         if parsed is None or _is_error_envelope(parsed):
-            return (
-                InboxOutputType.DRAFT_REPLY,
-                "Direct human inquiry requiring a reply draft (invalid agy JSON)",
-                None,
-            )
-        ephemeral_id = _extract_conversation_id(parsed)
-        if ephemeral_id:
-            self._purge_ephemeral_cli_conversation(ephemeral_id)
+            return self._fallback_triage("invalid agy JSON")
+        conv_id = _extract_conversation_id(parsed)
         unwrapped = _unwrap_triage_payload(parsed)
         try:
             output_type = InboxOutputType(str(unwrapped.get("output_type", "")))
         except ValueError:
-            return (
-                InboxOutputType.DRAFT_REPLY,
-                "Direct human inquiry requiring a reply draft (unknown agy output_type)",
-                None,
-            )
+            self.purge_classifier_session(conv_id)
+            return self._fallback_triage("unknown agy output_type")
         reason = str(unwrapped.get("reason") or "Classified via agy cognitive triage")
         raw_draft = unwrapped.get("draft_body")
         draft_body = raw_draft.strip() if isinstance(raw_draft, str) and raw_draft.strip() else None
-        return (output_type, reason, draft_body)
+        return (output_type, reason, draft_body, parse_calendar_action(unwrapped), conv_id)
+
+    def _fallback_triage(
+        self,
+        suffix: str,
+    ) -> tuple[InboxOutputType, str, str | None, CalendarTriageAction, str | None]:
+        """Return safe default DRAFT_REPLY tuple when agy CLI triage fails."""
+        return (
+            InboxOutputType.DRAFT_REPLY,
+            f"Direct human inquiry requiring a reply draft ({suffix})",
+            None,
+            CalendarTriageAction(),
+            None,
+        )
+
+    def purge_classifier_session(self, conv_id: str | None) -> None:
+        """Purge an intermediate classifier conversation when replaced by a Gate session.
+
+        Args:
+            conv_id: Optional classifier conversation UUID to remove.
+        """
+        if conv_id:
+            self._archive_store.purge_transient_conversation(conv_id)
 
     def write_session_plan(self, session_id: str, implementation_plan_md: str) -> Path:
         """Write or update implementation_plan.md for an active Antigravity Web session.
@@ -317,12 +331,18 @@ class AgySessionManager:
         )
         return plan_file
 
-    def auto_archive_silent_session(self, session_id: str, reason: str) -> ActiveSessionRecord:
-        """Immediately auto-archive a SILENT_NO_ACTION conversation with 0 UI clutter.
+    def auto_archive_silent_session(
+        self,
+        session_id: str,
+        reason: str,
+        title: str | None = None,
+    ) -> ActiveSessionRecord:
+        """Immediately auto-archive a SILENT_NO_ACTION conversation and write .pbtxt if live.
 
         Args:
             session_id: Target Antigravity session identifier.
             reason: Concise classification rationale recorded in state.
+            title: Optional explicit sidebar title for annotations/<session_id>.pbtxt.
 
         Returns:
             Updated ActiveSessionRecord marked with status 'ARCHIVED'.
@@ -334,11 +354,17 @@ class AgySessionManager:
         if session_id not in state.sessions:
             raise KeyError(f"Unknown Antigravity session: {session_id}")
 
+        ts = utc_now_iso()
+        self._archive_store.archive_conversation(
+            session_id,
+            title=title or f"[SILENT] {reason}",
+            archived_at_iso=ts,
+        )
         archived = state.sessions[session_id].model_copy(
             update={
                 "status": "ARCHIVED",
                 "outcome": f"SILENT_NO_ACTION: {reason}",
-                "archived_at": utc_now_iso(),
+                "archived_at": ts,
             }
         )
         self._state_store.conversations.update(
@@ -396,33 +422,39 @@ class AgySessionManager:
         except (OSError, subprocess.SubprocessError):
             return None
 
-    def _purge_ephemeral_cli_conversation(self, conv_id: str) -> None:
-        """Remove transient classifier conversation rows/files so UI stays clutter-free."""
-        if not conv_id or Path(conv_id).name != conv_id:
-            return
-        (self._agy_data_dir / "conversations" / f"{conv_id}.db").unlink(missing_ok=True)
-        shutil.rmtree(self._agy_data_dir / "brain" / conv_id, ignore_errors=True)
-        summary_db = self._agy_data_dir / "conversation_summaries.db"
-        if not summary_db.is_file():
-            return
-        try:
-            conn = sqlite3.connect(summary_db, timeout=5.0)
-            try:
-                conn.execute(
-                    "DELETE FROM conversation_summaries WHERE conversation_id = ?", (conv_id,)
-                )
-                fts_exists = conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE name = 'conversations_fts'"
-                ).fetchone()
-                if fts_exists:
-                    conn.execute(
-                        "DELETE FROM conversations_fts WHERE conversation_id = ?", (conv_id,)
-                    )
-                conn.commit()
-            finally:
-                conn.close()
-        except sqlite3.Error:
-            return
+    def _spawn_live_trace_session(
+        self,
+        workspace: str,
+        title: str,
+        trace_markdown: str,
+    ) -> str | None:
+        """Spawn a fast, zero-tool Antigravity trace conversation in target workspace."""
+        agy_bin = self._locate_agy_binary()
+        if agy_bin is None:
+            return None
+        target_project = self._settings.resolve_workspace_project(workspace)
+        prompt = (
+            f"Trace automatique `{workspace}` — **{title}** (zéro appel d'outil ni lecture de "
+            "fichier ; réponds en une seule phrase confirmant l'archivage de cette trace) :\n\n"
+            f"{trace_markdown}"
+        )
+        cmd = [
+            agy_bin,
+            "--project",
+            target_project,
+            "--effort",
+            "low",
+            "--disable-slash-commands",
+            "--output-format",
+            "json",
+            "--print",
+            prompt,
+        ]
+        completed = self._run_agy_command(cmd, cwd=self.resolve_workspace_cwd(workspace))
+        if completed is None or completed.returncode != 0:
+            return None
+        parsed = _parse_json_object(completed.stdout)
+        return _extract_conversation_id(parsed) if parsed is not None else None
 
     def _spawn_live_plan_session(
         self,
@@ -463,33 +495,3 @@ class AgySessionManager:
             return None
         parsed = _parse_json_object(completed.stdout)
         return _extract_conversation_id(parsed) if parsed is not None else None
-
-    def _build_cognitive_triage_prompt(
-        self,
-        msg: EmailMessage,
-        docs: list[KnowledgeDocument],
-        user_addresses: frozenset[str] = frozenset(),
-    ) -> str:
-        """Build a Tier-2 grounded cognitive triage prompt for agy --print."""
-        doc_blocks = [
-            f"### {d.file_name} ({d.frontmatter.title})\n{d.frontmatter.summary}\n{d.body}"
-            for d in docs
-        ]
-        ref_context = "\n\n".join(doc_blocks) if doc_blocks else "(Aucune fiche correspondante)"
-        identity_line = (
-            f"Adresses de l'utilisateur propriétaire (ne jamais créer de DRAFT_REPLY vers soi) : "
-            f"{', '.join(sorted(user_addresses))}\n"
-            if user_addresses
-            else ""
-        )
-        return (
-            "Mode classifieur JSON interne (pas d'artefact implementation_plan.md, zéro appel "
-            "d'outil ni lecture/écriture de fichier). Classe cet e-mail entrant dans l'une des "
-            "3 sorties exclusives d'Alfred V7.1 Lean (SILENT_NO_ACTION, DRAFT_REPLY, "
-            "USER_ACTION_REQUIRED). Si DRAFT_REPLY, rédige un brouillon concis et poli en "
-            "français dans draft_body.\n\n"
-            f"{identity_line}"
-            f"Expéditeur: {msg.sender}\nDestinataires: {msg.recipient}\nObjet: {msg.subject}\n"
-            f"Extrait: {msg.snippet}\nCorps:\n{msg.body_text[:2000]}\n\n"
-            f"Fiches de référence Tier-2:\n{ref_context}"
-        )

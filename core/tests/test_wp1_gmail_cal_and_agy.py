@@ -320,12 +320,13 @@ def test_agy_classify_email_with_json_schema_and_error_fallback(tmp_path: Path) 
     out_type, reason, draft = agy.classify_email_with_agy(msg, [doc])
     assert out_type == InboxOutputType.DRAFT_REPLY and "contrat nounou" in reason
     assert draft == "Bonjour Nounou, oui pour vendredi 18h30."
-    assert captured[0][:4] == ["/bin/agy", "--output-format", "json", "--json-schema"]
-    schema_obj = json.loads(captured[0][4])
+    expected_head = ["/bin/agy", "--project", "alfred-inbox", "--output-format", "json"]
+    assert captured[0][:5] == expected_head and captured[0][5] == "--json-schema"
+    schema_obj = json.loads(captured[0][6])
     assert schema_obj["properties"]["draft_body"] == {"type": "string"}
     assert schema_obj["required"] == ["output_type", "reason"]
-    assert captured[0][5] == "--print"
-    assert "02_assistante_maternelle.md" in captured[0][6]
+    assert captured[0][7] == "--print"
+    assert "02_assistante_maternelle.md" in captured[0][8]
 
     agy_err = AgySessionManager(
         paths,

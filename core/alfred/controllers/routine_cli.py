@@ -9,11 +9,12 @@ from pathlib import Path
 from typing import Any
 
 from alfred.services.gmail_service import GmailService
+from alfred.services.inbox_triage_service import InboxTriageService
 from alfred.services.routine_service import RoutineService
 
 
 def register_routine_and_gmail_parsers(sub: Any) -> None:
-    """Register periodic routine and Stage-1 read-only Gmail CLI subcommands.
+    """Register periodic routine, archive backfill, and Stage-1 read-only Gmail CLI subcommands.
 
     Args:
         sub: Argparse subparsers collection attached to top-level alfred parser.
@@ -29,12 +30,29 @@ def register_routine_and_gmail_parsers(sub: Any) -> None:
     p_stat = sub.add_parser("status-routines")
     p_stat.add_argument("--systemd-dir", default="")
 
+    sub.add_parser("backfill-inbox-archives")
+
     p_sgm = sub.add_parser("search-gmail")
     p_sgm.add_argument("--query", required=True)
     p_sgm.add_argument("--max-results", type=int, default=10)
 
     p_rth = sub.add_parser("read-thread")
     p_rth.add_argument("--thread-id", required=True)
+
+
+def handle_backfill_inbox_archives(inbox_service: InboxTriageService) -> int:
+    """Materialize real archived Antigravity conversations for synthetic agy_* silent records.
+
+    Args:
+        inbox_service: Wired InboxTriageService instance.
+
+    Returns:
+        POSIX exit status code (0 on success).
+    """
+    ids = inbox_service.backfill_silent_archives()
+    payload = {"materialized_conversations": ids, "count": len(ids)}
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    return 0
 
 
 def handle_run_routines(routine_service: RoutineService | None, args: argparse.Namespace) -> int:

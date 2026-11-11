@@ -11,6 +11,24 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from alfred.domain.calendar_models import (
+    CalendarConfig as CalendarConfig,
+)
+from alfred.domain.calendar_models import (
+    EvolutionProposalRecord as EvolutionProposalRecord,
+)
+from alfred.domain.calendar_models import (
+    EvolutionProposalsLedger as EvolutionProposalsLedger,
+)
+from alfred.domain.calendar_models import (
+    HoldAllowlistState as HoldAllowlistState,
+)
+from alfred.domain.calendar_models import (
+    PajemploiReport as PajemploiReport,
+)
+from alfred.domain.calendar_models import (
+    PullRequestArtifact as PullRequestArtifact,
+)
 from alfred.domain.routine_models import (
     RoutinesConfig as RoutinesConfig,
 )
@@ -159,6 +177,7 @@ class AlfredSettings(BaseModel):
     core_base_branch: str = "main"
     instance_base_branch: str = "main"
     routines: RoutinesConfig = Field(default_factory=RoutinesConfig)
+    calendar: CalendarConfig = Field(default_factory=CalendarConfig)
 
     def resolve_workspace_project(self, workspace: str) -> str:
         """Resolve a workspace role or slug into its configured Antigravity project name.
@@ -221,6 +240,7 @@ class AlfredSettings(BaseModel):
             core_base_branch=str(evolve_cfg.get("core_base_branch", "main")),
             instance_base_branch=str(evolve_cfg.get("instance_base_branch", "main")),
             routines=RoutinesConfig.from_dict(raw.get("routines")),
+            calendar=CalendarConfig.from_dict(raw.get("calendar")),
         )
 
 
@@ -371,6 +391,8 @@ class InboxTriageDecision(BaseModel):
     implementation_plan_markdown: str | None = None
     research_brief: list[str] = Field(default_factory=list)
     suggested_knowledge_update_id: str | None = None
+    calendar_session_id: str | None = None
+    calendar_action_intent: str = "NONE"
 
 
 class ScheduledWorkday(BaseModel):
@@ -426,13 +448,18 @@ class NounouContract(BaseModel):
 
 
 class CalendarEventItem(BaseModel):
-    """Normalized Google Calendar event item."""
+    """Normalized Google Calendar event item with optional [HOLD] & attendee metadata."""
 
     event_id: str = ""
     summary: str
     start_iso: str
     end_iso: str
     description: str = ""
+    location: str = ""
+    attendees: list[str] = Field(default_factory=list)
+    is_hold: bool = False
+    thread_id: str = ""
+    candidate_attendees: list[str] = Field(default_factory=list)
 
 
 class VacationNoticeAlert(BaseModel):
@@ -444,53 +471,3 @@ class VacationNoticeAlert(BaseModel):
     is_compliant: bool
     notice_deadline_date: str
     implementation_plan_markdown: str
-
-
-class PajemploiReport(BaseModel):
-    """Deterministic monthly Pajemploi declaration summary computed at last_day - 3."""
-
-    period_month: str
-    employee_name: str
-    heures_normales: int
-    heures_complementaires_majorees: int
-    jours_activite: int
-    jours_conges_payes: int = 0
-    salaire_net_total: float
-    indemnites_entretien: float
-    indemnites_repas: float
-    total_virement_eur: float
-    theoretical_working_hours: float
-    actual_working_days: int
-    absence_unpaid_hours: float
-    deduction_cour_cassation_eur: float
-    overtime_hours: float
-    implementation_plan_markdown: str = ""
-
-
-class PullRequestArtifact(BaseModel):
-    """Generated Pull Request descriptor for one of the two Git repositories."""
-
-    repo_name: str
-    branch_name: str
-    base_branch: str
-    pr_url_or_ref: str
-    status: str
-    changed_files: list[str] = Field(default_factory=list)
-
-
-class EvolutionProposalRecord(BaseModel):
-    """Evolution lifecycle record persisted in evolution_proposals_ledger.json."""
-
-    proposal_id: str
-    title: str
-    description: str
-    status: str = "PENDING_GATE"
-    worktree_path: str = ""
-    pull_requests: list[PullRequestArtifact] = Field(default_factory=list)
-    created_at: str = Field(default_factory=utc_now_iso)
-
-
-class EvolutionProposalsLedger(BaseModel):
-    """Persistent ledger of system evolution proposals and dual-repo PRs."""
-
-    proposals: dict[str, EvolutionProposalRecord] = Field(default_factory=dict)

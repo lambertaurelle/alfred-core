@@ -12,7 +12,16 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from alfred.controllers.calendar_cli import (
+    handle_confirm_event,
+    handle_create_event,
+    handle_delete_event,
+    handle_hold_allowlist,
+    handle_list_events,
+    register_calendar_parsers,
+)
 from alfred.controllers.routine_cli import (
+    handle_backfill_inbox_archives,
     handle_install_routines,
     handle_read_thread,
     handle_run_routines,
@@ -42,7 +51,7 @@ from alfred.services.workspace_service import WorkspaceService
 
 
 class CliController:
-    """Dispatch CLI subcommands across Auth, Drive, Knowledge, Inbox, Nounou, and Evolve."""
+    """Dispatch CLI subcommands across Auth, Drive, Knowledge, Inbox, Calendar, and Evolve."""
 
     def __init__(
         self,
@@ -120,7 +129,28 @@ class CliController:
             "read-drive": lambda a: self._handle_read_drive(str(a.file_id)),
             "poll-inbox": self._handle_poll_inbox,
             "send-draft": self._handle_send_draft,
-            "list-events": self._handle_list_events,
+            "backfill-inbox-archives": lambda _a: handle_backfill_inbox_archives(self._inbox),
+            "list-events": lambda a: handle_list_events(
+                self._calendar, self._settings, self._store, self._timezone, a
+            ),
+            "hold-allowlist": lambda a: handle_hold_allowlist(
+                self._calendar, self._store, self._gmail, a
+            ),
+            "create-event": lambda a: handle_create_event(
+                self._calendar,
+                self._settings,
+                self._store,
+                self._gmail,
+                self._agy,
+                self._timezone,
+                a,
+            ),
+            "confirm-event": lambda a: handle_confirm_event(
+                self._calendar, self._settings, self._store, self._agy, self._timezone, a
+            ),
+            "delete-event": lambda a: handle_delete_event(
+                self._calendar, self._settings, self._store, a
+            ),
             "init-nounou": lambda a: self._handle_init_nounou(
                 Path(a.contract_json), bool(a.execute)
             ),
@@ -150,7 +180,8 @@ class CliController:
         p_ws.add_argument("--prune-legacy", action="store_true")
 
         self._register_knowledge_and_drive_parsers(sub)
-        self._register_inbox_and_calendar_parsers(sub)
+        self._register_inbox_parsers(sub)
+        register_calendar_parsers(sub)
         self._register_nounou_and_evolve_parsers(sub)
         register_routine_and_gmail_parsers(sub)
         return parser
@@ -184,8 +215,8 @@ class CliController:
         p_rdrv = sub.add_parser("read-drive")
         p_rdrv.add_argument("--file-id", required=True)
 
-    def _register_inbox_and_calendar_parsers(self, sub: Any) -> None:
-        """Register Gmail inbox triage, draft sending, and calendar listing subcommands."""
+    def _register_inbox_parsers(self, sub: Any) -> None:
+        """Register Gmail inbox triage and post-Gate draft sending subcommands."""
         p_poll = sub.add_parser("poll-inbox")
         p_poll.add_argument("--spawn-agy", action="store_true")
         p_poll.add_argument("--cognitive-agy", action="store_true")
@@ -196,11 +227,6 @@ class CliController:
         p_dr.add_argument("--to", default="")
         p_dr.add_argument("--subject", default="")
         p_dr.add_argument("--body", default="")
-
-        p_ev_list = sub.add_parser("list-events")
-        p_ev_list.add_argument("--calendar", default="primary")
-        p_ev_list.add_argument("--from", dest="from_iso", required=True)
-        p_ev_list.add_argument("--to", dest="to_iso", required=True)
 
     def _register_nounou_and_evolve_parsers(self, sub: Any) -> None:
         """Register Garde Nounou childcare, Pajemploi, and Dual-Repo evolve subcommands."""
@@ -302,7 +328,9 @@ class CliController:
         """Run Stage-2 init-drive Gate plan or Stage-3 taxonomy persistence."""
         if execute:
             doc = self._drive.execute_init_drive_taxonomy(self._knowledge)
-            print(json.dumps(doc.frontmatter.model_dump(mode="json"), indent=2, ensure_ascii=False))
+            print(
+                json.dumps(doc.frontmatter.model_dump(mode="json"), indent=2, ensure_ascii=False)
+            )
             return 0
         _, plan_md = self._drive.init_drive()
         print(plan_md)
@@ -359,49 +387,6 @@ class CliController:
             )
         sent_id = self._gmail.send_draft(draft_id)
         print(json.dumps({"draft_id": draft_id, "sent_message_id": sent_id}, indent=2))
-        return 0
-
-    def _normalize_calendar_bound(self, raw_iso: str, is_end: bool) -> tuple[str, datetime]:
-        """Normalize an ISO date or timestamp into an RFC3339 string and aware datetime."""
-        text = raw_iso.strip()
-        tz = ZoneInfo(self._timezone)
-        if "T" not in text and " " not in text:
-            day = date.fromisoformat(text)
-            hour, minute, second = (23, 59, 59) if is_end else (0, 0, 0)
-            aware = datetime(day.year, day.month, day.day, hour, minute, second, tzinfo=tz)
-            return aware.isoformat(), aware
-        parsed = datetime.fromisoformat(text)
-        if parsed.tzinfo is None:
-            aware = parsed.replace(tzinfo=tz)
-            return aware.isoformat(), aware
-        return text, parsed
-
-    def _handle_list_events(self, args: argparse.Namespace) -> int:
-        """Resolve primary/nounou/explicit calendar ID and print listed events as JSON."""
-        cal_spec = str(args.calendar)
-        if cal_spec == "primary":
-            cal_id = self._settings.primary_calendar_id
-        elif cal_spec == "nounou":
-            contract_cal_id = (
-                self._store.nounou_contract.load().calendar_id
-                if self._store.nounou_contract.exists()
-                else ""
-            )
-            cal_id = contract_cal_id or (self._store.bookmarks.load().nounou_calendar_id or "")
-            if not cal_id:
-                raise ValueError(
-                    "Garde Nounou calendar is not initialized; run 'alfred init-nounou --execute'."
-                )
-        else:
-            cal_id = cal_spec
-        t_min, start_dt = self._normalize_calendar_bound(str(args.from_iso), is_end=False)
-        t_max, end_dt = self._normalize_calendar_bound(str(args.to_iso), is_end=True)
-        if end_dt < start_dt:
-            raise ValueError(
-                f"Calendar --to '{args.to_iso}' precedes --from '{args.from_iso}'."
-            )
-        events = self._calendar.list_events(cal_id, t_min, t_max)
-        print(json.dumps([e.model_dump(mode="json") for e in events], indent=2, ensure_ascii=False))
         return 0
 
     def _handle_init_nounou(self, contract_json_path: Path, execute: bool) -> int:

@@ -41,10 +41,12 @@ def build_controller(root_override: str | None = None) -> CliController:
         paths, settings, store, lambda fn, raw: backup(fn, raw) if token_file.exists() else ""
     )
     gmail = GmailService(paths=paths, settings=settings, oauth_service=oauth)
-    calendar = CalendarService(paths=paths, settings=settings, oauth_service=oauth)
+    calendar = CalendarService(paths, settings, oauth_service=oauth, state_store=store)
     agy = AgySessionManager(paths=paths, settings=settings, state_store=store)
     workspaces = WorkspaceService(paths=paths, settings=settings, agy_manager=agy)
-    inbox = InboxTriageService(store, gmail, knowledge, drive, agy)
+    inbox = InboxTriageService(
+        store, gmail, knowledge, drive, agy, calendar_service=calendar, settings=settings
+    )
     nounou = NounouService(store, calendar, knowledge, settings)
     pajemploi = PajemploiCalculator()
     routines = RoutineService(

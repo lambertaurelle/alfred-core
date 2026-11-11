@@ -7,6 +7,7 @@ import hashlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from alfred.domain.calendar_models import HoldAllowlistState
 from alfred.domain.models import (
     ActiveConversationsState,
     AlfredPaths,
@@ -59,6 +60,10 @@ class StateStore:
         self.routines = JsonStateRepository(
             paths.state_dir / "routine_state.json",
             RoutineExecutionState,
+        )
+        self.hold_allowlist = JsonStateRepository(
+            paths.state_dir / "calendar_hold_allowlist.json",
+            HoldAllowlistState,
         )
         self.drive_index = JsonStateRepository(
             paths.drive_index_path,
