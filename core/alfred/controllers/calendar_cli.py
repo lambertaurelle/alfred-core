@@ -268,6 +268,7 @@ def handle_create_event(
             source_message_id=ev_id,
             spawn_live=True,
         )
+        agy_manager.daemon_sync.sync_if_needed()
     print(json.dumps({"event_id": ev_id, "calendar_id": cal_id, "hold": bool(args.hold)}, indent=2))
     return 0
 
@@ -324,6 +325,7 @@ def handle_confirm_event(
             source_message_id=conf_id,
             spawn_live=True,
         )
+        agy_manager.daemon_sync.sync_if_needed()
     payload = {
         "confirmed_event_id": conf_id,
         "released_hold_ids": released,

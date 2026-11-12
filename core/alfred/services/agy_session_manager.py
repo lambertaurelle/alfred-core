@@ -23,28 +23,16 @@ from alfred.domain.models import (
 from alfred.repositories.json_repository import atomic_write_text
 from alfred.repositories.state_store import StateStore
 from alfred.services.agy_archive_store import (
-    COGNITIVE_TRIAGE_SCHEMA as COGNITIVE_TRIAGE_SCHEMA,
-)
-from alfred.services.agy_archive_store import (
-    ERROR_ENVELOPE_STATUSES as ERROR_ENVELOPE_STATUSES,
-)
-from alfred.services.agy_archive_store import (
+    COGNITIVE_TRIAGE_SCHEMA,
     AgyArchiveStore,
     build_cognitive_triage_prompt,
+    extract_conversation_id,
+    is_error_envelope,
     parse_calendar_action,
+    parse_json_object,
+    unwrap_triage_payload,
 )
-from alfred.services.agy_archive_store import (
-    extract_conversation_id as _extract_conversation_id,
-)
-from alfred.services.agy_archive_store import (
-    is_error_envelope as _is_error_envelope,
-)
-from alfred.services.agy_archive_store import (
-    parse_json_object as _parse_json_object,
-)
-from alfred.services.agy_archive_store import (
-    unwrap_triage_payload as _unwrap_triage_payload,
-)
+from alfred.services.agy_daemon_sync import AgyDaemonSyncService
 
 
 class AgySessionManager:
@@ -59,6 +47,7 @@ class AgySessionManager:
         runner_fn: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
         agy_locator_fn: Callable[[], str | None] | None = None,
         antigravity_data_dir: Path | None = None,
+        systemctl_runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
     ) -> None:
         """Initialize the Antigravity Web session manager.
 
@@ -70,6 +59,7 @@ class AgySessionManager:
             runner_fn: Optional subprocess runner override for deterministic offline tests.
             agy_locator_fn: Optional binary locator override returning agy executable path.
             antigravity_data_dir: Optional override for ~/.gemini/antigravity-cli data dir.
+            systemctl_runner: Optional subprocess override for systemd daemon reconciliation.
         """
         self._paths = paths
         self._settings = settings
@@ -79,6 +69,14 @@ class AgySessionManager:
         self._agy_locator_fn = agy_locator_fn
         self._agy_data_dir = antigravity_data_dir or (Path.home() / ".gemini" / "antigravity-cli")
         self._archive_store = AgyArchiveStore(self._agy_data_dir)
+        self._daemon_sync = AgyDaemonSyncService(
+            state_dir=self._paths.state_dir,
+            agy_data_dir=self._agy_data_dir,
+            service_name=self._settings.agy_remote_control_service,
+            enabled=self._settings.agy_sync_daemon_on_changes,
+            idle_wal_grace_sec=self._settings.agy_idle_wal_grace_sec,
+            systemctl_runner=systemctl_runner,
+        )
         self._plans_dir = self._paths.state_dir / "plans"
         self._plans_dir.mkdir(parents=True, exist_ok=True)
 
@@ -86,6 +84,11 @@ class AgySessionManager:
     def archive_store(self) -> AgyArchiveStore:
         """Return the underlying AgyArchiveStore instance."""
         return self._archive_store
+
+    @property
+    def daemon_sync(self) -> AgyDaemonSyncService:
+        """Return the idle-safe AgyDaemonSyncService instance."""
+        return self._daemon_sync
 
     def resolve_workspace_cwd(self, workspace: str | None) -> Path:
         """Resolve the physical workspace directory for agy CLI execution or fallback to root_dir.
@@ -151,6 +154,7 @@ class AgySessionManager:
         self._state_store.conversations.update(
             lambda cur: cur.model_copy(update={"sessions": {**cur.sessions, session_id: record}})
         )
+        self._daemon_sync.mark_dirty(session_id, reason=f"gate:{workspace}")
         return record
 
     def create_and_archive_trace(
@@ -197,6 +201,7 @@ class AgySessionManager:
         self._state_store.conversations.update(
             lambda cur: cur.model_copy(update={"sessions": {**cur.sessions, session_id: record}})
         )
+        self._daemon_sync.mark_dirty(session_id, reason=f"archive:{workspace}")
         if self._archive_hook is not None:
             self._archive_hook(session_id)
         return record
@@ -262,11 +267,11 @@ class AgySessionManager:
         completed = self._run_agy_command(cmd, cwd=self.resolve_workspace_cwd("alfred-inbox"))
         if completed is None or completed.returncode != 0:
             return self._fallback_triage("agy fallback")
-        parsed = _parse_json_object(completed.stdout)
-        if parsed is None or _is_error_envelope(parsed):
+        parsed = parse_json_object(completed.stdout)
+        if parsed is None or is_error_envelope(parsed):
             return self._fallback_triage("invalid agy JSON")
-        conv_id = _extract_conversation_id(parsed)
-        unwrapped = _unwrap_triage_payload(parsed)
+        conv_id = extract_conversation_id(parsed)
+        unwrapped = unwrap_triage_payload(parsed)
         try:
             output_type = InboxOutputType(str(unwrapped.get("output_type", "")))
         except ValueError:
@@ -370,6 +375,7 @@ class AgySessionManager:
         self._state_store.conversations.update(
             lambda cur: cur.model_copy(update={"sessions": {**cur.sessions, session_id: archived}})
         )
+        self._daemon_sync.mark_dirty(session_id, reason="auto_archive")
         if self._archive_hook is not None:
             self._archive_hook(session_id)
         return archived
@@ -439,22 +445,14 @@ class AgySessionManager:
             f"{trace_markdown}"
         )
         cmd = [
-            agy_bin,
-            "--project",
-            target_project,
-            "--effort",
-            "low",
-            "--disable-slash-commands",
-            "--output-format",
-            "json",
-            "--print",
-            prompt,
+            agy_bin, "--project", target_project, "--effort", "low",
+            "--disable-slash-commands", "--output-format", "json", "--print", prompt,
         ]
         completed = self._run_agy_command(cmd, cwd=self.resolve_workspace_cwd(workspace))
         if completed is None or completed.returncode != 0:
             return None
-        parsed = _parse_json_object(completed.stdout)
-        return _extract_conversation_id(parsed) if parsed is not None else None
+        parsed = parse_json_object(completed.stdout)
+        return extract_conversation_id(parsed) if parsed is not None else None
 
     def _spawn_live_plan_session(
         self,
@@ -476,22 +474,12 @@ class AgySessionManager:
         )
         target_project = self._settings.resolve_workspace_project(workspace)
         cmd = [
-            agy_bin,
-            "--project",
-            target_project,
-            "--add-dir",
-            str(self._paths.root_dir),
-            "--agent",
-            "plan-synthesizer",
-            "--mode",
-            "plan",
-            "--output-format",
-            "json",
-            "-p",
-            prompt,
+            agy_bin, "--project", target_project, "--add-dir", str(self._paths.root_dir),
+            "--agent", "plan-synthesizer", "--mode", "plan",
+            "--output-format", "json", "-p", prompt,
         ]
         completed = self._run_agy_command(cmd, cwd=self.resolve_workspace_cwd(workspace))
         if completed is None or completed.returncode != 0:
             return None
-        parsed = _parse_json_object(completed.stdout)
-        return _extract_conversation_id(parsed) if parsed is not None else None
+        parsed = parse_json_object(completed.stdout)
+        return extract_conversation_id(parsed) if parsed is not None else None

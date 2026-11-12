@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from alfred.services.agy_session_manager import AgySessionManager
 from alfred.services.gmail_service import GmailService
 from alfred.services.inbox_triage_service import InboxTriageService
 from alfred.services.routine_service import RoutineService
@@ -32,6 +33,9 @@ def register_routine_and_gmail_parsers(sub: Any) -> None:
 
     sub.add_parser("backfill-inbox-archives")
 
+    p_sync = sub.add_parser("sync-agy-ui")
+    p_sync.add_argument("--force", action="store_true")
+
     p_sgm = sub.add_parser("search-gmail")
     p_sgm.add_argument("--query", required=True)
     p_sgm.add_argument("--max-results", type=int, default=10)
@@ -40,18 +44,44 @@ def register_routine_and_gmail_parsers(sub: Any) -> None:
     p_rth.add_argument("--thread-id", required=True)
 
 
-def handle_backfill_inbox_archives(inbox_service: InboxTriageService) -> int:
+def handle_backfill_inbox_archives(
+    inbox_service: InboxTriageService,
+    agy_manager: AgySessionManager | None = None,
+) -> int:
     """Materialize real archived Antigravity conversations for synthetic agy_* silent records.
 
     Args:
         inbox_service: Wired InboxTriageService instance.
+        agy_manager: Optional AgySessionManager to flush reconciled sessions when daemon is idle.
 
     Returns:
         POSIX exit status code (0 on success).
     """
     ids = inbox_service.backfill_silent_archives()
+    if ids and agy_manager is not None:
+        agy_manager.daemon_sync.sync_if_needed()
     payload = {"materialized_conversations": ids, "count": len(ids)}
     print(json.dumps(payload, indent=2, ensure_ascii=False))
+    return 0
+
+
+def handle_sync_agy_ui(
+    agy_manager: AgySessionManager | None,
+    args: argparse.Namespace,
+) -> int:
+    """Reconcile CLI-spawned Antigravity conversations into antigravity-cli-daemon when idle.
+
+    Args:
+        agy_manager: Wired AgySessionManager instance.
+        args: Parsed CLI namespace containing optional --force flag.
+
+    Returns:
+        POSIX exit status code (0 on success).
+    """
+    if agy_manager is None:
+        raise RuntimeError("AgySessionManager is not wired on CliController.")
+    result = agy_manager.daemon_sync.sync_if_needed(force=bool(args.force))
+    print(json.dumps(result.model_dump(mode="json"), indent=2, ensure_ascii=False))
     return 0
 
 

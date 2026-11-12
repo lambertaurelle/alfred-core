@@ -27,6 +27,7 @@ from alfred.controllers.routine_cli import (
     handle_run_routines,
     handle_search_gmail,
     handle_status_routines,
+    handle_sync_agy_ui,
     register_routine_and_gmail_parsers,
 )
 from alfred.domain.models import (
@@ -129,7 +130,10 @@ class CliController:
             "read-drive": lambda a: self._handle_read_drive(str(a.file_id)),
             "poll-inbox": self._handle_poll_inbox,
             "send-draft": self._handle_send_draft,
-            "backfill-inbox-archives": lambda _a: handle_backfill_inbox_archives(self._inbox),
+            "backfill-inbox-archives": lambda _a: handle_backfill_inbox_archives(
+                self._inbox, self._agy
+            ),
+            "sync-agy-ui": lambda a: handle_sync_agy_ui(self._agy, a),
             "list-events": lambda a: handle_list_events(
                 self._calendar, self._settings, self._store, self._timezone, a
             ),
@@ -279,6 +283,7 @@ class CliController:
                 implementation_plan_md=plan_md,
                 spawn_live=True,
             )
+            self._agy.daemon_sync.sync_if_needed()
 
     def _handle_auth_google(self, port: int, open_browser: bool) -> int:
         """Execute interactive OAuth2 InstalledAppFlow consent and write token.json."""
@@ -368,6 +373,8 @@ class CliController:
             )
         else:
             decisions = self._inbox.poll_new_messages()
+        if decisions and self._agy is not None:
+            self._agy.daemon_sync.sync_if_needed()
         payload = [d.model_dump(mode="json") for d in decisions]
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return 0

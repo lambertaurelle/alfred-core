@@ -172,6 +172,9 @@ class AlfredSettings(BaseModel):
     primary_calendar_id: str = "primary"
     oauth_scopes: list[str] = Field(default_factory=lambda: list(DEFAULT_OAUTH_SCOPES))
     agy_binary: str = "agy"
+    agy_remote_control_service: str = "antigravity-cli-daemon.service"
+    agy_sync_daemon_on_changes: bool = True
+    agy_idle_wal_grace_sec: int = 15
     workspaces: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_WORKSPACES))
     max_knowledge_body_lines: int = 150
     core_base_branch: str = "main"
@@ -235,6 +238,11 @@ class AlfredSettings(BaseModel):
             primary_calendar_id=str(google_cfg.get("primary_calendar_id", "primary")),
             oauth_scopes=[str(s) for s in raw_scopes],
             agy_binary=str(agy_cfg.get("binary_path", "agy")),
+            agy_remote_control_service=str(
+                agy_cfg.get("remote_control_service", "antigravity-cli-daemon.service")
+            ),
+            agy_sync_daemon_on_changes=bool(agy_cfg.get("sync_daemon_on_changes", True)),
+            agy_idle_wal_grace_sec=int(agy_cfg.get("idle_wal_grace_sec", 15)),
             workspaces=ws_map,
             max_knowledge_body_lines=int(know_cfg.get("max_body_lines", 150)),
             core_base_branch=str(evolve_cfg.get("core_base_branch", "main")),

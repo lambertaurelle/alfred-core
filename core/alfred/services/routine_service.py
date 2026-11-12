@@ -24,6 +24,7 @@ from alfred.domain.routine_models import (
 )
 from alfred.repositories.json_repository import atomic_write_text
 from alfred.repositories.state_store import StateStore
+from alfred.services.agy_daemon_sync import DaemonSyncStatus
 from alfred.services.agy_session_manager import AgySessionManager
 from alfred.services.calendar_service import CalendarService
 from alfred.services.drive_service import DriveService
@@ -130,6 +131,7 @@ class RoutineService:
                         "nounou_vacation_notice", lambda: self._job_vacation_notice(ref_day)
                     )
                 )
+            jobs.append(self._run_guarded("agy_ui_sync", self._job_agy_ui_sync))
             self._record_job_runs(jobs)
             return RoutineTickReport(scope=scope, jobs=jobs)
 
@@ -414,6 +416,19 @@ class RoutineService:
                 implementation_plan_md=plan_md,
                 spawn_live=self._settings.routines.spawn_agy,
             )
+
+    def _job_agy_ui_sync(self) -> RoutineJobRun:
+        """Reconcile any pending CLI conversations into antigravity-cli-daemon when idle."""
+        if self._agy is None:
+            return RoutineJobRun(job_name="agy_ui_sync", status="NO_CHANGES")
+        sync_res = self._agy.daemon_sync.sync_if_needed(runner_override=self._systemctl_runner)
+        mapped = "OK" if sync_res.status == DaemonSyncStatus.SYNCED else sync_res.status.value
+        return RoutineJobRun(
+            job_name="agy_ui_sync",
+            status=mapped,
+            items_processed=len(sync_res.synced_ids),
+            details=sync_res.details,
+        )
 
     def _mark_completed(self, period_key: str) -> None:
         """Persist an idempotency period_key in RoutineExecutionState."""

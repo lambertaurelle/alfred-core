@@ -15,6 +15,9 @@ google:
 
 antigravity:
   binary_path: "agy"
+  remote_control_service: "antigravity-cli-daemon.service"
+  sync_daemon_on_changes: true
+  idle_wal_grace_sec: 15
   workspaces:
     life: "alfred-life"
     inbox: "alfred-inbox"
