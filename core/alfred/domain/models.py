@@ -175,6 +175,7 @@ class AlfredSettings(BaseModel):
     agy_remote_control_service: str = "antigravity-cli-daemon.service"
     agy_sync_daemon_on_changes: bool = True
     agy_idle_wal_grace_sec: int = 15
+    archive_processed_emails_by_default: bool = True
     workspaces: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_WORKSPACES))
     max_knowledge_body_lines: int = 150
     core_base_branch: str = "main"
@@ -218,6 +219,7 @@ class AlfredSettings(BaseModel):
         raw = yaml.safe_load(candidate.read_text(encoding="utf-8")) or {}
         google_cfg = raw.get("google", {})
         agy_cfg = raw.get("antigravity", {})
+        inbox_cfg = raw.get("inbox", {})
         know_cfg = raw.get("knowledge", {})
         evolve_cfg = raw.get("evolve", {})
         raw_scopes = google_cfg.get("oauth_scopes") or list(DEFAULT_OAUTH_SCOPES)
@@ -243,6 +245,9 @@ class AlfredSettings(BaseModel):
             ),
             agy_sync_daemon_on_changes=bool(agy_cfg.get("sync_daemon_on_changes", True)),
             agy_idle_wal_grace_sec=int(agy_cfg.get("idle_wal_grace_sec", 15)),
+            archive_processed_emails_by_default=bool(
+                inbox_cfg.get("archive_processed_emails_by_default", True)
+            ),
             workspaces=ws_map,
             max_knowledge_body_lines=int(know_cfg.get("max_body_lines", 150)),
             core_base_branch=str(evolve_cfg.get("core_base_branch", "main")),

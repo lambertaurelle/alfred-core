@@ -401,7 +401,7 @@ class InboxTriageService:
             eff_action, msg.thread_id, msg.message_id, allowlist
         )
         plan_md = render_draft_reply_plan(
-            reply_to, reply_subject, draft_id, draft_body, cal_section
+            reply_to, reply_subject, draft_id, draft_body, cal_section, thread_id=msg.thread_id
         )
         session = self._agy.create_session(
             workspace="alfred-inbox",

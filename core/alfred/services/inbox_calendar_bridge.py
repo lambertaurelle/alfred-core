@@ -277,6 +277,11 @@ def render_calendar_confirm_gate_plan(
             )
     lines.append("\n## Exécution Post-Validation (`Proceed`)\n")
     lines.extend(f"- `{cmd.strip()}`" for cmd in cmds)
+    lines.append(
+        "- **Archivage Gmail par défaut** : le fil source sera archivé (`INBOX` retiré) après "
+        "validation ; indiquez en commentaire si vous souhaitez le garder en boîte de réception "
+        "(`--keep-in-inbox`)."
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -286,6 +291,7 @@ def render_draft_reply_plan(
     draft_id: str,
     draft_body: str,
     cal_section: str,
+    thread_id: str = "",
 ) -> str:
     """Render the Blocking Gate implementation_plan.md for DRAFT_REPLY.
 
@@ -295,20 +301,27 @@ def render_draft_reply_plan(
         draft_id: Created Gmail draft identifier.
         draft_body: Proposed plain-text body.
         cal_section: Optional rendered alfred-calendar [HOLD]/confirmation section.
+        thread_id: Optional Gmail threadId archived by default on send-draft.
 
     Returns:
         Markdown Gate document content.
     """
+    th_line = f"- **Fil Gmail** : `{thread_id}`\n" if thread_id else ""
+    th_flag = f" --thread-id {shlex.quote(thread_id)}" if thread_id else ""
+    send_cmd = f"alfred send-draft --draft-id {shlex.quote(draft_id)}{th_flag}"
     return (
         f"# Brouillon de Réponse Gmail (`DRAFT_REPLY`)\n\n"
         f"- **À** : `{reply_to}`\n"
         f"- **Objet** : {reply_subject}\n"
-        f"- **Gmail Draft ID** : `{draft_id}`\n\n"
+        f"- **Gmail Draft ID** : `{draft_id}`\n"
+        f"{th_line}\n"
         f"## Brouillon Proposé (Annotable par Commentaires Inline)\n\n"
         f"```text\n{draft_body}\n```\n"
         f"{cal_section}\n"
         f"## Exécution Post-Validation (`Proceed`)\n"
-        f"- Mettre à jour et envoyer le brouillon `{draft_id}` dans Gmail.\n"
+        f"- Envoyer le brouillon et **archiver par défaut l'e-mail dans Gmail** : `{send_cmd}` "
+        f"(ajoutez un commentaire si vous souhaitez le conserver dans la boîte de réception via "
+        f"`--keep-in-inbox`).\n"
     )
 
 
@@ -330,17 +343,25 @@ def render_action_required_plan(
         Markdown Gate document content.
     """
     bullets = "\n".join(f"- {item}" for item in brief_items)
+    arch_target = (
+        f"--thread-id {shlex.quote(msg.thread_id)}"
+        if msg.thread_id
+        else f"--message-id {shlex.quote(msg.message_id)}"
+    )
     return (
         f"# Action Utilisateur Requise (`USER_ACTION_REQUIRED`)\n\n"
-        f"- **E-mail étoilé (`STARRED`)** : `{msg.message_id}`\n"
+        f"- **E-mail étoilé (`STARRED`)** : `{msg.message_id}` (Fil `{msg.thread_id}`)\n"
         f"- **Expéditeur** : `{msg.sender}`\n"
         f"- **Destinataires** : `{msg.recipient}`\n"
         f"- **Objet** : {msg.subject}\n"
         f"- **Motif** : {reason}\n\n"
         f"## Défrichage Complet & Contexte Rassemblé\n"
         f"{bullets}\n\n"
-        f"## Proposition de Mise à Jour Référentiel Post-Action\n"
-        f"- Fiche cible : `{target_doc_id}`\n"
+        f"## Exécution Post-Validation (`Proceed`)\n"
+        f"- Fiche référentiel cible : `{target_doc_id}`\n"
+        f"- **Archivage Gmail par défaut en fin de traitement** : "
+        f"`alfred archive-email {arch_target} --unstar` "
+        f"(indiquez en commentaire si vous souhaitez conserver le mail en boîte de réception).\n"
     )
 
 

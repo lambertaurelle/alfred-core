@@ -60,6 +60,7 @@ def register_calendar_parsers(sub: Any) -> None:
     p_conf.add_argument("--location", default="")
     p_conf.add_argument("--description", default="")
     p_conf.add_argument("--archive-trace", action="store_true")
+    p_conf.add_argument("--keep-in-inbox", action="store_true")
 
     p_del = sub.add_parser("delete-event")
     p_del.add_argument("--calendar", default="primary")
@@ -273,6 +274,28 @@ def handle_create_event(
     return 0
 
 
+def _try_archive_source_thread(
+    gmail_service: GmailService | None,
+    settings: AlfredSettings,
+    thread_id: str,
+    keep_in_inbox: bool,
+) -> bool:
+    """Best-effort archive of a confirmed event's source Gmail thread unless opted out."""
+    cleaned = thread_id.strip()
+    if (
+        gmail_service is None
+        or not cleaned
+        or keep_in_inbox
+        or not settings.archive_processed_emails_by_default
+    ):
+        return False
+    try:
+        gmail_service.archive_thread(cleaned, mark_read=True)
+        return True
+    except Exception:
+        return False
+
+
 def handle_confirm_event(
     calendar_service: CalendarService,
     settings: AlfredSettings,
@@ -280,6 +303,7 @@ def handle_confirm_event(
     agy_manager: AgySessionManager | None,
     timezone: str,
     args: argparse.Namespace,
+    gmail_service: GmailService | None = None,
 ) -> int:
     """Convert a [HOLD] (or insert firm event), send validated invites, and free unused [HOLD]s.
 
@@ -290,6 +314,7 @@ def handle_confirm_event(
         agy_manager: Optional AgySessionManager for archived trace creation.
         timezone: Configured IANA timezone.
         args: Parsed CLI namespace.
+        gmail_service: Optional GmailService to archive the source email thread by default.
 
     Returns:
         POSIX exit status code (0 on success).
@@ -298,6 +323,7 @@ def handle_confirm_event(
     start_iso = _normalize_event_iso(str(args.from_iso), timezone, is_end=False)
     end_iso = _normalize_event_iso(str(args.to_iso), timezone, is_end=True)
     summary = str(args.summary)
+    thread_id = str(args.thread_id)
     slot = CalendarSlotProposal(
         summary=summary,
         start_iso=start_iso,
@@ -310,9 +336,12 @@ def handle_confirm_event(
     conf_id, released = calendar_service.confirm_event(
         cal_id,
         slot,
-        thread_id=str(args.thread_id),
+        thread_id=thread_id,
         hold_event_id=str(args.hold_event_id),
         release_thread_holds=not bool(args.no_release_holds),
+    )
+    email_archived = _try_archive_source_thread(
+        gmail_service, settings, thread_id, bool(getattr(args, "keep_in_inbox", False))
     )
     if args.archive_trace and agy_manager is not None:
         agy_manager.create_and_archive_trace(
@@ -330,6 +359,7 @@ def handle_confirm_event(
         "confirmed_event_id": conf_id,
         "released_hold_ids": released,
         "calendar_id": cal_id,
+        "email_thread_archived": email_archived,
     }
     print(json.dumps(payload, indent=2, ensure_ascii=False))
     return 0

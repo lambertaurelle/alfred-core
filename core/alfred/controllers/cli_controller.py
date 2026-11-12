@@ -21,11 +21,13 @@ from alfred.controllers.calendar_cli import (
     register_calendar_parsers,
 )
 from alfred.controllers.routine_cli import (
+    handle_archive_email,
     handle_backfill_inbox_archives,
     handle_install_routines,
     handle_read_thread,
     handle_run_routines,
     handle_search_gmail,
+    handle_send_draft,
     handle_status_routines,
     handle_sync_agy_ui,
     register_routine_and_gmail_parsers,
@@ -118,7 +120,12 @@ class CliController:
         """
         args = self._build_parser().parse_args(argv)
         self._knowledge.bootstrap_templates_if_empty()
-        handlers: dict[str, Callable[[argparse.Namespace], int]] = {
+        handler = self._build_handlers().get(str(args.command))
+        return handler(args) if handler is not None else 1
+
+    def _build_handlers(self) -> dict[str, Callable[[argparse.Namespace], int]]:
+        """Build the dispatch table mapping CLI subcommand names to handler callables."""
+        return {
             "auth-google": lambda a: self._handle_auth_google(int(a.port), not bool(a.no_browser)),
             "init-workspaces": lambda a: self._handle_init_workspaces(bool(a.prune_legacy)),
             "scan-knowledge": lambda a: self._handle_scan_knowledge(str(a.query)),
@@ -129,7 +136,8 @@ class CliController:
             "sync-drive": lambda _a: self._handle_sync_drive(),
             "read-drive": lambda a: self._handle_read_drive(str(a.file_id)),
             "poll-inbox": self._handle_poll_inbox,
-            "send-draft": self._handle_send_draft,
+            "send-draft": lambda a: handle_send_draft(self._gmail, self._settings, a),
+            "archive-email": lambda a: handle_archive_email(self._gmail, a),
             "backfill-inbox-archives": lambda _a: handle_backfill_inbox_archives(
                 self._inbox, self._agy
             ),
@@ -141,16 +149,12 @@ class CliController:
                 self._calendar, self._store, self._gmail, a
             ),
             "create-event": lambda a: handle_create_event(
-                self._calendar,
-                self._settings,
-                self._store,
-                self._gmail,
-                self._agy,
-                self._timezone,
-                a,
+                self._calendar, self._settings, self._store, self._gmail,
+                self._agy, self._timezone, a,
             ),
             "confirm-event": lambda a: handle_confirm_event(
-                self._calendar, self._settings, self._store, self._agy, self._timezone, a
+                self._calendar, self._settings, self._store, self._agy,
+                self._timezone, a, gmail_service=self._gmail,
             ),
             "delete-event": lambda a: handle_delete_event(
                 self._calendar, self._settings, self._store, a
@@ -168,8 +172,6 @@ class CliController:
             "search-gmail": lambda a: handle_search_gmail(self._gmail, a),
             "read-thread": lambda a: handle_read_thread(self._gmail, a),
         }
-        handler = handlers.get(str(args.command))
-        return handler(args) if handler is not None else 1
 
     def _build_parser(self) -> argparse.ArgumentParser:
         """Construct the top-level argparse command parser."""
@@ -231,6 +233,8 @@ class CliController:
         p_dr.add_argument("--to", default="")
         p_dr.add_argument("--subject", default="")
         p_dr.add_argument("--body", default="")
+        p_dr.add_argument("--keep-in-inbox", action="store_true")
+        p_dr.add_argument("--unstar", action="store_true")
 
     def _register_nounou_and_evolve_parsers(self, sub: Any) -> None:
         """Register Garde Nounou childcare, Pajemploi, and Dual-Repo evolve subcommands."""
@@ -377,23 +381,6 @@ class CliController:
             self._agy.daemon_sync.sync_if_needed()
         payload = [d.model_dump(mode="json") for d in decisions]
         print(json.dumps(payload, indent=2, ensure_ascii=False))
-        return 0
-
-    def _handle_send_draft(self, args: argparse.Namespace) -> int:
-        """Update (optional) and send a Gmail draft post-Gate approval."""
-        if self._gmail is None:
-            raise RuntimeError("GmailService is not wired on CliController.")
-        draft_id = str(args.draft_id)
-        if args.body:
-            draft_id = self._gmail.update_draft(
-                draft_id=draft_id,
-                thread_id=str(args.thread_id),
-                to_addr=str(args.to),
-                subject=str(args.subject),
-                body_text=str(args.body),
-            )
-        sent_id = self._gmail.send_draft(draft_id)
-        print(json.dumps({"draft_id": draft_id, "sent_message_id": sent_id}, indent=2))
         return 0
 
     def _handle_init_nounou(self, contract_json_path: Path, execute: bool) -> int:

@@ -17,3 +17,4 @@ Adapte immédiatement le niveau de recherche à la demande :
 
 ## 3. Étape 3 — Exécution Post-Validation (`plan-executor`)
 - Applique uniquement les actions validées (brouillons Gmail, blocages `[HOLD]` allowlistés ou invitations Google Calendar validées, mise à jour de `hold-allowlist`, et Fiches de Référence `.md` sauvegardées automatiquement sur Google Drive).
+- **Règle Inbox-Zero par défaut** : lorsqu'un e-mail a été traité de manière interactive avec l'utilisateur, **archive par défaut ce mail dans Gmail à la fin** (`send-draft` par défaut ou `alfred archive-email --thread-id ...`), sauf si l'utilisateur demande l'inverse (`--keep-in-inbox`).

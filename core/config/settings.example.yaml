@@ -27,6 +27,9 @@ antigravity:
 calendar:
   include_authenticated_owners_in_hold_allowlist: true
 
+inbox:
+  archive_processed_emails_by_default: true
+
 knowledge:
   max_body_lines: 150
 
