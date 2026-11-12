@@ -25,7 +25,7 @@ Tous les agents d'Alfred (`alfred-inbox`, `alfred-calendar`, `alfred-life`, `alf
    - **Ce plan d'implémentation est une Gate bloquante obligatoire** avant toute exécution : l'utilisateur peut l'annoter avec des commentaires inline dans Antigravity Web, puis cliquer sur **`Proceed`**.
 3. **Étape 3 — Exécution Post-Validation par un Agent Exécuteur Unique** :
    - Une fois le plan validé par l'utilisateur, un dernier agent exécuteur applique les modifications :
-     - Mise à jour / envoi de brouillon Gmail ou marquage `STARRED`,
+     - Mise à jour / envoi de brouillon Gmail ou marquage `STARRED` — **et par défaut, dès lors qu'un e-mail a été traité de manière interactive avec l'utilisateur, archivage automatique du fil dans Gmail à la fin (`retrait de INBOX`, sauf si l'utilisateur demande l'inverse via `--keep-in-inbox`)**,
      - Mise à jour du calendrier Google (`Garde Nounou`, agenda principal),
      - Mise à jour des **Fichiers de Référence *Up-to-Date* (`.md` avec Frontmatter YAML)** et sauvegarde sur Google Drive,
      - Pour **`alfred-evolve`** : développement en TDD dans un `git worktree` isolé, puis **génération automatique des Pull Requests (PR) sur les 2 dépôts Git** (le dépôt générique `alfred-core` et le dépôt personnel `alfred-instance`).
@@ -47,9 +47,9 @@ La boîte mail est prise telle quelle au démarrage (`historyId` courant). Chaqu
    - Bruit, newsletters, et notifications passives de portails (*« Vous avez de nouveaux documents sur votre espace Generali »*, factures d'abonnement sans anomalie).
    - **Action** : 0 modification dans Gmail + **auto-archivage immédiat de la conversation Antigravity**.
 2. **`DRAFT_REPLY` (Brouillon de réponse à écrire)** :
-   - **Action** : Création du brouillon dans Gmail, maintien de la conversation Antigravity Web **allumée**, et écriture du brouillon dans **`implementation_plan.md`** pour correction par commentaires inline avant validation.
+   - **Action** : Création du brouillon dans Gmail, maintien de la conversation Antigravity Web **allumée**, écriture du brouillon dans **`implementation_plan.md`** pour correction par commentaires inline avant validation, puis **archivage par défaut du mail dans Gmail après envoi** (sauf si l'utilisateur demande l'inverse).
 3. **`USER_ACTION_REQUIRED` (Action à réaliser par l'utilisateur)** :
-   - **Action** : L'e-mail est automatiquement **étoilé (`STARRED`)** dans Gmail, la conversation Antigravity Web reste **allumée**, et les sous-agents réalisent un **défrichage complet** (recherche doc Internet, pièces Drive, contexte mails) restitué dans **`implementation_plan.md`**.
+   - **Action** : L'e-mail est automatiquement **étoilé (`STARRED`)** dans Gmail, la conversation Antigravity Web reste **allumée**, les sous-agents réalisent un **défrichage complet** (recherche doc Internet, pièces Drive, contexte mails) restitué dans **`implementation_plan.md`**, et **le mail est archivé par défaut dans Gmail (`archive-email --unstar`) une fois traité de manière interactive avec l'utilisateur** (sauf demande contraire).
 
 ### 2.3. `alfred-calendar` — Assistante Maternelle & Calendrier `Garde Nounou`
 - Initialisation à partir du **contrat signé** (création du calendrier Google `Garde Nounou` + fiche de référence `02_assistante_maternelle_contrat.md` avec Frontmatter YAML et `nounou_contract.json`).

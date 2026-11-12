@@ -54,9 +54,10 @@
 .venv/bin/alfred sync-drive
 .venv/bin/alfred read-drive --file-id "<drive_file_id>"
 
-# 4. Routine Inbox (3 sorties exclusives, optionnellement reliée au CLI live agy)
+# 4. Routine Inbox (3 sorties exclusives ; archivage Gmail automatique en fin de traitement interactif)
 .venv/bin/alfred poll-inbox --spawn-agy --cognitive-agy
-.venv/bin/alfred send-draft --draft-id "<draft_id>" --to "contact@example.com" --body "Confirmé."
+.venv/bin/alfred send-draft --draft-id "<draft_id>" --thread-id "<thread_id>" --to "contact@example.com" --body "Confirmé."
+.venv/bin/alfred archive-email --thread-id "<thread_id>" --unstar
 
 # 5. Calendriers & Assistante Maternelle (Garde Nounou + Pajemploi)
 .venv/bin/alfred list-events --calendar primary --from "2026-05-01T00:00:00Z" --to "2026-05-31T23:59:59Z"

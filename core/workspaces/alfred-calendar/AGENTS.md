@@ -10,7 +10,7 @@
    - **Allowlist stricte des invités sur `[HOLD]` (`alfred hold-allowlist --list`)** : seules les adresses explicitement allowlistées (adresses propriétaire authentifiées + contacts proches configurés dans `calendar_hold_allowlist.json`) reçoivent immédiatement le `[HOLD]` (`sendUpdates="all"`). Tout interlocuteur externe non allowlisté est différé dans `alfred_candidate_attendees` (**zéro invitation externe envoyée au stade `[HOLD]`**).
 2. **Conversion de `[HOLD]` & Envoi d'Invitation sous Gate Obligatoire (`confirm-event`)** :
    - Lorsqu'un créneau/meeting est validé par l'interlocuteur, **aucune invitation Google Calendar n'est envoyée sans Gate bloquante** (`implementation_plan.md` avec `RequestFeedback: true`).
-   - Après clic utilisateur sur **`Proceed`**, `alfred confirm-event --send-invites` convertit le `[HOLD]` retenu en événement ferme (retrait du préfixe `[HOLD]`), invite toutes les personnes concernées (`attendees` + `sendUpdates="all"`), et libère automatiquement les éventuels autres `[HOLD]` alternatifs du même fil Gmail.
+   - Après clic utilisateur sur **`Proceed`**, `alfred confirm-event --send-invites` convertit le `[HOLD]` retenu en événement ferme (retrait du préfixe `[HOLD]`), invite toutes les personnes concernées (`attendees` + `sendUpdates="all"`), libère automatiquement les éventuels autres `[HOLD]` alternatifs du même fil Gmail, et **archive par défaut le fil Gmail source** (sauf `--keep-in-inbox`).
 
 ## 2. Les 4 Workflows Déterministes `Garde Nounou`
 1. **Initialisation sur Contrat Signé (`init-nounou`)** :

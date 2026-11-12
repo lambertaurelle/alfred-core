@@ -199,11 +199,8 @@ class GmailService:
         Args:
             message_id: Target Gmail message identifier.
         """
-        client = self._require_client()
-        client.users().messages().modify(
-            userId="me",
-            id=message_id,
-            body={"addLabelIds": ["INBOX"]},
+        self._require_client().users().messages().modify(
+            userId="me", id=message_id, body={"addLabelIds": ["INBOX"]}
         ).execute()
 
     def create_draft(
@@ -228,14 +225,9 @@ class GmailService:
         Returns:
             Created Gmail draft_id.
         """
-        client = self._require_client()
         raw = self._encode_mime(to_addr, subject, body_text, in_reply_to, references)
-        created = (
-            client.users()
-            .drafts()
-            .create(userId="me", body={"message": {"threadId": thread_id, "raw": raw}})
-            .execute()
-        )
+        body = {"message": {"threadId": thread_id, "raw": raw}}
+        created = self._require_client().users().drafts().create(userId="me", body=body).execute()
         return str(created["id"])
 
     def update_draft(
@@ -262,32 +254,89 @@ class GmailService:
         Returns:
             Updated Gmail draft_id.
         """
-        client = self._require_client()
         raw = self._encode_mime(to_addr, subject, body_text, in_reply_to, references)
+        body = {"message": {"threadId": thread_id, "raw": raw}}
         updated = (
-            client.users()
+            self._require_client()
+            .users()
             .drafts()
-            .update(
-                userId="me",
-                id=draft_id,
-                body={"message": {"threadId": thread_id, "raw": raw}},
-            )
+            .update(userId="me", id=draft_id, body=body)
             .execute()
         )
         return str(updated["id"])
 
-    def send_draft(self, draft_id: str) -> str:
+    def send_draft(
+        self, draft_id: str, archive_inbox: bool = False, thread_id: str = "", unstar: bool = False
+    ) -> str:
         """Send an existing Gmail draft strictly post-Gate approval.
 
         Args:
             draft_id: Validated Gmail draft identifier.
+            archive_inbox: When True, remove INBOX and UNREAD from the sent thread.
+            thread_id: Optional explicit threadId fallback when archiving.
+            unstar: When True and archive_inbox is True, also remove STARRED.
 
         Returns:
             Sent Gmail message identifier.
         """
-        client = self._require_client()
-        sent = client.users().drafts().send(userId="me", body={"id": draft_id}).execute()
-        return str(sent["id"])
+        return self.send_draft_with_archive(draft_id, archive_inbox, thread_id, unstar)[0]
+
+    def send_draft_with_archive(
+        self, draft_id: str, archive_inbox: bool = True, thread_id: str = "", unstar: bool = False
+    ) -> tuple[str, bool]:
+        """Send a Gmail draft and optionally archive its conversation thread in Gmail.
+
+        Args:
+            draft_id: Validated Gmail draft identifier.
+            archive_inbox: When True, archive the thread after sending.
+            thread_id: Optional explicit Gmail threadId fallback.
+            unstar: When True and archiving, also remove STARRED.
+
+        Returns:
+            Tuple of (sent_message_id, thread_archived_bool).
+        """
+        sent = (
+            self._require_client()
+            .users()
+            .drafts()
+            .send(userId="me", body={"id": draft_id})
+            .execute()
+        )
+        sent_id = str(sent["id"])
+        raw_th = sent.get("threadId") if isinstance(sent, dict) else None
+        resolved_th = thread_id.strip() or (raw_th.strip() if isinstance(raw_th, str) else "")
+        if archive_inbox and resolved_th:
+            self.archive_thread(resolved_th, mark_read=True, unstar=unstar)
+            return sent_id, True
+        return sent_id, False
+
+    def archive_thread(self, thread_id: str, mark_read: bool = True, unstar: bool = False) -> None:
+        """Archive an entire Gmail thread by removing INBOX (and optional UNREAD/STARRED).
+
+        Args:
+            thread_id: Target Gmail thread identifier.
+            mark_read: When True (default), also remove UNREAD.
+            unstar: When True, also remove STARRED.
+        """
+        remove_ids = ["INBOX", *(["UNREAD"] if mark_read else []), *(["STARRED"] if unstar else [])]
+        self._require_client().users().threads().modify(
+            userId="me", id=thread_id, body={"removeLabelIds": remove_ids}
+        ).execute()
+
+    def archive_message(
+        self, message_id: str, mark_read: bool = True, unstar: bool = False
+    ) -> None:
+        """Archive a single Gmail message by removing INBOX (and optional UNREAD/STARRED).
+
+        Args:
+            message_id: Target Gmail message identifier.
+            mark_read: When True (default), also remove UNREAD.
+            unstar: When True, also remove STARRED.
+        """
+        remove_ids = ["INBOX", *(["UNREAD"] if mark_read else []), *(["STARRED"] if unstar else [])]
+        self._require_client().users().messages().modify(
+            userId="me", id=message_id, body={"removeLabelIds": remove_ids}
+        ).execute()
 
     def star_message(self, message_id: str) -> None:
         """Apply the STARRED label to a message requiring user action.
