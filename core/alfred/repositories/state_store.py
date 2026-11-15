@@ -16,10 +16,10 @@ from alfred.domain.models import (
     EvolutionProposalsLedger,
     GoogleSyncBookmarks,
     KnowledgeAuditEvent,
-    NounouContract,
     ProcessedItemEvent,
 )
 from alfred.domain.routine_models import RoutineExecutionState
+from alfred.domain.security_models import SignatureAuditEvent, SignatureRequestsState
 from alfred.repositories.json_repository import JsonlEventLog, JsonStateRepository
 
 
@@ -53,10 +53,6 @@ class StateStore:
             paths.state_dir / "evolution_proposals_ledger.json",
             EvolutionProposalsLedger,
         )
-        self.nounou_contract = JsonStateRepository(
-            paths.state_dir / "nounou_contract.json",
-            NounouContract,
-        )
         self.routines = JsonStateRepository(
             paths.state_dir / "routine_state.json",
             RoutineExecutionState,
@@ -64,6 +60,14 @@ class StateStore:
         self.hold_allowlist = JsonStateRepository(
             paths.state_dir / "calendar_hold_allowlist.json",
             HoldAllowlistState,
+        )
+        self.signature_requests = JsonStateRepository(
+            paths.state_dir / "signature_requests.json",
+            SignatureRequestsState,
+        )
+        self.signature_audit = JsonlEventLog(
+            paths.state_dir / "signature_audit.jsonl",
+            SignatureAuditEvent,
         )
         self.drive_index = JsonStateRepository(
             paths.drive_index_path,

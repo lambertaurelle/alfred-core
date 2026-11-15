@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/root/Alfred/.venv/bin/python /root/Alfred/core/scripts/security_pre_tool_hook.py"
+          }
+        ]
+      }
+    ]
+  }
+}

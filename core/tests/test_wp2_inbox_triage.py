@@ -163,8 +163,8 @@ def test_user_action_required_stars_email_and_builds_research_brief(tmp_path: Pa
     action_msg = EmailMessage(
         message_id="msg_action_1",
         thread_id="th_action_1",
-        sender="urssaf-pajemploi@example.com",
-        subject="Action requise : déclaration mensuelle Pajemploi à valider avant échéance",
+        sender="impots-dgfip@example.com",
+        subject="Action requise : déclaration fiscale annuelle à valider avant échéance",
         body_text="Merci de compléter votre démarche administrative et vérifier vos pièces.",
     )
     decision = triage.process_message(action_msg)
@@ -219,9 +219,9 @@ def test_expired_history_id_recovery_and_reply_to_threading(tmp_path: Path) -> N
             entries={
                 "d1": DriveEntry(
                     file_id="d1",
-                    name="Déclaration_Pajemploi_2026.pdf",
+                    name="Déclaration_Fiscale_2026.pdf",
                     mime_type="application/pdf",
-                    path="/Admin/Déclaration_Pajemploi_2026.pdf",
+                    path="/Admin/Déclaration_Fiscale_2026.pdf",
                 )
             },
         )
@@ -231,7 +231,7 @@ def test_expired_history_id_recovery_and_reply_to_threading(tmp_path: Path) -> N
             message_id="m_drv",
             thread_id="th_drv",
             sender="portail@example.com",
-            subject="Action requise : declaration Pajemploi",
+            subject="Action requise : declaration fiscale",
             body_text="Document a signer.",
         )
     )
@@ -270,11 +270,7 @@ def test_inbox_spawn_live_agy_skips_silent_and_spawns_on_draft_and_action(tmp_pa
         """Dispatch fake agy --json-schema classifier vs trace/plan session spawn."""
         spawned_cmds.append(cmd)
         if "--json-schema" in cmd:
-            body = {
-                "output_type": "DRAFT_REPLY",
-                "reason": "Cognitive reply",
-                "draft_body": "Bonjour, bien reçu via agy.",
-            }
+            body = {"output_type": "DRAFT_REPLY", "reason": "R", "draft_body": "Bonjour via agy."}
             return subprocess.CompletedProcess(cmd, 0, json.dumps(body), "")
         return subprocess.CompletedProcess(
             cmd, 0, json.dumps({"conversation_id": f"live_conv_{len(spawned_cmds)}"}), ""
@@ -284,32 +280,31 @@ def test_inbox_spawn_live_agy_skips_silent_and_spawns_on_draft_and_action(tmp_pa
     drive = DriveService(paths, settings, store, drive_client=MagicMock())
     gmail = GmailService(paths, settings, gmail_client=gmail_client)
     agy = AgySessionManager(
-        paths,
-        settings,
-        store,
-        runner_fn=_runner,
-        agy_locator_fn=lambda: "agy",
+        paths, settings, store, runner_fn=_runner, agy_locator_fn=lambda: "agy",
         antigravity_data_dir=tmp_path / "agy_data",
     )
-    triage = InboxTriageService(store, gmail, knowledge, drive, agy, spawn_live_agy=True)
+    triage = InboxTriageService(
+        store, gmail, knowledge, drive, agy, spawn_live_agy=True, settings=settings
+    )
 
     sil = EmailMessage(
-        message_id="m_sil", thread_id="t1", sender="no-reply@news.example.com", subject="Newsletter"
+        message_id="m_sil", thread_id="t1", sender="no-reply@news.example.com",
+        subject="Newsletter", label_ids=["INBOX"],
     )
     silent_dec = triage.process_message(sil)
-    assert silent_dec.output_type == InboxOutputType.SILENT_NO_ACTION
-    assert silent_dec.session_id == "live_conv_1" and silent_dec.session_archived is True
+    assert silent_dec.output_type == InboxOutputType.SILENT_NO_ACTION and spawned_cmds == []
 
     hum = EmailMessage(
-        message_id="m_hum", thread_id="t2", sender="ami@example.com", subject="Dîner samedi"
+        message_id="m_hum", thread_id="t2", sender="ami@example.com",
+        subject="Dîner samedi", label_ids=["INBOX"],
     )
     draft_dec = triage.process_message(hum, use_cognitive_agy=True)
-    assert draft_dec.draft_body == "Bonjour, bien reçu via agy."
-    assert draft_dec.session_id == "live_conv_3"
+    assert draft_dec.draft_body == "Bonjour via agy." and draft_dec.session_id == "live_conv_2"
 
     act = EmailMessage(
-        message_id="m_act", thread_id="t3", sender="a@example.com", subject="Action requise : doc"
+        message_id="m_act", thread_id="t3", sender="a@example.com",
+        subject="Action requise : doc", label_ids=["INBOX"],
     )
     act_dec = triage.process_message(act)
     assert act_dec.output_type == InboxOutputType.USER_ACTION_REQUIRED
-    assert act_dec.session_id == "live_conv_4"
+    assert act_dec.session_id == "live_conv_3"

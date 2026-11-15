@@ -1,4 +1,4 @@
-"""CLI subcommand registration and handlers for periodic routines and read-only Gmail."""
+"""CLI subcommand registration and handlers for periodic routines and Gmail actions."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from alfred.controllers.calendar_cli import print_skipped_disabled
 from alfred.domain.models import AlfredSettings
 from alfred.services.agy_session_manager import AgySessionManager
 from alfred.services.gmail_service import GmailService
@@ -142,7 +143,7 @@ def handle_status_routines(
     routine_service: RoutineService | None,
     args: argparse.Namespace,
 ) -> int:
-    """Print live status JSON for bookmarks, contract readiness, and systemd timers.
+    """Print live status JSON for bookmarks, active extensions, and systemd timers.
 
     Args:
         routine_service: Wired RoutineService instance.
@@ -202,12 +203,14 @@ def handle_send_draft(
 
     Args:
         gmail_service: Wired GmailService instance.
-        settings: Runtime settings controlling default post-processing archiving.
+        settings: Runtime settings controlling feature gate and default archiving.
         args: Parsed CLI namespace for send-draft.
 
     Returns:
         POSIX exit status code (0 on success).
     """
+    if not settings.features.gmail_drafts_and_send:
+        return print_skipped_disabled("gmail_drafts_and_send", "send-draft")
     if gmail_service is None:
         raise RuntimeError("GmailService is not wired on CliController.")
     draft_id = str(args.draft_id)
@@ -232,16 +235,23 @@ def handle_send_draft(
     return 0
 
 
-def handle_archive_email(gmail_service: GmailService | None, args: argparse.Namespace) -> int:
+def handle_archive_email(
+    gmail_service: GmailService | None,
+    args: argparse.Namespace,
+    settings: AlfredSettings | None = None,
+) -> int:
     """Archive one or more Gmail threads/messages after interactive user processing.
 
     Args:
         gmail_service: Wired GmailService instance.
         args: Parsed CLI namespace (--thread-id, --message-id, --unstar, --keep-unread).
+        settings: Optional runtime settings checking features.gmail_drafts_and_send.
 
     Returns:
         POSIX exit status code (0 on success).
     """
+    if settings is not None and not settings.features.gmail_drafts_and_send:
+        return print_skipped_disabled("gmail_drafts_and_send", "archive-email")
     if gmail_service is None:
         raise RuntimeError("GmailService is not wired on CliController.")
     threads = list(dict.fromkeys(str(t).strip() for t in args.thread_id if str(t).strip()))

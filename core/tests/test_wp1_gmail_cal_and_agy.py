@@ -163,22 +163,22 @@ def test_gmail_reply_headers_and_expired_history_404(tmp_path: Path) -> None:
 
 
 def test_calendar_service_ensure_list_insert_delete(tmp_path: Path) -> None:
-    """Verify Garde Nounou calendar creation, event insertion, listing, and deletion."""
+    """Verify secondary calendar creation, event insertion, listing, and deletion."""
     paths = AlfredPaths.from_env(tmp_path)
     settings = AlfredSettings.load(paths)
     client = MagicMock()
     client.calendarList.return_value.list.side_effect = [
         MagicMock(execute=lambda: {"items": []}),
-        MagicMock(execute=lambda: {"items": [{"id": "cal_nounou", "summary": "Garde Nounou"}]}),
+        MagicMock(execute=lambda: {"items": [{"id": "cal_famille", "summary": "Agenda Famille"}]}),
     ]
-    client.calendars.return_value.insert.return_value.execute.return_value = {"id": "cal_nounou"}
+    client.calendars.return_value.insert.return_value.execute.return_value = {"id": "cal_famille"}
     client.events.return_value.insert.return_value.execute.return_value = {"id": "ev_1"}
     client.events.return_value.list.return_value.execute.return_value = {
         "items": [
             {
                 "id": "ev_1",
-                "summary": "Garde Enfant",
-                "description": "Contrat",
+                "summary": "Réunion Famille",
+                "description": "Organisation",
                 "start": {"dateTime": "2026-05-04T08:30:00+02:00"},
                 "end": {"dateTime": "2026-05-04T18:30:00+02:00"},
             }
@@ -186,25 +186,25 @@ def test_calendar_service_ensure_list_insert_delete(tmp_path: Path) -> None:
     }
 
     svc = CalendarService(paths=paths, settings=settings, calendar_client=client)
-    assert svc.ensure_calendar("Garde Nounou") == "cal_nounou"
-    assert svc.ensure_calendar("Garde Nounou") == "cal_nounou"
+    assert svc.ensure_calendar("Agenda Famille") == "cal_famille"
+    assert svc.ensure_calendar("Agenda Famille") == "cal_famille"
     ev_id = svc.insert_event(
-        "cal_nounou",
+        "cal_famille",
         CalendarEventItem(
-            summary="Garde Enfant",
+            summary="Réunion Famille",
             start_iso="2026-05-04T08:30:00+02:00",
             end_iso="2026-05-04T18:30:00+02:00",
         ),
     )
     assert ev_id == "ev_1"
-    events = svc.list_events("cal_nounou", "2026-05-01T00:00:00Z", "2026-05-31T23:59:59Z")
+    events = svc.list_events("cal_famille", "2026-05-01T00:00:00Z", "2026-05-31T23:59:59Z")
     assert len(events) == 1
     all_day_id = svc.insert_event(
-        "cal_nounou",
+        "cal_famille",
         CalendarEventItem(summary="Vacances", start_iso="2026-08-01", end_iso="2026-08-15"),
     )
     assert all_day_id == "ev_1"
-    svc.delete_event("cal_nounou", "ev_1")
+    svc.delete_event("cal_famille", "ev_1")
     client.events.return_value.delete.assert_called_once()
 
 
@@ -252,22 +252,16 @@ def test_agy_live_spawn_conversation_id_and_unavailable_fallback(tmp_path: Path)
     )
     live_rec = agy.create_session("alfred-inbox", "msg_42", "# Gate Plan\n", spawn_live=True)
     assert live_rec.session_id == "conv_live_99" and Path(live_rec.plan_path).exists()
-    assert recorded_cmds[0][:12] == [
-        "/usr/local/bin/agy",
-        "--project",
-        "alfred-inbox",
-        "--add-dir",
-        str(paths.root_dir),
-        "--agent",
-        "plan-synthesizer",
-        "--mode",
-        "plan",
-        "--output-format",
-        "json",
-        "-p",
-    ]
-    assert "UserFacing: true" in recorded_cmds[0][12]
-    assert "RequestFeedback: true" in recorded_cmds[0][12]
+    cmd0 = recorded_cmds[0]
+    assert cmd0[0] == "/usr/local/bin/agy"
+    assert cmd0[cmd0.index("--project") + 1] == "alfred-inbox"
+    assert cmd0[cmd0.index("--add-dir") + 1] == str(paths.root_dir)
+    assert cmd0[cmd0.index("--agent") + 1] == "plan-synthesizer"
+    assert cmd0[cmd0.index("--mode") + 1] == "plan"
+    assert cmd0[cmd0.index("--output-format") + 1] == "json"
+    prompt_text = cmd0[cmd0.index("-p") + 1]
+    assert "UserFacing: true" in prompt_text
+    assert "RequestFeedback: true" in prompt_text
 
     agy_missing = AgySessionManager(
         paths,
@@ -292,8 +286,8 @@ def test_agy_classify_email_with_json_schema_and_error_fallback(tmp_path: Path) 
         captured.append(cmd)
         payload = {
             "output_type": "DRAFT_REPLY",
-            "reason": "Question humaine sur contrat nounou",
-            "draft_body": "Bonjour Nounou, oui pour vendredi 18h30.",
+            "reason": "Question humaine sur réunion copropriété",
+            "draft_body": "Bonjour, oui pour vendredi 18h30.",
         }
         return subprocess.CompletedProcess(
             args=cmd, returncode=0, stdout=json.dumps(payload), stderr=""
@@ -304,29 +298,33 @@ def test_agy_classify_email_with_json_schema_and_error_fallback(tmp_path: Path) 
     )
     doc = KnowledgeDocument(
         frontmatter=FrontmatterSchema(
-            id="nounou", title="Contrat Nounou", domain="famille", summary="Horaires 08h30-18h30"
+            id="immobilier",
+            title="Copropriété Résidence",
+            domain="immobilier",
+            summary="AG annuelle à 18h30",
         ),
-        body="# Contrat\nFin à 18h30.\n",
-        file_name="02_assistante_maternelle.md",
+        body="# Copropriété\nRéunion à 18h30.\n",
+        file_name="02_immobilier_foyer.md",
         body_line_count=2,
     )
     msg = EmailMessage(
         message_id="m_cog",
         thread_id="th_cog",
-        sender="nounou@example.com",
+        sender="syndic@example.com",
         subject="Vendredi soir",
-        body_text="À quelle heure venez-vous vendredi ?",
+        body_text="À quelle heure arrivez-vous vendredi ?",
     )
     out_type, reason, draft = agy.classify_email_with_agy(msg, [doc])
-    assert out_type == InboxOutputType.DRAFT_REPLY and "contrat nounou" in reason
-    assert draft == "Bonjour Nounou, oui pour vendredi 18h30."
-    expected_head = ["/bin/agy", "--project", "alfred-inbox", "--output-format", "json"]
-    assert captured[0][:5] == expected_head and captured[0][5] == "--json-schema"
-    schema_obj = json.loads(captured[0][6])
+    assert out_type == InboxOutputType.DRAFT_REPLY and "copropriété" in reason
+    assert draft == "Bonjour, oui pour vendredi 18h30."
+    cls_cmd = captured[0]
+    assert cls_cmd[0] == "/bin/agy"
+    assert cls_cmd[cls_cmd.index("--project") + 1] == "alfred-inbox"
+    assert cls_cmd[cls_cmd.index("--output-format") + 1] == "json"
+    schema_obj = json.loads(cls_cmd[cls_cmd.index("--json-schema") + 1])
     assert schema_obj["properties"]["draft_body"] == {"type": "string"}
     assert schema_obj["required"] == ["output_type", "reason"]
-    assert captured[0][7] == "--print"
-    assert "02_assistante_maternelle.md" in captured[0][8]
+    assert "02_immobilier_foyer.md" in cls_cmd[cls_cmd.index("--print") + 1]
 
     agy_err = AgySessionManager(
         paths,

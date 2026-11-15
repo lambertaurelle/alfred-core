@@ -1,0 +1,65 @@
+# Copy to instance/config/settings.yaml (gitignored) or let alfred-onboard generate it.
+project_name: "Alfred Family Office Chief of Staff"
+timezone: "Europe/Paris"
+language: "fr-FR"
+
+features:
+  drive_knowledge_sync: true
+  inbox_auto_triage: true
+  gmail_drafts_and_send: true
+  calendar_management: true
+  tasks_management: true
+  contacts_lookup: true
+  google_docs_suite: false
+  signature_delegation: false
+  mcp_gemini_bridge: false
+
+identity:
+  # Outbound alias used in From: header on Gmail drafts/sends (e.g. prenom@domaine-perso.example)
+  default_send_as_email: ""
+  default_send_as_display_name: ""
+  # Primary calendar account; aliases below are strictly stripped from Calendar attendees
+  calendar_organizer_email: ""
+  never_invite_emails: []
+
+models:
+  orchestrator_model: "gemini-pro-orchestrator"
+  light_model: "gemini-4-hydrogen-medium"
+  light_effort: "medium"
+  trace_model: "gemini-4-hydrogen-low"
+  trace_effort: "low"
+
+google:
+  referentiel_drive_folder_name: "_ALFRED_REFERENTIEL_"
+  primary_calendar_id: "primary"
+  default_tasklist_id: "@default"
+
+inbox:
+  archive_processed_emails_by_default: true
+  bypass_calendar_invites: true
+  skip_promotions_social_forums: true
+  silent_creates_agy_session: false
+  denylist_senders: []
+  denylist_domains: []
+
+calendar:
+  include_authenticated_owners_in_hold_allowlist: false
+
+security:
+  protected_signature_drive_ids: []
+  require_spf_dkim_for_evolve_email: true
+
+mcp:
+  host: "127.0.0.1"
+  port: 8765
+  public_url: "https://mcp.example.com"
+  sync_wait_seconds: 25
+
+routines:
+  inbox_interval_sec: 120
+  periodic_interval_sec: 1800
+  spawn_agy: true
+  cognitive_agy: true
+  backup_instance_config_to_drive: true
+
+extensions: {}

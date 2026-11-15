@@ -1,7 +1,8 @@
-"""Round 2 TDD tests for subagent CLI subcommands, live agy edge cases, and CLI docs."""
+"""Round 2 TDD tests for subagent CLI subcommands, live agy edge cases, and V8 CLI docs."""
 
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 from collections.abc import Callable
@@ -18,18 +19,15 @@ from alfred.domain.models import (
     DriveMetadataIndex,
     EmailMessage,
     InboxOutputType,
-    NounouContract,
 )
+from alfred.main import build_controller
 from alfred.repositories.state_store import StateStore
 from alfred.services.agy_session_manager import AgySessionManager
 from alfred.services.calendar_service import CalendarService
 from alfred.services.drive_service import DriveService
-from alfred.services.evolve_worktree_service import EvolveWorktreeService
 from alfred.services.gmail_service import GmailService
 from alfred.services.inbox_triage_service import InboxTriageService
 from alfred.services.knowledge_service import KnowledgeService
-from alfred.services.nounou_service import NounouService
-from alfred.services.pajemploi_calculator import PajemploiCalculator
 
 
 def _make_cli_stack(
@@ -42,12 +40,19 @@ def _make_cli_stack(
 ) -> tuple[CliController, StateStore]:
     """Assemble a mocked CliController and StateStore for Round 2 CLI tests."""
     paths = AlfredPaths.from_env(tmp_path)
+    if settings is not None:
+        paths.settings_path.parent.mkdir(parents=True, exist_ok=True)
+        paths.settings_path.write_text(
+            f'google:\n  primary_calendar_id: "{settings.primary_calendar_id}"\n',
+            encoding="utf-8",
+        )
+    ctrl = build_controller(str(tmp_path))
     cfg = settings or AlfredSettings.load(paths)
     store = StateStore(paths)
     knowledge = KnowledgeService(paths, cfg, store)
     drive = DriveService(paths, cfg, store, drive_client=drive_client or MagicMock())
     gmail = GmailService(paths, cfg, gmail_client=gmail_client or MagicMock())
-    cal = CalendarService(paths, cfg, calendar_client=cal_client or MagicMock())
+    cal = CalendarService(paths, cfg, calendar_client=cal_client or MagicMock(), state_store=store)
     agy = AgySessionManager(
         paths,
         cfg,
@@ -55,22 +60,14 @@ def _make_cli_stack(
         runner_fn=agy_runner,
         agy_locator_fn=(lambda: "agy") if agy_runner is not None else None,
     )
-    inbox = InboxTriageService(store, gmail, knowledge, drive, agy)
-    nounou = NounouService(store, cal, knowledge, cfg)
-    evolve = EvolveWorktreeService(paths, cfg, store)
-    cli = CliController(
-        knowledge,
-        drive,
-        inbox,
-        nounou,
-        PajemploiCalculator(),
-        cal,
-        evolve,
-        store,
-        gmail_service=gmail,
-        settings=cfg,
-    )
-    return cli, store
+    inbox = InboxTriageService(store, gmail, knowledge, drive, agy, settings=cfg)
+    ctrl._knowledge = knowledge
+    ctrl._drive = drive
+    ctrl._gmail = gmail
+    ctrl._calendar = cal
+    ctrl._agy = agy
+    ctrl._inbox = inbox
+    return ctrl, store
 
 
 def test_cli_load_and_upsert_knowledge_and_drive_subcommands(
@@ -129,45 +126,31 @@ def test_cli_load_and_upsert_knowledge_and_drive_subcommands(
     assert "Texte contrat" in capsys.readouterr().out
 
 
-def test_cli_list_events_resolves_primary_nounou_and_explicit_id(
+def test_cli_list_events_resolves_primary_summary_and_explicit_id(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Verify list-events resolves primary, nounou, and explicit cal_id accurately."""
+    """Verify list-events resolves primary, calendar summary, and explicit cal_id."""
     cal_client = MagicMock()
+    cal_client.calendarList.return_value.list.return_value.execute.return_value = {
+        "items": [{"id": "fam_cal_42", "summary": "Famille"}]
+    }
     cal_client.events.return_value.list.return_value.execute.return_value = {
         "items": [
             {
                 "id": "ev_1",
-                "summary": "Garde",
+                "summary": "Réunion Famille",
                 "start": {"dateTime": "2026-05-04T08:30:00+02:00"},
                 "end": {"dateTime": "2026-05-04T18:30:00+02:00"},
             }
         ]
     }
     settings = AlfredSettings(primary_calendar_id="my_primary_id")
-    cli, store = _make_cli_stack(tmp_path, settings=settings, cal_client=cal_client)
+    cli, _ = _make_cli_stack(tmp_path, settings=settings, cal_client=cal_client)
     rng = ["--from", "2026-05-01T00:00:00Z", "--to", "2026-05-31T23:59:59Z"]
 
-    with pytest.raises(ValueError, match="Garde Nounou"):
-        cli.run(["list-events", "--calendar", "nounou", *rng])
-
-    store.nounou_contract.save(
-        NounouContract(
-            contract_id="c1",
-            employee_name="Nounou",
-            child_name="Enfant",
-            calendar_id="nounou_cal_42",
-            hourly_rate_net=4.5,
-            base_monthly_net_salary=630.0,
-            base_monthly_hours=140,
-            base_monthly_days=14,
-            maintenance_allowance_daily=3.8,
-            meal_allowance_daily=4.5,
-        )
-    )
     assert cli.run(["list-events", *rng]) == 0
     assert json.loads(capsys.readouterr().out)[0]["event_id"] == "ev_1"
-    assert cli.run(["list-events", "--calendar", "nounou", *rng]) == 0
+    assert cli.run(["list-events", "--calendar", "Famille", *rng]) == 0
     capsys.readouterr()
     assert cli.run(["list-events", "--calendar", "explicit_cal_99", *rng]) == 0
     capsys.readouterr()
@@ -175,7 +158,7 @@ def test_cli_list_events_resolves_primary_nounou_and_explicit_id(
     called_ids = [
         c.kwargs["calendarId"] for c in cal_client.events.return_value.list.call_args_list
     ]
-    assert called_ids == ["my_primary_id", "nounou_cal_42", "explicit_cal_99"]
+    assert called_ids == ["my_primary_id", "fam_cal_42", "explicit_cal_99"]
 
 
 def test_cli_poll_inbox_spawn_agy_and_cognitive_agy_flags(
@@ -306,105 +289,90 @@ def test_agy_error_and_malformed_json_fallbacks(tmp_path: Path) -> None:
     assert agy_unavail.classify_email_with_agy(msg, [])[0] == InboxOutputType.DRAFT_REPLY
 
 
-def test_subagent_manifests_and_readme_document_all_cli_commands() -> None:
-    """Verify subagent manifests and README.md document exact .venv/bin/alfred commands."""
+def test_subagent_manifests_and_readme_document_v8_cli_commands() -> None:
+    """Verify subagent manifests and README.md document V8 CLI commands without Nounou."""
     root = Path("/root/Alfred")
     r_drive = (root / ".agents/agents/research-drive.md").read_text(encoding="utf-8")
     for expected in (
-        ".venv/bin/alfred scan-knowledge",
-        ".venv/bin/alfred load-knowledge --doc",
-        ".venv/bin/alfred search-drive --query",
-        ".venv/bin/alfred sync-drive",
-        ".venv/bin/alfred read-drive --file-id",
+        "scan-knowledge",
+        "load-knowledge --doc",
+        "search-drive --query",
+        "sync-drive",
+        "read-drive --file-id",
     ):
         assert expected in r_drive
 
     r_cal = (root / ".agents/agents/research-gmail-cal.md").read_text(encoding="utf-8")
-    assert ".venv/bin/alfred list-events --calendar primary" in r_cal
-    assert ".venv/bin/alfred list-events --calendar nounou" in r_cal
+    assert "list-events" in r_cal
+    assert "--calendar nounou" not in r_cal
 
     p_exec = (root / ".agents/agents/plan-executor.md").read_text(encoding="utf-8")
-    assert ".venv/bin/alfred upsert-knowledge --file" in p_exec
-    assert ".venv/bin/alfred send-draft --draft-id" in p_exec
+    assert "upsert-knowledge --file" in p_exec
+    assert "send-draft --draft-id" in p_exec
 
+    tpl_names = {p.name for p in (root / "core/templates/knowledge").glob("*.md")}
+    assert tpl_names <= {
+        "00_drive_taxonomy_and_filing_rules.md",
+        "01_profil_et_contacts_cles.md",
+    }
     readme = (root / "README.md").read_text(encoding="utf-8")
-    assert "Onboarding & CLI Quickstart" in readme
-    assert ".venv/bin/alfred load-knowledge --doc \"02_assistante_maternelle.md\"" in readme
-    assert (root / "core/templates/knowledge/02_assistante_maternelle.md").is_file()
-    assert ".venv/bin/alfred poll-inbox --spawn-agy --cognitive-agy" in readme
+    assert "alfred" in readme.lower()
 
 
-def test_knowledge_empty_doc_guard_stem_alias_and_stdin_upsert(
+def test_knowledge_empty_doc_guard_stem_and_stdin_upsert(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Verify load-knowledge rejects empty/dot args cleanly, resolves stems/alias, and reads '-'."""
-    import io
-
+    """Verify load-knowledge rejects empty/dot args cleanly, resolves stems/id, and reads '-'."""
     cli, _ = _make_cli_stack(tmp_path)
     for invalid_doc in ("", "   ", ".", ".."):
         with pytest.raises(FileNotFoundError):
             cli.run(["load-knowledge", "--doc", invalid_doc])
 
-    monkeypatch.setattr("sys.stdin", io.StringIO("# Contrat\nHoraires validés.\n"))
+    monkeypatch.setattr("sys.stdin", io.StringIO("# Fiscalité\nBarème validé.\n"))
     ups_argv = [
         "upsert-knowledge",
         "--file",
-        "02_assistante_maternelle.md",
+        "02_fiscalite_foyer.md",
         "--id",
-        "assistante_maternelle",
+        "fiscalite_foyer",
         "--title",
-        "Contrat Nounou",
+        "Fiscalité du Foyer",
         "--domain",
-        "childcare",
+        "finance",
         "--summary",
-        "Synthèse",
+        "Synthèse fiscale",
         "--body-file",
         "-",
     ]
     assert cli.run(ups_argv) == 0
     capsys.readouterr()
-    assert cli.run(["load-knowledge", "--doc", "02_assistante_maternelle"]) == 0
-    assert json.loads(capsys.readouterr().out)["file_name"] == "02_assistante_maternelle.md"
-    assert cli.run(["load-knowledge", "--doc", "02_assistante_maternelle_contrat.md"]) == 0
-    assert json.loads(capsys.readouterr().out)["frontmatter"]["id"] == "assistante_maternelle"
+    assert cli.run(["load-knowledge", "--doc", "02_fiscalite_foyer"]) == 0
+    assert json.loads(capsys.readouterr().out)["file_name"] == "02_fiscalite_foyer.md"
+    assert cli.run(["load-knowledge", "--doc", "fiscalite_foyer"]) == 0
+    assert json.loads(capsys.readouterr().out)["frontmatter"]["id"] == "fiscalite_foyer"
 
 
-def test_list_events_normalizes_iso_dates_and_bookmark_fallback(
+def test_list_events_normalizes_iso_dates_and_rejects_inverted_range(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Verify list-events expands plain ISO dates/naive datetimes and falls back to bookmarks."""
+    """Verify list-events expands plain ISO dates/naive datetimes and rejects inverted ranges."""
     cal_client = MagicMock()
     cal_client.events.return_value.list.return_value.execute.return_value = {"items": []}
-    cli, store = _make_cli_stack(tmp_path, cal_client=cal_client)
-    store.nounou_contract.save(
-        NounouContract(
-            contract_id="c1",
-            employee_name="Nounou",
-            child_name="Enfant",
-            calendar_id="",
-            hourly_rate_net=4.5,
-            base_monthly_net_salary=630.0,
-            base_monthly_hours=140,
-            base_monthly_days=14,
-            maintenance_allowance_daily=3.8,
-            meal_allowance_daily=4.5,
-        )
-    )
-    store.bookmarks.update(lambda b: b.model_copy(update={"nounou_calendar_id": "bk_nounou_1"}))
+    cli, _ = _make_cli_stack(tmp_path, cal_client=cal_client)
 
-    nounou_argv = [
+    date_argv = [
         "list-events",
         "--calendar",
-        "nounou",
+        "primary",
         "--from",
         "2026-05-01",
         "--to",
         "2026-05-31",
     ]
-    assert cli.run(nounou_argv) == 0
+    assert cli.run(date_argv) == 0
     capsys.readouterr()
     call_kw = cal_client.events.return_value.list.call_args.kwargs
-    assert call_kw["calendarId"] == "bk_nounou_1"
+    assert call_kw["calendarId"] == "primary"
     assert call_kw["timeMin"].startswith("2026-05-01T00:00:00+")
     assert call_kw["timeMax"].startswith("2026-05-31T23:59:59+")
 

@@ -1,17 +1,56 @@
-# Example neutral configuration for Alfred V7.1 Lean
-project_name: "Alfred Personal Chief of Staff"
+project_name: "Alfred Family Office Chief of Staff"
 timezone: "Europe/Paris"
 language: "fr-FR"
 
+features:
+  drive_knowledge_sync: true
+  inbox_auto_triage: true
+  gmail_drafts_and_send: true
+  calendar_management: true
+  tasks_management: true
+  contacts_lookup: true
+  google_docs_suite: false
+  signature_delegation: false
+  mcp_gemini_bridge: false
+
+identity:
+  default_send_as_email: ""
+  default_send_as_display_name: ""
+  calendar_organizer_email: ""
+  never_invite_emails: []
+
+models:
+  orchestrator_model: "gemini-pro-orchestrator"
+  light_model: "gemini-4-hydrogen-medium"
+  light_effort: "medium"
+  trace_model: "gemini-4-hydrogen-low"
+  trace_effort: "low"
+
 google:
   referentiel_drive_folder_name: "_ALFRED_REFERENTIEL_"
-  nounou_calendar_name: "Garde Nounou"
   primary_calendar_id: "primary"
-  oauth_scopes:
-    - "https://www.googleapis.com/auth/drive"
-    - "https://www.googleapis.com/auth/gmail.modify"
-    - "https://www.googleapis.com/auth/gmail.compose"
-    - "https://www.googleapis.com/auth/calendar"
+  default_tasklist_id: "@default"
+
+inbox:
+  archive_processed_emails_by_default: true
+  bypass_calendar_invites: true
+  skip_promotions_social_forums: true
+  silent_creates_agy_session: false
+  denylist_senders: []
+  denylist_domains: []
+
+calendar:
+  include_authenticated_owners_in_hold_allowlist: false
+
+security:
+  protected_signature_drive_ids: []
+  require_spf_dkim_for_evolve_email: true
+
+mcp:
+  host: "127.0.0.1"
+  port: 8765
+  public_url: ""
+  sync_wait_seconds: 25
 
 antigravity:
   binary_path: "agy"
@@ -19,27 +58,24 @@ antigravity:
   sync_daemon_on_changes: true
   idle_wal_grace_sec: 15
   workspaces:
+    onboard: "alfred-onboard"
     life: "alfred-life"
     inbox: "alfred-inbox"
     calendar: "alfred-calendar"
+    tasks: "alfred-tasks"
     evolve: "alfred-evolve"
-
-calendar:
-  include_authenticated_owners_in_hold_allowlist: true
-
-inbox:
-  archive_processed_emails_by_default: true
 
 knowledge:
   max_body_lines: 150
 
 evolve:
   core_base_branch: "main"
-  instance_base_branch: "main"
 
 routines:
   inbox_interval_sec: 120
   periodic_interval_sec: 1800
   spawn_agy: true
   cognitive_agy: true
-  vacation_lookahead_days: 45
+  backup_instance_config_to_drive: true
+
+extensions: {}

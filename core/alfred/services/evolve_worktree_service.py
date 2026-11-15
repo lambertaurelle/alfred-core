@@ -1,4 +1,4 @@
-"""alfred-evolve isolated git worktree TDD runner and Dual-Repo Pull Request generator."""
+"""alfred-evolve isolated git worktree TDD runner and Mono-Repo Pull Request generator."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 
@@ -46,7 +47,7 @@ def _validate_proposal_id(proposal_id: str) -> str:
 
 
 class EvolveWorktreeService:
-    """Manage isolated git worktrees, TDD gates, and Dual-Repo PRs (core + instance)."""
+    """Manage isolated git worktrees, 5 TDD/Leak gates, and Mono-Repo Pull Requests."""
 
     def __init__(
         self,
@@ -56,7 +57,7 @@ class EvolveWorktreeService:
         tdd_gate_fn: Callable[[Path], None] | None = None,
         pr_publisher_fn: Callable[[Path, str, str, str, str], str] | None = None,
     ) -> None:
-        """Initialize the Dual-Repo evolution service.
+        """Initialize the Mono-Repo evolution service.
 
         Args:
             paths: Resolved AlfredPaths layout.
@@ -104,36 +105,36 @@ class EvolveWorktreeService:
             f"- **Titre** : {title}\n"
             f"- **Description** : {description}\n\n"
             f"## Pipeline Post-Validation (`Proceed`)\n"
-            f"1. Création de `git worktree` isolés sur `evolve/{safe_id}`.\n"
+            f"1. Création d'un `git worktree` isolé mono-repo sur `evolve/{safe_id}`.\n"
             f"2. Validation TDD (`check_code_architecture.py`, `ruff`, `mypy`, `pytest >= 90%`).\n"
-            f"3. Vérification `check-upstream-leak.sh` (0 donnée personnelle sur les 2 repos).\n"
-            f"4. Pull Requests automatiques sur **`alfred-core`** et **`alfred-instance`**.\n"
+            f"3. Vérification `check-upstream-leak.sh` (0 donnée personnelle).\n"
+            f"4. Pull Request unique sur **`alfred-core`**.\n"
         )
         return record, plan_md
 
-    def create_isolated_worktrees(self, proposal_id: str) -> tuple[Path, Path]:
-        """Create isolated git worktrees for both alfred-core and alfred-instance.
+    def create_isolated_worktree(self, proposal_id: str) -> Path:
+        """Create an isolated git worktree for the unified Alfred mono-repo.
 
         Args:
             proposal_id: Evolution proposal slug.
 
         Returns:
-            Tuple of (core_worktree_path, instance_worktree_path).
+            Path to the isolated git worktree checkout.
         """
         safe_id = _validate_proposal_id(proposal_id)
         branch = f"evolve/{safe_id}"
-        base_dir = self._paths.worktrees_dir / safe_id
-        core_wt = base_dir / "core"
-        inst_wt = base_dir / "instance"
-        if base_dir.exists():
-            self.cleanup_worktrees(safe_id)
+        wt_dir = self._paths.worktrees_dir / safe_id
+        if wt_dir.exists():
+            self.cleanup_worktree(safe_id)
 
-        base_dir.mkdir(parents=True, exist_ok=True)
-        self._git_worktree_add(
-            self._paths.root_dir, core_wt, branch, self._settings.core_base_branch
-        )
-        self._git_worktree_add(
-            self._paths.instance_dir, inst_wt, branch, self._settings.instance_base_branch
+        self._paths.worktrees_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "worktree", "add", "-B", branch, str(wt_dir), self._settings.core_base_branch],
+            cwd=self._paths.root_dir,
+            env=_sanitized_git_env(self._paths.root_dir),
+            check=True,
+            capture_output=True,
+            text=True,
         )
         self._state_store.evolution_ledger.update(
             lambda led: (
@@ -142,7 +143,7 @@ class EvolveWorktreeService:
                         "proposals": {
                             **led.proposals,
                             safe_id: led.proposals[safe_id].model_copy(
-                                update={"worktree_path": str(base_dir), "status": "IN_WORKTREE"}
+                                update={"worktree_path": str(wt_dir), "status": "IN_WORKTREE"}
                             ),
                         }
                     }
@@ -151,53 +152,41 @@ class EvolveWorktreeService:
                 else led
             )
         )
-        return core_wt, inst_wt
+        return wt_dir
 
-    def execute_and_open_dual_prs(
+    def execute_and_open_pr(
         self,
         proposal_id: str,
         title: str,
         body: str,
-        core_worktree: Path,
-        instance_worktree: Path,
-    ) -> list[PullRequestArtifact]:
-        """Run TDD + Zero-Leak gates, commit worktrees, and open PRs on both Git repos.
+        worktree: Path,
+    ) -> PullRequestArtifact:
+        """Run TDD + Zero-Leak gates, commit worktree, and open the Mono-Repo Pull Request.
 
         Args:
             proposal_id: Evolution proposal slug.
             title: Commit and Pull Request title.
             body: Pull Request summary body.
-            core_worktree: Isolated worktree path for alfred-core.
-            instance_worktree: Isolated worktree path for alfred-instance.
+            worktree: Isolated mono-repo worktree path.
 
         Returns:
-            List of two PullRequestArtifact descriptors (alfred-core and alfred-instance).
+            Generated PullRequestArtifact descriptor.
 
         Raises:
             RuntimeError: If TDD gates or check-upstream-leak.sh detect any violation.
         """
         safe_id = _validate_proposal_id(proposal_id)
-        self._run_tdd_and_leak_gates(core_worktree, instance_worktree)
+        self._run_tdd_and_leak_gates(worktree)
         branch = f"evolve/{safe_id}"
-        core_pr = self._commit_and_open_pr(
+        artifact = self._commit_and_open_pr(
             repo_name="alfred-core",
-            worktree=core_worktree,
+            worktree=worktree,
             branch=branch,
             base_branch=self._settings.core_base_branch,
             proposal_id=safe_id,
             title=title,
             body=body,
         )
-        inst_pr = self._commit_and_open_pr(
-            repo_name="alfred-instance",
-            worktree=instance_worktree,
-            branch=branch,
-            base_branch=self._settings.instance_base_branch,
-            proposal_id=safe_id,
-            title=title,
-            body=body,
-        )
-        artifacts = [core_pr, inst_pr]
         self._state_store.evolution_ledger.update(
             lambda led: (
                 led.model_copy(
@@ -205,7 +194,7 @@ class EvolveWorktreeService:
                         "proposals": {
                             **led.proposals,
                             safe_id: led.proposals[safe_id].model_copy(
-                                update={"status": "PR_OPENED", "pull_requests": artifacts}
+                                update={"status": "PR_OPENED", "pull_requests": [artifact]}
                             ),
                         }
                     }
@@ -214,135 +203,100 @@ class EvolveWorktreeService:
                 else led
             )
         )
-        return artifacts
+        return artifact
 
-    def cleanup_worktrees(self, proposal_id: str) -> None:
-        """Detach isolated git worktree checkouts while preserving committed feature branches.
+    def cleanup_worktree(self, proposal_id: str) -> None:
+        """Detach an isolated git worktree checkout while preserving its committed branch.
 
         Args:
-            proposal_id: Evolution proposal slug whose worktrees should be detached.
+            proposal_id: Evolution proposal slug whose worktree should be detached.
         """
         safe_id = _validate_proposal_id(proposal_id)
-        base_dir = self._paths.worktrees_dir / safe_id
-        for repo_dir, wt_dir in (
-            (self._paths.root_dir, base_dir / "core"),
-            (self._paths.instance_dir, base_dir / "instance"),
-        ):
-            if wt_dir.exists() and (repo_dir / ".git").exists():
-                subprocess.run(
-                    ["git", "worktree", "remove", "--force", str(wt_dir)],
-                    cwd=repo_dir,
-                    env=_sanitized_git_env(self._paths.root_dir),
-                    check=False,
-                    capture_output=True,
-                )
-        if base_dir.exists():
-            shutil.rmtree(base_dir, ignore_errors=True)
-
-    def _git_worktree_add(
-        self,
-        repo_dir: Path,
-        wt_dir: Path,
-        branch: str,
-        base_branch: str,
-    ) -> None:
-        """Create or reset a git worktree checkout on branch starting at base_branch."""
-        subprocess.run(
-            ["git", "worktree", "add", "-B", branch, str(wt_dir), base_branch],
-            cwd=repo_dir,
-            env=_sanitized_git_env(self._paths.root_dir),
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        wt_dir = self._paths.worktrees_dir / safe_id
+        if wt_dir.exists() and (self._paths.root_dir / ".git").exists():
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(wt_dir)],
+                cwd=self._paths.root_dir,
+                env=_sanitized_git_env(self._paths.root_dir),
+                check=False,
+                capture_output=True,
+            )
+        if wt_dir.exists():
+            shutil.rmtree(wt_dir, ignore_errors=True)
 
     def _resolve_python_bin(self) -> Path:
         """Locate the active .venv Python binary or fallback to sys.executable."""
-        import sys
-
         venv_py = self._paths.root_dir / ".venv" / "bin" / "python"
         return venv_py if venv_py.exists() else Path(sys.executable)
 
-    def _run_leak_and_ext_checks(self, core_worktree: Path, instance_worktree: Path) -> None:
-        """Enforce leak guard on both worktrees and AST check on instance/extensions."""
-        leak_script = core_worktree / "core" / "scripts" / "check-upstream-leak.sh"
+    def _run_leak_and_ext_checks(self, worktree: Path) -> None:
+        """Enforce leak guard on the mono-repo worktree and AST checks on instance examples."""
+        leak_script = worktree / "core" / "scripts" / "check-upstream-leak.sh"
         git_env = _sanitized_git_env(self._paths.root_dir)
         if leak_script.exists():
-            targets = (("alfred-core", core_worktree), ("alfred-instance", instance_worktree))
-            for label, wt in targets:
-                res = subprocess.run(
-                    ["bash", str(leak_script), str(wt)],
-                    env=git_env,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                if res.returncode != 0:
-                    raise RuntimeError(
-                        f"Zero Upstream Leak check failed on {label}:\n{res.stderr}\n{res.stdout}"
-                    )
-
-        arch_script = core_worktree / "core" / "scripts" / "check_code_architecture.py"
-        ext_dir = instance_worktree / "extensions"
-        if arch_script.exists() and ext_dir.exists():
-            ext_res = subprocess.run(
-                [str(self._resolve_python_bin()), str(arch_script), "--only-dir", str(ext_dir)],
-                cwd=core_worktree,
+            res = subprocess.run(
+                ["bash", str(leak_script), str(worktree)],
                 env=git_env,
                 capture_output=True,
                 text=True,
                 check=False,
             )
-            if ext_res.returncode != 0:
-                raise RuntimeError(f"Instance extensions architecture failed:\n{ext_res.stderr}")
+            if res.returncode != 0:
+                raise RuntimeError(
+                    f"Zero Upstream Leak check failed:\n{res.stderr}\n{res.stdout}"
+                )
 
-    def _run_tdd_and_leak_gates(self, core_worktree: Path, instance_worktree: Path) -> None:
-        """Run leak checks on both repos and full 5-gate TDD suite on core + extensions."""
-        self._run_leak_and_ext_checks(core_worktree, instance_worktree)
+        arch_script = worktree / "core" / "scripts" / "check_code_architecture.py"
+        if arch_script.exists():
+            py_str = str(self._resolve_python_bin())
+            arch_cmd = [py_str, str(arch_script), "--repo-root", str(worktree)]
+            examples_dir = worktree / "instance" / "examples"
+            if examples_dir.exists():
+                arch_cmd.extend(["--extra-dir", str(examples_dir)])
+            arch_res = subprocess.run(
+                arch_cmd,
+                cwd=worktree,
+                env=git_env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if arch_res.returncode != 0:
+                msg = f"Architecture gate failed:\n{arch_res.stderr}\n{arch_res.stdout}"
+                raise RuntimeError(msg)
+
+    def _run_tdd_and_leak_gates(self, worktree: Path) -> None:
+        """Run leak checks and the full 5-gate TDD suite on the mono-repo worktree."""
+        self._run_leak_and_ext_checks(worktree)
         if self._tdd_gate_fn is not None:
-            self._tdd_gate_fn(core_worktree)
+            self._tdd_gate_fn(worktree)
             return
 
         venv_bin = self._paths.root_dir / ".venv" / "bin"
-        py_bin = self._resolve_python_bin()
-        arch_script = core_worktree / "core" / "scripts" / "check_code_architecture.py"
-        if arch_script.exists():
-            arch_res = subprocess.run(
-                [str(py_bin), str(arch_script), "--repo-root", str(core_worktree)],
-                cwd=core_worktree,
-                capture_output=True,
-                text=True,
-            )
-            if arch_res.returncode != 0:
-                raise RuntimeError(f"Architecture gate failed:\n{arch_res.stderr}")
-        if (venv_bin / "ruff").exists() and (core_worktree / "core").exists():
+        if (venv_bin / "ruff").exists() and (worktree / "core").exists():
             ruff_cmd = [str(venv_bin / "ruff"), "check"]
-            if (core_worktree / "pyproject.toml").exists():
-                ruff_cmd.extend(["--config", str(core_worktree / "pyproject.toml")])
-            ruff_cmd.append(str(core_worktree / "core"))
-            if (instance_worktree / "extensions").exists():
-                ruff_cmd.append(str(instance_worktree / "extensions"))
-            ruff_res = subprocess.run(
-                ruff_cmd,
-                cwd=core_worktree,
-                capture_output=True,
-                text=True,
-            )
+            if (worktree / "pyproject.toml").exists():
+                ruff_cmd.extend(["--config", str(worktree / "pyproject.toml")])
+            ruff_cmd.append(str(worktree / "core"))
+            for sub_rel in ("extensions", "examples"):
+                if (worktree / "instance" / sub_rel).exists():
+                    ruff_cmd.append(str(worktree / "instance" / sub_rel))
+            ruff_res = subprocess.run(ruff_cmd, cwd=worktree, capture_output=True, text=True)
             if ruff_res.returncode != 0:
                 raise RuntimeError(f"Ruff gate failed:\n{ruff_res.stdout}\n{ruff_res.stderr}")
-        if (venv_bin / "mypy").exists() and (core_worktree / "core" / "alfred").exists():
+        if (venv_bin / "mypy").exists() and (worktree / "core" / "alfred").exists():
             mypy_res = subprocess.run(
                 [str(venv_bin / "mypy"), "--strict", "core/alfred", "core/scripts"],
-                cwd=core_worktree,
+                cwd=worktree,
                 capture_output=True,
                 text=True,
             )
             if mypy_res.returncode != 0:
                 raise RuntimeError(f"Mypy gate failed:\n{mypy_res.stdout}\n{mypy_res.stderr}")
-        if (venv_bin / "pytest").exists() and (core_worktree / "core" / "tests").exists():
+        if (venv_bin / "pytest").exists() and (worktree / "core" / "tests").exists():
             test_res = subprocess.run(
                 [str(venv_bin / "pytest"), "--cov=core", "--cov-fail-under=90"],
-                cwd=core_worktree,
+                cwd=worktree,
                 capture_output=True,
                 text=True,
             )
@@ -451,7 +405,6 @@ class EvolveWorktreeService:
     ) -> PullRequestArtifact:
         """Commit worktree changes and publish or materialize the Pull Request artifact."""
         changed_files = self._stage_and_commit_worktree(worktree, branch, base_branch, title)
-
         if self._pr_publisher_fn is not None:
             pr_ref = self._pr_publisher_fn(worktree, branch, base_branch, title, body)
             status = "OPEN_REMOTE"

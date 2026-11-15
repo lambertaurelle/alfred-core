@@ -1,4 +1,4 @@
-"""Domain models for calendar HOLDs, invitations, childcare alerts, and evolution PRs."""
+"""Domain models for generic multi-calendar HOLDs, FreeBusy windows, invitations, and PRs."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ class CalendarConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    include_authenticated_owners_in_hold_allowlist: bool = True
+    include_authenticated_owners_in_hold_allowlist: bool = False
 
     @classmethod
     def from_dict(cls, raw: object) -> CalendarConfig:
@@ -34,7 +34,7 @@ class CalendarConfig(BaseModel):
             return cls()
         return cls(
             include_authenticated_owners_in_hold_allowlist=bool(
-                raw.get("include_authenticated_owners_in_hold_allowlist", True)
+                raw.get("include_authenticated_owners_in_hold_allowlist", False)
             )
         )
 
@@ -43,6 +43,28 @@ class HoldAllowlistState(BaseModel):
     """Persistent list of email addresses allowed to receive immediate [HOLD] invites."""
 
     emails: list[str] = Field(default_factory=list)
+
+
+class CalendarListEntry(BaseModel):
+    """Normalized Google Calendar list entry returned by calendarList.list."""
+
+    model_config = ConfigDict(frozen=True)
+
+    calendar_id: str
+    summary: str
+    primary: bool = False
+    access_role: str = ""
+    time_zone: str = ""
+
+
+class FreeBusyInterval(BaseModel):
+    """Busy time window returned by Google Calendar freebusy.query."""
+
+    model_config = ConfigDict(frozen=True)
+
+    calendar_id: str
+    start_iso: str
+    end_iso: str
 
 
 class CalendarActionIntent(StrEnum):
@@ -63,6 +85,7 @@ class CalendarSlotProposal(BaseModel):
     send_invites: bool = True
     location: str = ""
     description: str = ""
+    recurrence: list[str] = Field(default_factory=list)
 
 
 class CalendarTriageAction(BaseModel):
@@ -72,29 +95,8 @@ class CalendarTriageAction(BaseModel):
     slots: list[CalendarSlotProposal] = Field(default_factory=list)
 
 
-class PajemploiReport(BaseModel):
-    """Deterministic monthly Pajemploi declaration summary computed at last_day - 3."""
-
-    period_month: str
-    employee_name: str
-    heures_normales: int
-    heures_complementaires_majorees: int
-    jours_activite: int
-    jours_conges_payes: int = 0
-    salaire_net_total: float
-    indemnites_entretien: float
-    indemnites_repas: float
-    total_virement_eur: float
-    theoretical_working_hours: float
-    actual_working_days: int
-    absence_unpaid_hours: float
-    deduction_cour_cassation_eur: float
-    overtime_hours: float
-    implementation_plan_markdown: str = ""
-
-
 class PullRequestArtifact(BaseModel):
-    """Generated Pull Request descriptor for one of the two Git repositories."""
+    """Generated Pull Request descriptor for the Alfred mono-repo."""
 
     repo_name: str
     branch_name: str
@@ -117,6 +119,6 @@ class EvolutionProposalRecord(BaseModel):
 
 
 class EvolutionProposalsLedger(BaseModel):
-    """Persistent ledger of system evolution proposals and dual-repo PRs."""
+    """Persistent ledger of system evolution proposals and mono-repo PRs."""
 
     proposals: dict[str, EvolutionProposalRecord] = Field(default_factory=dict)

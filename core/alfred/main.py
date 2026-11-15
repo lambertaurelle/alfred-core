@@ -1,28 +1,15 @@
-"""Alfred V7.1 Lean CLI entrypoint and dependency injection bootstrap (< 80 lines)."""
+"""Alfred V8.0 Family Office CLI entrypoint and dependency injection bootstrap (< 80 lines)."""
 
 from __future__ import annotations
 
 import sys
 
+from alfred.controllers.app_factory import build_cli_controller
 from alfred.controllers.cli_controller import CliController
-from alfred.domain.models import AlfredPaths, AlfredSettings
-from alfred.repositories.state_store import StateStore
-from alfred.services.agy_session_manager import AgySessionManager
-from alfred.services.calendar_service import CalendarService
-from alfred.services.drive_service import DriveService
-from alfred.services.evolve_worktree_service import EvolveWorktreeService
-from alfred.services.gmail_service import GmailService
-from alfred.services.google_auth import GoogleOAuthService
-from alfred.services.inbox_triage_service import InboxTriageService
-from alfred.services.knowledge_service import KnowledgeService
-from alfred.services.nounou_service import NounouService
-from alfred.services.pajemploi_calculator import PajemploiCalculator
-from alfred.services.routine_service import RoutineService
-from alfred.services.workspace_service import WorkspaceService
 
 
 def build_controller(root_override: str | None = None) -> CliController:
-    """Wire Clean Architecture repositories, services, and CLI controller.
+    """Wire Clean Architecture repositories, services, and V8 CLI controller.
 
     Args:
         root_override: Optional override for ALFRED_ROOT_DIR.
@@ -30,38 +17,11 @@ def build_controller(root_override: str | None = None) -> CliController:
     Returns:
         Fully wired CliController instance.
     """
-    paths = AlfredPaths.from_env(root_override)
-    settings = AlfredSettings.load(paths)
-    store = StateStore(paths)
-    oauth = GoogleOAuthService(paths=paths, settings=settings)
-    drive = DriveService(paths=paths, settings=settings, state_store=store, oauth_service=oauth)
-    token_file = paths.secrets_dir / "token.json"
-    backup = drive.backup_markdown_file
-    knowledge = KnowledgeService(
-        paths, settings, store, lambda fn, raw: backup(fn, raw) if token_file.exists() else ""
-    )
-    gmail = GmailService(paths=paths, settings=settings, oauth_service=oauth)
-    calendar = CalendarService(paths, settings, oauth_service=oauth, state_store=store)
-    agy = AgySessionManager(paths=paths, settings=settings, state_store=store)
-    workspaces = WorkspaceService(paths=paths, settings=settings, agy_manager=agy)
-    inbox = InboxTriageService(
-        store, gmail, knowledge, drive, agy, calendar_service=calendar, settings=settings
-    )
-    nounou = NounouService(store, calendar, knowledge, settings)
-    pajemploi = PajemploiCalculator()
-    routines = RoutineService(
-        paths, settings, store, inbox, drive, nounou, pajemploi, calendar, agy
-    )
-    evolve = EvolveWorktreeService(paths=paths, settings=settings, state_store=store)
-    return CliController(
-        knowledge, drive, inbox, nounou, pajemploi, calendar, evolve, store,
-        gmail_service=gmail, oauth_service=oauth, settings=settings,
-        workspace_service=workspaces, agy_manager=agy, routine_service=routines,
-    )
+    return build_cli_controller(root_override=root_override)
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Execute the Alfred CLI entrypoint.
+    """Execute the Alfred V8.0 CLI entrypoint.
 
     Args:
         argv: Optional argument list; defaults to sys.argv[1:].

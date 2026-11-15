@@ -96,29 +96,57 @@ class DriveService:
             top_level_folders=top_folders,
             entries=entries,
         )
-        self._state_store.drive_index.save(index)
-        self._state_store.bookmarks.update(
-            lambda b: b.model_copy(
-                update={
-                    "drive_page_token": start_token,
-                    "drive_last_synced_at": index.last_synced_at,
-                }
-            )
-        )
-        plan_md = self._render_init_drive_plan(index)
-        return index, plan_md
+        self._persist_index_and_bookmark(index, start_token)
+        return index, self._render_init_drive_plan(index)
 
-    def execute_init_drive_taxonomy(
-        self,
-        knowledge_service: KnowledgeService,
-    ) -> KnowledgeDocument:
+    def build_family_office_discovery_map(self) -> dict[str, Any]:
+        """Cluster the indexed Google Drive tree by top-level domain for First-Run onboarding.
+
+        Returns:
+            Structured dictionary grouping subfolders and key documents per top-level folder.
+        """
+        index = (
+            self._state_store.drive_index.load()
+            if self._state_store.drive_index.exists()
+            else self.init_drive()[0]
+        )
+        buckets: dict[str, dict[str, Any]] = {}
+        for entry in index.entries.values():
+            parts = [seg for seg in entry.path.strip("/").split("/") if seg]
+            root_name = parts[0] if len(parts) > 1 or entry.is_folder else "(Racine)"
+            if root_name == self._settings.referentiel_drive_folder_name:
+                continue
+            b = buckets.setdefault(
+                root_name, {"subfolders": set(), "file_count": 0, "key_documents": []}
+            )
+            if entry.is_folder and len(parts) >= 2:
+                b["subfolders"].add(parts[1])
+            elif not entry.is_folder:
+                b["file_count"] += 1
+                if len(b["key_documents"]) < 12:
+                    b["key_documents"].append(
+                        {"file_id": entry.file_id, "name": entry.name, "path": entry.path}
+                    )
+        return {
+            "folder_count": index.folder_count,
+            "file_count": index.file_count,
+            "last_synced_at": index.last_synced_at,
+            "domains": [
+                {
+                    "folder": name,
+                    "subfolders": sorted(d["subfolders"])[:20],
+                    "file_count": d["file_count"],
+                    "key_documents": d["key_documents"],
+                }
+                for name, d in sorted(buckets.items())
+            ],
+        }
+
+    def execute_init_drive_taxonomy(self, knowledge_service: KnowledgeService) -> KnowledgeDocument:
         """Persist Stage-3 00_drive_taxonomy_and_filing_rules.md from scanned Drive index.
 
         Args:
             knowledge_service: 3-tier YAML knowledge service handling local save & Drive backup.
-
-        Returns:
-            Persisted KnowledgeDocument for 00_drive_taxonomy_and_filing_rules.md.
         """
         index = (
             self._state_store.drive_index.load()
@@ -130,32 +158,26 @@ class DriveService:
             title="Cartographie Google Drive & Règles de Rangement",
             domain="drive_governance",
             summary=(
-                f"Arborescence Google Drive indexée ({index.folder_count} dossiers, "
-                f"{index.file_count} fichiers) et conventions de classement."
+                f"Arborescence Drive ({index.folder_count} dossiers, {index.file_count} fichiers)."
             ),
             keywords=["drive", "taxonomie", "rangement", "arborescence", "classement"],
             drive_source_ids=[],
         )
-        folder_lines = (
-            "\n".join(f"- `{name}/`" for name in index.top_level_folders[:30])
-            or "- `(Racine uniquement)`"
-        )
-        sample_files = [e.path for e in list(index.entries.values()) if not e.is_folder][:15]
-        sample_lines = "\n".join(f"- `{p}`" for p in sample_files) or "- `(Aucun fichier)`"
+        folders = "\n".join(f"- `{n}/`" for n in index.top_level_folders[:30]) or "- `(Racine)`"
+        file_lines = [f"- `{e.path}`" for e in index.entries.values() if not e.is_folder]
+        samples = "\n".join(file_lines)[:900] or "- `(Aucun fichier)`"
+        ref_dir = self._settings.referentiel_drive_folder_name
         body = (
-            "# Cartographie Google Drive & Règles de Rangement\n\n"
-            "## 1. Métriques d'Indexation First-Run\n"
+            f"# Cartographie Google Drive & Règles de Rangement\n\n"
+            f"## 1. Métriques d'Indexation First-Run\n"
             f"- **Dossiers indexés** : {index.folder_count}\n"
             f"- **Fichiers indexés** : {index.file_count}\n"
             f"- **Dernière synchronisation** : `{index.last_synced_at}`\n\n"
-            "## 2. Dossiers Racines Détectés\n"
-            f"{folder_lines}\n\n"
-            "## 3. Échantillon d'Arborescence\n"
-            f"{sample_lines}\n\n"
-            "## 4. Règles de Rangement\n"
-            "- Les pièces originales restent dans leurs dossiers thématiques Google Drive.\n"
-            "- Les fiches `.md` de synthèse sont sauvegardées dans "
-            f"`{self._settings.referentiel_drive_folder_name}`.\n"
+            f"## 2. Dossiers Racines Détectés\n{folders}\n\n"
+            f"## 3. Échantillon d'Arborescence\n{samples}\n\n"
+            f"## 4. Règles de Rangement\n"
+            f"- Les pièces originales restent dans leurs dossiers thématiques Google Drive.\n"
+            f"- Les fiches `.md` sont sauvegardées dans `{ref_dir}`.\n"
         )
         return knowledge_service.upsert_document("00_drive_taxonomy_and_filing_rules.md", fm, body)
 
@@ -214,16 +236,17 @@ class DriveService:
             ),
             entries=entries,
         )
-        self._state_store.drive_index.save(updated)
+        self._persist_index_and_bookmark(updated, new_start_token)
+        return updated
+
+    def _persist_index_and_bookmark(self, index: DriveMetadataIndex, token: str) -> None:
+        """Persist DriveMetadataIndex and update bookmarks atomically."""
+        self._state_store.drive_index.save(index)
         self._state_store.bookmarks.update(
             lambda b: b.model_copy(
-                update={
-                    "drive_page_token": new_start_token,
-                    "drive_last_synced_at": updated.last_synced_at,
-                }
+                update={"drive_page_token": token, "drive_last_synced_at": index.last_synced_at}
             )
         )
-        return updated
 
     def search_index(self, query: str) -> list[DriveEntry]:
         """Search the local Drive metadata index at 0 tokens by file name or folder path.
@@ -236,13 +259,14 @@ class DriveService:
         """
         needle = fold_accents(query).strip()
         index = self._state_store.drive_index.load()
-        matches = [
-            entry
-            for entry in index.entries.values()
-            if needle in fold_accents(entry.name) or needle in fold_accents(entry.path)
-        ]
-        matches.sort(key=lambda item: item.path or item.name)
-        return matches
+        return sorted(
+            (
+                e
+                for e in index.entries.values()
+                if needle in fold_accents(e.name) or needle in fold_accents(e.path)
+            ),
+            key=lambda item: item.path or item.name,
+        )
 
     def read_file_text(self, file_id: str) -> str:
         """Read a Google Drive file natively (0-OCR first) with (file_id, modifiedTime) cache.
@@ -252,32 +276,26 @@ class DriveService:
 
         Returns:
             Extracted UTF-8 text content.
+
+        Raises:
+            PermissionError: If file_id belongs to protected_signature_drive_ids.
         """
+        if file_id in self._settings.security.protected_signature_drive_ids:
+            raise PermissionError(
+                f"Access denied: Drive file '{file_id}' is protected by signature_vault policy."
+            )
         client = self._require_drive_client()
         meta = client.files().get(fileId=file_id, fields="id,name,mimeType,modifiedTime").execute()
-        modified_time = str(meta.get("modifiedTime", ""))
-        mime_type = str(meta.get("mimeType", ""))
-
-        cache = self._state_store.drive_read_cache.load()
-        cached = cache.items.get(file_id)
+        modified_time, mime_type = str(meta.get("modifiedTime", "")), str(meta.get("mimeType", ""))
+        cached = self._state_store.drive_read_cache.load().items.get(file_id)
         if cached is not None and cached.modified_time == modified_time:
             return cached.text
-
         method, text = self._extract_by_mime(client, file_id, mime_type)
+        entry = DriveCachedContent(
+            file_id=file_id, modified_time=modified_time, extraction_method=method, text=text
+        )
         self._state_store.drive_read_cache.update(
-            lambda cur: cur.model_copy(
-                update={
-                    "items": {
-                        **cur.items,
-                        file_id: DriveCachedContent(
-                            file_id=file_id,
-                            modified_time=modified_time,
-                            extraction_method=method,
-                            text=text,
-                        ),
-                    }
-                }
-            )
+            lambda cur: cur.model_copy(update={"items": {**cur.items, file_id: entry}})
         )
         return text
 
@@ -285,7 +303,7 @@ class DriveService:
         """Back up an up-to-date .md reference file intact to _ALFRED_REFERENTIEL_ on Drive.
 
         Args:
-            file_name: Reference .md file name (e.g. '02_assistante_maternelle.md').
+            file_name: Reference .md file name (e.g. '02_patrimoine_et_contrats_cles.md').
             content: Full Markdown string including YAML frontmatter.
 
         Returns:
@@ -295,14 +313,12 @@ class DriveService:
 
         client = self._require_drive_client()
         folder_id = self._ensure_referentiel_folder(client)
-        safe_folder = _escape_drive_query_literal(folder_id)
-        safe_name = _escape_drive_query_literal(file_name)
-        query = f"'{safe_folder}' in parents and name = '{safe_name}' and trashed = false"
+        safe_f = _escape_drive_query_literal(folder_id)
+        safe_n = _escape_drive_query_literal(file_name)
+        query = f"'{safe_f}' in parents and name = '{safe_n}' and trashed = false"
         existing = client.files().list(q=query, fields="files(id,name)").execute().get("files", [])
         media = MediaIoBaseUpload(
-            io.BytesIO(content.encode("utf-8")),
-            mimetype="text/markdown",
-            resumable=False,
+            io.BytesIO(content.encode("utf-8")), mimetype="text/markdown", resumable=False
         )
         if existing:
             target_id = str(existing[0]["id"])
@@ -391,58 +407,42 @@ class DriveService:
         """Extract Google Sheets text via Sheets v4 (all tabs) or Drive CSV export fallback."""
         if self._sheets_client is None:
             raw = client.files().export(fileId=file_id, mimeType="text/csv").execute()
-            text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-            return ("gsheet_export_csv", text)
-        spreadsheets_api = self._sheets_client.spreadsheets()
-        meta = spreadsheets_api.get(
-            spreadsheetId=file_id,
-            fields="sheets.properties.title",
-        ).execute()
-        titles = (
-            [
-                s["properties"]["title"]
-                for s in meta.get("sheets", [])
-                if isinstance(s, dict)
-                and isinstance(s.get("properties", {}).get("title"), str)
-            ]
-            if isinstance(meta, dict)
-            else []
-        )
+            txt = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+            return ("gsheet_export_csv", txt)
+        api = self._sheets_client.spreadsheets()
+        meta = api.get(spreadsheetId=file_id, fields="sheets.properties.title").execute()
+        sheets = meta.get("sheets", []) if isinstance(meta, dict) else []
+        titles = [
+            s["properties"]["title"]
+            for s in sheets
+            if isinstance(s, dict) and isinstance(s.get("properties", {}).get("title"), str)
+        ]
         if len(titles) > 1:
-            sections: list[str] = []
+            sections = []
             for title in titles:
-                escaped = title.replace("'", "''")
-                resp = (
-                    spreadsheets_api.values()
-                    .get(spreadsheetId=file_id, range=f"'{escaped}'!A1:Z500")
-                    .execute()
-                )
-                rows = ["\t".join(str(c) for c in row) for row in resp.get("values", [])]
-                sections.append(f"[{title}]\n" + "\n".join(rows))
+                rng = f"'{title.replace(chr(39), chr(39) * 2)}'!A1:Z500"
+                resp = api.values().get(spreadsheetId=file_id, range=rng).execute()
+                vals = resp.get("values", [])
+                sections.append(f"[{title}]\n" + "\n".join("\t".join(map(str, r)) for r in vals))
             return ("gsheet_values_get", "\n\n".join(sections))
         rng = f"'{titles[0].replace(chr(39), chr(39) * 2)}'!A1:Z500" if titles else "A1:Z500"
-        resp = spreadsheets_api.values().get(spreadsheetId=file_id, range=rng).execute()
-        rows = ["\t".join(str(cell) for cell in row) for row in resp.get("values", [])]
-        return ("gsheet_values_get", "\n".join(rows))
+        vals = api.values().get(spreadsheetId=file_id, range=rng).execute().get("values", [])
+        return ("gsheet_values_get", "\n".join("\t".join(map(str, r)) for r in vals))
 
     def _extract_by_mime(self, client: Any, file_id: str, mime_type: str) -> tuple[str, str]:
         """Extract UTF-8 text using 0-OCR native APIs first and Vision hook only on scans."""
         if mime_type == GDOC_MIME:
             raw = client.files().export(fileId=file_id, mimeType="text/markdown").execute()
-            text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-            return ("gdoc_export_markdown", text)
+            txt = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+            return ("gdoc_export_markdown", txt)
         if mime_type == GSHEET_MIME:
             return self._extract_spreadsheet_text(client, file_id)
         if mime_type == GSLIDE_MIME:
             raw = client.files().export(fileId=file_id, mimeType="text/plain").execute()
-            text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
-            return ("gslide_export_text", text)
-        raw_bytes_or_str = client.files().get_media(fileId=file_id).execute()
-        raw_bytes = (
-            raw_bytes_or_str
-            if isinstance(raw_bytes_or_str, bytes)
-            else str(raw_bytes_or_str).encode("utf-8")
-        )
+            txt = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+            return ("gslide_export_text", txt)
+        raw_val = client.files().get_media(fileId=file_id).execute()
+        raw_bytes = raw_val if isinstance(raw_val, bytes) else str(raw_val).encode("utf-8")
         if mime_type == PDF_MIME:
             reader = PdfReader(io.BytesIO(raw_bytes))
             extracted = "\n".join((page.extract_text() or "") for page in reader.pages).strip()
@@ -458,19 +458,19 @@ class DriveService:
         bookmarks = self._state_store.bookmarks.load()
         if bookmarks.referentiel_folder_id:
             return bookmarks.referentiel_folder_id
-        folder_name = self._settings.referentiel_drive_folder_name
-        safe_folder = _escape_drive_query_literal(folder_name)
-        query = f"mimeType = '{FOLDER_MIME}' and name = '{safe_folder}' and trashed = false"
+        fname = self._settings.referentiel_drive_folder_name
+        esc_name = _escape_drive_query_literal(fname)
+        query = f"mimeType = '{FOLDER_MIME}' and name = '{esc_name}' and trashed = false"
         found = client.files().list(q=query, fields="files(id,name)").execute().get("files", [])
-        if found:
-            folder_id = str(found[0]["id"])
-        else:
-            created = (
+        folder_id = (
+            str(found[0]["id"])
+            if found
+            else str(
                 client.files()
-                .create(body={"name": folder_name, "mimeType": FOLDER_MIME}, fields="id")
-                .execute()
+                .create(body={"name": fname, "mimeType": FOLDER_MIME}, fields="id")
+                .execute()["id"]
             )
-            folder_id = str(created["id"])
+        )
         self._state_store.bookmarks.update(
             lambda b: b.model_copy(update={"referentiel_folder_id": folder_id})
         )

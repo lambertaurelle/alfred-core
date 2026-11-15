@@ -188,7 +188,8 @@ def test_hold_allowlist_sends_hold_only_to_allowlisted_emails(tmp_path: Path) ->
     call = fake_client.events_res.insert_calls[0]
     assert call["sendUpdates"] == "all"
     invited = {a["email"] for a in call["body"]["attendees"]}
-    assert invited == {"partner@example.test", "owner2@example.test"}
+    assert invited == {"partner@example.test"}
+    assert "owner2@example.test" not in invited
     assert "notary@external.test" not in invited
     assert call["body"]["summary"] == "[HOLD] Point Notaire"
     priv = call["body"]["extendedProperties"]["private"]

@@ -1,4 +1,4 @@
-"""Bridge between alfred-inbox email triage and alfred-calendar [HOLD]/invitation Gates."""
+"""Bridge between alfred-inbox email triage, 2-speed Gate plans, and alfred-calendar."""
 
 from __future__ import annotations
 
@@ -39,9 +39,6 @@ def resolve_self_email_context(
     Args:
         msg: Incoming normalized EmailMessage.
         raw_owner_addrs: Owner address collection returned by GmailService.
-
-    Returns:
-        Tuple of (is_from_self, is_self_only, owner_addresses_frozenset).
     """
     user_addrs = raw_owner_addrs if isinstance(raw_owner_addrs, frozenset) else frozenset()
     sender_addrs = _extract_email_set(msg.sender)
@@ -59,15 +56,12 @@ def extract_correspondent_emails(
     owner_addresses: frozenset[str],
     allowlist: frozenset[str],
 ) -> list[str]:
-    """Extract relevant thread participant emails (external correspondents + non-self allowlist).
+    """Extract external thread participant emails excluding self/never-invite addresses.
 
     Args:
         msg: Incoming normalized EmailMessage.
         owner_addresses: Lowercase email addresses owned by the mailbox owner.
         allowlist: Lowercase emails allowlisted for immediate [HOLD] blocks.
-
-    Returns:
-        Deduplicated list of participant email addresses.
     """
     raw_headers = [
         msg.headers.get("reply-to", ""),
@@ -93,27 +87,27 @@ def enrich_calendar_action_attendees(
     msg: EmailMessage,
     owner_addresses: frozenset[str],
     allowlist: frozenset[str],
+    never_invite_emails: list[str] | None = None,
 ) -> CalendarTriageAction:
-    """Populate default participant emails on slots when omitted by the classifier.
+    """Populate default external participant emails on slots while stripping self-aliases.
 
     Args:
         action: Parsed CalendarTriageAction from cognitive triage.
         msg: Incoming EmailMessage providing sender/recipient/cc headers.
         owner_addresses: Authenticated owner email addresses.
         allowlist: Effective [HOLD] allowlist email addresses.
-
-    Returns:
-        Enriched CalendarTriageAction with normalized attendees on each slot.
+        never_invite_emails: Optional list of user aliases never invited on Calendar.
     """
     if action.intent == CalendarActionIntent.NONE or not action.slots:
         return action
+    blocked = {e.strip().lower() for e in (never_invite_emails or []) if "@" in e}
     fallback_guests = extract_correspondent_emails(msg, owner_addresses, allowlist)
     updated_slots: list[CalendarSlotProposal] = []
     for slot in action.slots:
         merged: list[str] = []
         for email in [*slot.attendees, *fallback_guests]:
             norm = email.strip().lower()
-            if "@" in norm and norm not in merged:
+            if "@" in norm and norm not in merged and norm not in blocked:
                 merged.append(norm)
         updated_slots.append(slot.model_copy(update={"attendees": merged}))
     return action.model_copy(update={"slots": updated_slots})
@@ -130,11 +124,8 @@ def load_upcoming_calendar_snapshot(
         calendar_service: Optional wired CalendarService.
         settings: Runtime settings providing timezone and primary_calendar_id.
         lookahead_days: Number of future days to inspect.
-
-    Returns:
-        Tuple of (formatted prompt context string, list of upcoming CalendarEventItem).
     """
-    if calendar_service is None:
+    if calendar_service is None or not settings.features.calendar_management:
         return ("", [])
     tz = ZoneInfo(settings.timezone)
     now_local = datetime.now(tz).replace(microsecond=0)
@@ -167,9 +158,6 @@ def render_draft_calendar_section(
         thread_id: Gmail threadId for [HOLD] correlation.
         message_id: Gmail messageId for [HOLD] correlation.
         allowlist: Effective [HOLD] allowlist emails.
-
-    Returns:
-        Markdown section string (empty when action.intent is NONE).
     """
     if action.intent == CalendarActionIntent.NONE or not action.slots:
         return ""
@@ -180,42 +168,41 @@ def render_draft_calendar_section(
         deferred = [a for a in slot.attendees if a not in allowlist]
         att_flags = " ".join(f"--attendee {shlex.quote(a)}" for a in slot.attendees)
         if action.intent == CalendarActionIntent.CREATE_HOLD:
-            allowed_txt = ", ".join(allowed) or "aucun (agenda primary seul)"
-            deferred_txt = ", ".join(deferred) or "aucun"
+            ext_str = ", ".join(deferred) or "aucun"
             lines.extend(
                 [
                     f"- **`[HOLD] {slot.summary}`** : `{slot.start_iso}` -> `{slot.end_iso}`",
-                    f"  - Invités immédiats (allowlist) : `{allowed_txt}`",
-                    f"  - Externes différés jusqu'à confirmation : `{deferred_txt}`",
+                    f"  - Invités immédiats (allowlist) : `{', '.join(allowed) or 'aucun'}`",
+                    f"  - Externes différés jusqu'à confirmation : `{ext_str}`",
                 ]
             )
-            cmd = (
-                f"alfred create-event --calendar primary --hold "
-                f"--summary {shlex.quote(slot.summary)} "
-                f"--from {shlex.quote(slot.start_iso)} --to {shlex.quote(slot.end_iso)} "
-                f"--thread-id {shlex.quote(thread_id)} --message-id {shlex.quote(message_id)} "
-                f"{att_flags} --archive-trace"
-            ).strip()
-            cli_cmds.append(cmd)
-        else:
-            guests_txt = ", ".join(slot.attendees) or "aucun"
-            inv_flag = (
-                "--send-invites" if slot.send_invites and slot.attendees else "--no-send-invites"
+            cli_cmds.append(
+                (
+                    f"alfred create-event --calendar primary --hold "
+                    f"--summary {shlex.quote(slot.summary)} "
+                    f"--from {shlex.quote(slot.start_iso)} --to {shlex.quote(slot.end_iso)} "
+                    f"--thread-id {shlex.quote(thread_id)} --message-id {shlex.quote(message_id)} "
+                    f"{att_flags} --archive-trace"
+                ).strip()
             )
+        else:
+            inv = "--send-invites" if slot.send_invites and slot.attendees else "--no-send-invites"
+            att_str = ", ".join(slot.attendees) or "aucun"
             lines.extend(
                 [
                     f"- **Événement validé `{slot.summary}`** : "
                     f"`{slot.start_iso}` -> `{slot.end_iso}`",
-                    f"  - **Invitation Google Calendar après `Proceed`** : `{guests_txt}`",
+                    f"  - **Invitation Google Calendar après `Proceed`** : `{att_str}`",
                 ]
             )
-            cmd = (
-                f"alfred confirm-event --calendar primary "
-                f"--summary {shlex.quote(slot.summary)} "
-                f"--from {shlex.quote(slot.start_iso)} --to {shlex.quote(slot.end_iso)} "
-                f"--thread-id {shlex.quote(thread_id)} {att_flags} {inv_flag} --archive-trace"
-            ).strip()
-            cli_cmds.append(cmd)
+            cli_cmds.append(
+                (
+                    f"alfred confirm-event --calendar primary "
+                    f"--summary {shlex.quote(slot.summary)} "
+                    f"--from {shlex.quote(slot.start_iso)} --to {shlex.quote(slot.end_iso)} "
+                    f"--thread-id {shlex.quote(thread_id)} {att_flags} {inv} --archive-trace"
+                ).strip()
+            )
     lines.append("\n### Commandes Agenda Post-Validation (`Proceed`)\n")
     lines.extend(f"- `{cmd}`" for cmd in cli_cmds)
     return "\n".join(lines) + "\n"
@@ -234,9 +221,6 @@ def render_calendar_confirm_gate_plan(
         reason: Cognitive rationale explaining why the event is confirmed.
         action: Enriched CalendarTriageAction with CONFIRM_EVENT slots.
         upcoming_events: Upcoming primary CalendarEventItem list to surface matching [HOLD]s.
-
-    Returns:
-        Complete Markdown Gate document requiring explicit user Proceed before sending invites.
     """
     thread_holds = [
         ev
@@ -247,8 +231,7 @@ def render_calendar_confirm_gate_plan(
         "# Validation d'Événement & Envoi d'Invitation Google Calendar (`alfred-calendar`)\n",
         "> [!IMPORTANT]",
         "> **Gate Bloquante Obligatoire** : Aucune invitation Google Calendar n'a été envoyée.",
-        "> Vérifiez (ou corrigez en commentaire inline) l'horaire et les destinataires ci-dessous,",
-        "> puis cliquez sur **`Proceed`** pour convertir le `[HOLD]` et envoyer l'invitation.\n",
+        "> Vérifiez l'horaire et les destinataires ci-dessous puis cliquez sur **`Proceed`**.\n",
         f"- **E-mail source** : `{msg.message_id}` (Fil `{msg.thread_id}`)",
         f"- **De** : `{msg.sender}` — **Objet** : {msg.subject}",
         f"- **Motif détecté** : {reason}\n",
@@ -257,11 +240,14 @@ def render_calendar_confirm_gate_plan(
     cmds: list[str] = []
     for slot in action.slots:
         guests = ", ".join(slot.attendees) if slot.attendees else "aucun invité externe"
-        lines.append(f"- **Titre final** : `{slot.summary}`")
-        lines.append(f"- **Horaire** : `{slot.start_iso}` -> `{slot.end_iso}`")
-        if slot.location:
-            lines.append(f"- **Lieu / Visio** : {slot.location}")
-        lines.append(f'- **Personnes invitées (`sendUpdates="all"`)** : `{guests}`')
+        lines.extend(
+            [
+                f"- **Titre final** : `{slot.summary}`",
+                f"- **Horaire** : `{slot.start_iso}` -> `{slot.end_iso}`",
+                *([f"- **Lieu / Visio** : {slot.location}"] if slot.location else []),
+                f'- **Personnes invitées (`sendUpdates="all"`)** : `{guests}`',
+            ]
+        )
         att_flags = " ".join(f"--attendee {shlex.quote(a)}" for a in slot.attendees)
         inv_flag = "--send-invites" if slot.send_invites and slot.attendees else "--no-send-invites"
         cmds.append(
@@ -278,11 +264,33 @@ def render_calendar_confirm_gate_plan(
     lines.append("\n## Exécution Post-Validation (`Proceed`)\n")
     lines.extend(f"- `{cmd.strip()}`" for cmd in cmds)
     lines.append(
-        "- **Archivage Gmail par défaut** : le fil source sera archivé (`INBOX` retiré) après "
-        "validation ; indiquez en commentaire si vous souhaitez le garder en boîte de réception "
-        "(`--keep-in-inbox`)."
+        "- **Archivage Gmail par défaut** : retrait `INBOX` après validation "
+        "(commentez `--keep-in-inbox` pour le conserver)."
     )
     return "\n".join(lines) + "\n"
+
+
+def _security_and_orchestrator_banners(
+    needs_orchestrator_study: bool,
+    suspicious_injection: bool,
+) -> tuple[str, str]:
+    """Return optional security caution banner and 2-speed Orchestrator study block."""
+    sec = (
+        "\n> [!CAUTION]\n"
+        "> **Alerte Anti-Prompt-Injection (`EmailSanitizer`)** : éléments HTML cachés, Unicode "
+        "invisible ou motifs d'injection détectés et neutralisés. Vérifiez attentivement.\n"
+        if suspicious_injection
+        else ""
+    )
+    orch = (
+        "\n## Pipeline 2 Vitesses (`Orchestrator Carbon` -> `Hydrogen`)\n"
+        "- Dès validation **`Proceed`**, invoquer `study-orchestrator` (`Orchestrator Carbon`) "
+        "pour l'étude approfondie multi-sources (Drive Tier-3 / historique), puis appliquer "
+        "les actions validées avec `plan-executor` (`Hydrogen`).\n"
+        if needs_orchestrator_study
+        else ""
+    )
+    return sec, orch
 
 
 def render_draft_reply_plan(
@@ -292,36 +300,41 @@ def render_draft_reply_plan(
     draft_body: str,
     cal_section: str,
     thread_id: str = "",
+    needs_orchestrator_study: bool = False,
+    suspicious_injection: bool = False,
 ) -> str:
     """Render the Blocking Gate implementation_plan.md for DRAFT_REPLY.
 
     Args:
-        reply_to: Recipient header for the draft reply.
+        reply_to: Pinned recipient header for the draft reply.
         reply_subject: Subject line for the draft reply.
         draft_id: Created Gmail draft identifier.
         draft_body: Proposed plain-text body.
         cal_section: Optional rendered alfred-calendar [HOLD]/confirmation section.
         thread_id: Optional Gmail threadId archived by default on send-draft.
-
-    Returns:
-        Markdown Gate document content.
+        needs_orchestrator_study: Whether post-Proceed triggers Orchestrator Carbon study.
+        suspicious_injection: Whether EmailSanitizer flagged prompt-injection cues.
     """
+    sec_banner, orch_block = _security_and_orchestrator_banners(
+        needs_orchestrator_study, suspicious_injection
+    )
     th_line = f"- **Fil Gmail** : `{thread_id}`\n" if thread_id else ""
     th_flag = f" --thread-id {shlex.quote(thread_id)}" if thread_id else ""
     send_cmd = f"alfred send-draft --draft-id {shlex.quote(draft_id)}{th_flag}"
     return (
-        f"# Brouillon de Réponse Gmail (`DRAFT_REPLY`)\n\n"
-        f"- **À** : `{reply_to}`\n"
+        f"# Brouillon de Réponse Gmail (`DRAFT_REPLY`)\n"
+        f"{sec_banner}\n"
+        f"- **À (épinglé)** : `{reply_to}`\n"
         f"- **Objet** : {reply_subject}\n"
         f"- **Gmail Draft ID** : `{draft_id}`\n"
         f"{th_line}\n"
         f"## Brouillon Proposé (Annotable par Commentaires Inline)\n\n"
         f"```text\n{draft_body}\n```\n"
-        f"{cal_section}\n"
+        f"{cal_section}"
+        f"{orch_block}\n"
         f"## Exécution Post-Validation (`Proceed`)\n"
         f"- Envoyer le brouillon et **archiver par défaut l'e-mail dans Gmail** : `{send_cmd}` "
-        f"(ajoutez un commentaire si vous souhaitez le conserver dans la boîte de réception via "
-        f"`--keep-in-inbox`).\n"
+        f"(ajoutez un commentaire `--keep-in-inbox` pour le conserver en réception).\n"
     )
 
 
@@ -330,6 +343,8 @@ def render_action_required_plan(
     reason: str,
     brief_items: list[str],
     target_doc_id: str,
+    needs_orchestrator_study: bool = False,
+    suspicious_injection: bool = False,
 ) -> str:
     """Render the Blocking Gate implementation_plan.md for USER_ACTION_REQUIRED.
 
@@ -338,10 +353,12 @@ def render_action_required_plan(
         reason: Classification rationale.
         brief_items: Gathered Tier-2 and Google Drive context bullets.
         target_doc_id: Suggested Tier-2 reference document ID for post-action update.
-
-    Returns:
-        Markdown Gate document content.
+        needs_orchestrator_study: Whether post-Proceed triggers Orchestrator Carbon study.
+        suspicious_injection: Whether EmailSanitizer flagged prompt-injection cues.
     """
+    sec_banner, orch_block = _security_and_orchestrator_banners(
+        needs_orchestrator_study, suspicious_injection
+    )
     bullets = "\n".join(f"- {item}" for item in brief_items)
     arch_target = (
         f"--thread-id {shlex.quote(msg.thread_id)}"
@@ -349,19 +366,21 @@ def render_action_required_plan(
         else f"--message-id {shlex.quote(msg.message_id)}"
     )
     return (
-        f"# Action Utilisateur Requise (`USER_ACTION_REQUIRED`)\n\n"
+        f"# Action Utilisateur Requise (`USER_ACTION_REQUIRED`)\n"
+        f"{sec_banner}\n"
         f"- **E-mail étoilé (`STARRED`)** : `{msg.message_id}` (Fil `{msg.thread_id}`)\n"
         f"- **Expéditeur** : `{msg.sender}`\n"
         f"- **Destinataires** : `{msg.recipient}`\n"
         f"- **Objet** : {msg.subject}\n"
         f"- **Motif** : {reason}\n\n"
         f"## Défrichage Complet & Contexte Rassemblé\n"
-        f"{bullets}\n\n"
+        f"{bullets}\n"
+        f"{orch_block}\n"
         f"## Exécution Post-Validation (`Proceed`)\n"
         f"- Fiche référentiel cible : `{target_doc_id}`\n"
         f"- **Archivage Gmail par défaut en fin de traitement** : "
         f"`alfred archive-email {arch_target} --unstar` "
-        f"(indiquez en commentaire si vous souhaitez conserver le mail en boîte de réception).\n"
+        f"(indiquez `--keep-in-inbox` en commentaire si nécessaire).\n"
     )
 
 
@@ -371,9 +390,6 @@ def render_silent_trace_markdown(msg: EmailMessage, reason: str) -> str:
     Args:
         msg: Processed EmailMessage.
         reason: Classification rationale.
-
-    Returns:
-        Markdown audit summary stored in the archived Antigravity trace.
     """
     return (
         f"### Trace Auto-Archivée `SILENT_NO_ACTION`\n"
@@ -385,10 +401,7 @@ def render_silent_trace_markdown(msg: EmailMessage, reason: str) -> str:
     )
 
 
-def _without_session(
-    state: ActiveConversationsState,
-    removed_id: str,
-) -> ActiveConversationsState:
+def _without_session(state: ActiveConversationsState, removed_id: str) -> ActiveConversationsState:
     """Return a copy of ActiveConversationsState with removed_id deleted."""
     return state.model_copy(
         update={"sessions": {k: v for k, v in state.sessions.items() if k != removed_id}}
@@ -406,9 +419,6 @@ def backfill_silent_inbox_records(
         state_store: Local StateStore holding active_conversations.json.
         gmail_service: GmailService (or test stub) providing optional get_message().
         agy_manager: AgySessionManager spawning and archiving live traces.
-
-    Returns:
-        Ordered list of newly materialized Antigravity conversation IDs.
     """
     current = state_store.conversations.load()
     pending = [

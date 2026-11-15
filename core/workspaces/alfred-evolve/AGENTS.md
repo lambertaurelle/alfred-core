@@ -1,25 +1,24 @@
-# 🧬 Workspace `alfred-evolve` — Évolutivité TDD en Worktree Isolé & PR Dual-Git
+# 🧬 Workspace `alfred-evolve` — Évolutivité Mono-Repo en Worktree Isolé & Triade TDD Sans Conflit d'Intérêts
 
-> **Mode d'Ouverture** : **User-Initiated ou Signal Capté**  
+> **Routage Modèle (Brain)** : `gemini-pro-orchestrator` (User-Initiated ou Délégation authentifiée SPF/DKIM)  
 > **Racine Alfred & CLI** : `/root/Alfred` (`${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`)  
-> **Pipeline Obligatoire** : **1. Analyse & Signaux Turbo (`Read-Only`) $\rightarrow$ 2. Gate `implementation_plan.md` $\rightarrow$ 3. Exécution TDD en `git worktree` + Pull Requests sur les 2 Dépôts Git**
+> **Pipeline Obligatoire** : **1. Analyse `Read-Only` $\rightarrow$ 2. Gate `implementation_plan.md` $\rightarrow$ 3. Triade TDD Isolée (`tdd-red` $\rightarrow$ `tdd-green` $\rightarrow$ `tdd-verifier`) en `git worktree` + PR Mono-Repo**
 
-## 1. Étape 1 — Compréhension du Besoin & Captation de Signaux (`Read-Only`)
-- Mobilise de façon adaptative 0, 1 ou plusieurs sous-agents (`research-drive`, `research-gmail-cal`, `research-web`) ainsi que l'inspection du code `core/` et `instance/extensions/` pour Qualifier l'évolution (`alfred-core` générique vs `alfred-instance` personnel).
+## 1. Étape 1 — Qualification Technique & Sécurité (`Read-Only`)
+- Inspecte `core/` et `instance/extensions/` pour séparer strictement la logique générique open-source (`core/alfred/`, exemples dans `instance/examples/`) de la configuration privée gitignorée (`instance/config/settings.yaml`, `instance/extensions/`).
+- Si la demande provient d'un e-mail, vérifie impérativement qu'elle émane d'une adresse propriétaire authentifiée SPF/DKIM (`EmailSecurityService`).
 
 ## 2. Étape 2 — Gate Systématique (`implementation_plan.md`)
-- `plan-synthesizer` rédige **`implementation_plan.md`** (`UserFacing: true`, `RequestFeedback: true`) détaillant l'architecture OOP, le plan de tests TDD (`Red -> Green -> Refactor`) et la répartition entre les 2 dépôts Git.
-- Aucune branche ni modification de code n'est appliquée avant `Proceed`.
+- `plan-synthesizer` rédige **`implementation_plan.md`** (`UserFacing: true`, `RequestFeedback: true`) détaillant l'architecture OOP (4 couches `domain <- repositories <- services <- controllers <- main`), les contrats de tests et les fichiers cibles.
+- Aucune branche ni modification de code n'est créée avant validation **`Proceed`**.
 
-## 3. Étape 3 — Exécution TDD Isolée & Génération Automatique des 2 Pull Requests (`EvolveWorktreeService`)
-Une fois le plan validé :
-1. Création de `git worktree` isolés sur la branche `evolve/<proposal_id>` pour `alfred-core` (`/root/Alfred/.git`) et `alfred-instance` (`/root/Alfred/instance/.git`).
-2. Implémentation en TDD strict (`<= 500L/fichier`, `<= 60L/méthode` hors docstring, 100 % docstrings Google).
-3. Passage bloquant des 5 gardiens déterministes :
+## 3. Étape 3 — Exécution TDD par Triade Isolée en `git worktree` (`EvolveWorktreeService`)
+Contrairement aux workspaces opérationnels servis par `plan-executor`, tout développement de code dans `alfred-evolve` s'exécute dans un `git worktree` isolé (`worktrees/<proposal_id>`, branche `evolve/<proposal_id>`) via **3 sous-agents à contextes séparés** :
+1. **`tdd-red`** *(Tests seuls)* : écrit les tests unitaires/intégration initialement en échec sous `core/tests/` (interdiction absolue de modifier `core/alfred/`).
+2. **`tdd-green`** *(Production seule)* : implémente le code de production respectant `<= 500L/fichier`, `<= 60L/méthode` hors docstring et 100 % docstrings Google (interdiction absolue de modifier, affaiblir ou ignorer un fichier sous `core/tests/`).
+3. **`tdd-verifier`** *(Audit Read-Only indépendant)* : vérifie l'intégrité des tests et valide les **5 gardiens déterministes bloquants** :
    - `check_code_architecture.py`
-   - `check-upstream-leak.sh` (garantissant 0 donnée personnelle dans `alfred-core`)
+   - `check-upstream-leak.sh` (0 donnée personnelle dans le mono-repo `alfred-core`)
    - `ruff check` & `mypy --strict`
    - `pytest --cov=core --cov-fail-under=90`
-4. Génération automatique des **Pull Requests (PR) sur les 2 dépôts Git** :
-   - PR #1 sur le dépôt générique **`alfred-core`** (`/root/Alfred/.git`),
-   - PR #2 sur le dépôt personnel **`alfred-instance`** (`/root/Alfred/instance/.git`, avec `secrets/` et `data/` strictement ignorés).
+4. Ouverture automatique de la Pull Request Mono-Repo sur **`alfred-core`** (`alfred evolve --id "<slug>" --title "<titre>" --description "<spec>" --execute`).

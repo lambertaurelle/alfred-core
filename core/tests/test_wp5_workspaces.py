@@ -1,4 +1,4 @@
-"""WP5 TDD test suite for distinct Antigravity workspaces provisioning and dynamic routing."""
+"""WP5 TDD test suite for the 6 canonical V8 Antigravity specialist workspaces."""
 
 from __future__ import annotations
 
@@ -11,12 +11,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from alfred.controllers.cli_controller import CliController
-from alfred.domain.models import (
-    AlfredPaths,
-    AlfredSettings,
-    NounouContract,
-    ScheduledWorkday,
-)
+from alfred.domain.models import AlfredPaths, AlfredSettings
+from alfred.main import build_controller
 from alfred.repositories.state_store import StateStore
 from alfred.services.agy_session_manager import AgySessionManager
 from alfred.services.calendar_service import CalendarService
@@ -25,9 +21,9 @@ from alfred.services.evolve_worktree_service import EvolveWorktreeService
 from alfred.services.gmail_service import GmailService
 from alfred.services.inbox_triage_service import InboxTriageService
 from alfred.services.knowledge_service import KnowledgeService
-from alfred.services.nounou_service import NounouService
-from alfred.services.pajemploi_calculator import PajemploiCalculator
 from alfred.services.workspace_service import WorkspaceService
+
+CANONICAL_ROLES: tuple[str, ...] = ("onboard", "life", "inbox", "calendar", "tasks", "evolve")
 
 
 def _seed_legacy_projects_and_db(projects_dir: Path, conv_db: Path) -> None:
@@ -53,8 +49,14 @@ def _build_ws_cli(
     tmp_path: Path,
     spawned_cmds: list[list[str]],
 ) -> tuple[CliController, StateStore]:
-    """Build a wired CliController with WorkspaceService and fake agy runner."""
+    """Build a wired CliController with WorkspaceService over all 6 V8 roles."""
     paths = AlfredPaths.from_env(tmp_path)
+    for role in CANONICAL_ROLES:
+        ws_dir = paths.workspaces_dir / f"alfred-{role}"
+        ws_dir.mkdir(parents=True, exist_ok=True)
+        (ws_dir / "AGENTS.md").write_text(f"# Workspace alfred-{role}\n", encoding="utf-8")
+
+    ctrl = build_controller(str(tmp_path))
     settings = AlfredSettings.load(paths)
     store = StateStore(paths)
 
@@ -70,61 +72,61 @@ def _build_ws_cli(
     ws_svc = WorkspaceService(paths, settings, agy, projects_dir=tmp_path / "projects")
     cal_mock = MagicMock()
     cal_mock.events.return_value.list.return_value.execute.return_value = {"items": []}
-    cal = CalendarService(paths, settings, calendar_client=cal_mock)
+    cal = CalendarService(paths, settings, calendar_client=cal_mock, state_store=store)
     knowledge = KnowledgeService(paths, settings, store)
     drive = DriveService(paths, settings, store, drive_client=MagicMock())
     gmail = GmailService(paths, settings, gmail_client=MagicMock())
-    inbox = InboxTriageService(store, gmail, knowledge, drive, agy)
-    nounou = NounouService(store, cal, knowledge, settings)
+    inbox = InboxTriageService(store, gmail, knowledge, drive, agy, settings=settings)
     evolve = EvolveWorktreeService(paths, settings, store)
-    cli = CliController(
-        knowledge,
-        drive,
-        inbox,
-        nounou,
-        PajemploiCalculator(),
-        cal,
-        evolve,
-        store,
-        gmail_service=gmail,
-        settings=settings,
-        workspace_service=ws_svc,
-        agy_manager=agy,
-    )
-    return cli, store
+    ctrl._knowledge = knowledge
+    ctrl._drive = drive
+    ctrl._gmail = gmail
+    ctrl._calendar = cal
+    ctrl._inbox = inbox
+    ctrl._evolve = evolve
+    ctrl._agy = agy
+    ctrl._workspaces = ws_svc
+    return ctrl, store
 
 
-def test_settings_load_workspaces_and_resolve_project(tmp_path: Path) -> None:
-    """Verify AlfredSettings loads antigravity.workspaces YAML and resolves aliases."""
+def test_settings_load_workspaces_and_resolve_six_projects(tmp_path: Path) -> None:
+    """Verify AlfredSettings loads all 6 workspace roles and resolves aliases."""
     paths = AlfredPaths.from_env(tmp_path)
     paths.settings_path.parent.mkdir(parents=True, exist_ok=True)
     paths.settings_path.write_text(
         "antigravity:\n"
         "  binary_path: agy\n"
         "  workspaces:\n"
+        "    onboard: custom-onboard\n"
         "    life: custom-life\n"
         "    inbox: custom-inbox\n"
         "    calendar: alfred-calendar\n"
+        "    tasks: custom-tasks\n"
         "    evolve: alfred-evolve\n",
         encoding="utf-8",
     )
     settings = AlfredSettings.load(paths)
+    assert settings.resolve_workspace_project("onboard") == "custom-onboard"
+    assert settings.resolve_workspace_project("alfred-onboard") == "custom-onboard"
     assert settings.resolve_workspace_project("inbox") == "custom-inbox"
     assert settings.resolve_workspace_project("alfred-inbox") == "custom-inbox"
     assert settings.resolve_workspace_project("life") == "custom-life"
     assert settings.resolve_workspace_project("alfred-life") == "custom-life"
     assert settings.resolve_workspace_project("calendar") == "alfred-calendar"
+    assert settings.resolve_workspace_project("tasks") == "custom-tasks"
+    assert settings.resolve_workspace_project("alfred-tasks") == "custom-tasks"
+    assert settings.resolve_workspace_project("evolve") == "alfred-evolve"
     assert settings.resolve_workspace_project("   ") == "custom-life"
     assert settings.resolve_workspace_project("explicit-proj") == "explicit-proj"
 
 
-def test_workspace_service_provisions_idempotently_and_prunes_empty_legacy(
+def test_workspace_service_provisions_six_roles_and_prunes_empty_legacy(
     tmp_path: Path,
 ) -> None:
-    """Verify WorkspaceService links .agents, provisions 4 projects, and prunes safely."""
+    """Verify WorkspaceService links .agents, provisions all 6 projects, and prunes safely."""
     paths = AlfredPaths.from_env(tmp_path)
     (paths.root_dir / ".agents" / "agents").mkdir(parents=True)
-    for role in ("life", "inbox", "calendar", "evolve"):
+    for role in CANONICAL_ROLES:
         ws_dir = paths.workspaces_dir / f"alfred-{role}"
         ws_dir.mkdir(parents=True)
         (ws_dir / "AGENTS.md").write_text(f"# Workspace alfred-{role}\n", encoding="utf-8")
@@ -155,12 +157,8 @@ def test_workspace_service_provisions_idempotently_and_prunes_empty_legacy(
 
     svc = WorkspaceService(paths, settings, agy, projects_dir, conv_db, _runner)
     first = svc.init_workspaces(prune_legacy=True)
-    assert [s.project_name for s in first] == [
-        "alfred-life",
-        "alfred-inbox",
-        "alfred-calendar",
-        "alfred-evolve",
-    ]
+    assert [s.role for s in first] == list(CANONICAL_ROLES)
+    assert [s.project_name for s in first] == [f"alfred-{r}" for r in CANONICAL_ROLES]
     assert all(s.created and len(s.agents_discovered) == 4 for s in first)
     assert (Path(first[0].workspace_dir) / ".agents").resolve() == (
         paths.root_dir / ".agents"
@@ -170,18 +168,20 @@ def test_workspace_service_provisions_idempotently_and_prunes_empty_legacy(
     assert (projects_dir / "keep-busy.json").exists()
 
     second = svc.init_workspaces(prune_legacy=False)
-    assert all(not s.created for s in second) and counter == 4
+    assert all(not s.created for s in second) and counter == 6
 
 
 def test_workspace_service_offline_fallback_without_agy_binary(tmp_path: Path) -> None:
-    """Verify WorkspaceService writes native project JSON cleanly when agy binary is absent."""
+    """Verify WorkspaceService writes native project JSON cleanly for 6 roles offline."""
     paths = AlfredPaths.from_env(tmp_path)
     settings = AlfredSettings.load(paths).model_copy(
         update={
             "workspaces": {
+                "onboard": "alfred-onboard",
                 "life": "mon-life",
                 "inbox": "alfred-inbox",
                 "calendar": "alfred-calendar",
+                "tasks": "alfred-tasks",
                 "evolve": "alfred-evolve",
             }
         }
@@ -191,55 +191,28 @@ def test_workspace_service_offline_fallback_without_agy_binary(tmp_path: Path) -
     projects_dir = tmp_path / "offline_projects"
     svc = WorkspaceService(paths, settings, agy, projects_dir=projects_dir)
     statuses = svc.init_workspaces(prune_legacy=False)
-    assert statuses[0].project_name == "mon-life" and statuses[0].created is True
-    saved = json.loads((projects_dir / f"{statuses[0].project_id}.json").read_text("utf-8"))
+    assert len(statuses) == 6
+    life_status = next(s for s in statuses if s.role == "life")
+    assert life_status.project_name == "mon-life" and life_status.created is True
+    saved = json.loads((projects_dir / f"{life_status.project_id}.json").read_text("utf-8"))
     assert saved["name"] == "mon-life"
 
 
-def test_cli_init_workspaces_and_calendar_evolve_spawn_agy(
+def test_cli_init_workspaces_and_evolve_spawn_agy(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Verify CLI init-workspaces and --spawn-agy routing to alfred-calendar and alfred-evolve."""
+    """Verify CLI init-workspaces returns 6 specialist projects and evolve routes to evolve."""
     spawned_cmds: list[list[str]] = []
-    cli, store = _build_ws_cli(tmp_path, spawned_cmds)
+    cli, _ = _build_ws_cli(tmp_path, spawned_cmds)
 
     assert cli.run(["init-workspaces", "--prune-legacy"]) == 0
-    assert len(json.loads(capsys.readouterr().out)) == 4
+    provisioned = json.loads(capsys.readouterr().out)
+    assert len(provisioned) == 6
+    assert {item["role"] for item in provisioned} == set(CANONICAL_ROLES)
 
-    store.nounou_contract.save(
-        NounouContract(
-            contract_id="c1",
-            employee_name="Nounou",
-            child_name="Enfant",
-            calendar_id="cal_1",
-            hourly_rate_net=4.5,
-            base_monthly_net_salary=630.0,
-            base_monthly_hours=140,
-            base_monthly_days=14,
-            maintenance_allowance_daily=3.8,
-            meal_allowance_daily=4.5,
-            scheduled_workdays=[
-                ScheduledWorkday(
-                    weekday="MONDAY", start_time="08:30", end_time="17:30", hours=9.0
-                )
-            ],
-        )
-    )
-    assert cli.run(["seed-nounou", "--date", "2026-05-20", "--spawn-agy"]) == 0
-    capsys.readouterr()
-    vac_argv = ["check-vacation", "--start", "2026-08-01", "--end", "2026-08-10", "--spawn-agy"]
-    assert cli.run(vac_argv) == 0
-    capsys.readouterr()
-    assert cli.run(["close-pajemploi", "--year", "2026", "--month", "5", "--spawn-agy"]) == 0
-    capsys.readouterr()
     ev_argv = ["evolve", "--id", "f1", "--title", "WS", "--description", "Spec", "--spawn-agy"]
     assert cli.run(ev_argv) == 0
     capsys.readouterr()
 
     projects_targeted = [cmd[cmd.index("--project") + 1] for cmd in spawned_cmds]
-    assert projects_targeted == [
-        "alfred-calendar",
-        "alfred-calendar",
-        "alfred-calendar",
-        "alfred-evolve",
-    ]
+    assert projects_targeted == ["alfred-evolve"]

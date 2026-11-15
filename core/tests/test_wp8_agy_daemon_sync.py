@@ -20,13 +20,10 @@ from alfred.main import build_controller
 from alfred.repositories.state_store import StateStore
 from alfred.services.agy_daemon_sync import AgyDaemonSyncService, DaemonSyncStatus
 from alfred.services.agy_session_manager import AgySessionManager
-from alfred.services.calendar_service import CalendarService
 from alfred.services.drive_service import DriveService
 from alfred.services.gmail_service import GmailService
 from alfred.services.inbox_triage_service import InboxTriageService
 from alfred.services.knowledge_service import KnowledgeService
-from alfred.services.nounou_service import NounouService
-from alfred.services.pajemploi_calculator import PajemploiCalculator
 from alfred.services.routine_service import RoutineService
 
 
@@ -71,15 +68,26 @@ def _upsert_summary_row(
         conn.close()
 
 
+def _recording_systemctl(
+    sink: list[list[str]],
+) -> Any:
+    """Build a systemctl runner appending each invocation to sink and returning active."""
+
+    def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        """Record command and return active CompletedProcess."""
+        sink.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "active\n", "")
+
+    return _run
+
+
 def test_daemon_sync_no_op_when_not_dirty(tmp_path: Path) -> None:
     """sync_if_needed emits zero systemctl calls when no CLI conversation changes are pending."""
     calls: list[list[str]] = []
     svc = AgyDaemonSyncService(
         state_dir=tmp_path / "state",
         agy_data_dir=tmp_path / "agy",
-        systemctl_runner=lambda cmd: (
-            calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "active\n", "")
-        ),
+        systemctl_runner=_recording_systemctl(calls),
     )
     res = svc.sync_if_needed()
     assert res.status == DaemonSyncStatus.NO_PENDING_CHANGES
@@ -100,9 +108,7 @@ def test_daemon_sync_defers_on_running_turn_then_flushes_when_idle(tmp_path: Pat
     svc = AgyDaemonSyncService(
         state_dir=tmp_path / "state",
         agy_data_dir=agy_dir,
-        systemctl_runner=lambda cmd: (
-            calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "active\n", "")
-        ),
+        systemctl_runner=_recording_systemctl(calls),
     )
     svc.mark_dirty(inbox_conv, reason="silent_archive")
     assert svc.load_state().pending is True
@@ -260,7 +266,7 @@ def _build_live_routine_fixture(
         systemctl_runner=systemctl_fn,
     )
     gmail = GmailService(paths, loaded)
-    gmail.list_new_messages_since = lambda _hid: (  # type: ignore[method-assign]
+    gmail.list_new_messages_since = lambda start_history_id: (  # type: ignore[method-assign]
         [
             EmailMessage(
                 message_id="m_night_1",
@@ -268,6 +274,7 @@ def _build_live_routine_fixture(
                 sender="no-reply@news.test",
                 subject="Newsletter de la nuit",
                 headers={"List-Unsubscribe": "<mailto:u@news.test>"},
+                label_ids=["INBOX"],
             )
         ],
         "101",
@@ -275,7 +282,6 @@ def _build_live_routine_fixture(
     gmail.get_authenticated_addresses = lambda: frozenset()  # type: ignore[method-assign]
     know = KnowledgeService(paths, loaded, store)
     drv = DriveService(paths, loaded, store)
-    cal = CalendarService(paths, loaded, state_store=store)
     inbox = InboxTriageService(store, gmail, know, drv, agy, spawn_live_agy=True, settings=loaded)
     routines = RoutineService(
         paths,
@@ -283,9 +289,6 @@ def _build_live_routine_fixture(
         store,
         inbox,
         drv,
-        NounouService(store, cal, know, loaded),
-        PajemploiCalculator(),
-        cal,
         agy,
         systemctl_runner=systemctl_fn,
     )
@@ -301,7 +304,9 @@ def test_routine_and_cli_sync_agy_ui_end_to_end(tmp_path: Path, capsys: Any) -> 
         '  binary_path: "agy"\n'
         '  remote_control_service: "custom-agy-daemon.service"\n'
         "  sync_daemon_on_changes: true\n"
-        "  idle_wal_grace_sec: 12\n",
+        "  idle_wal_grace_sec: 12\n"
+        "inbox:\n"
+        "  silent_creates_agy_session: true\n",
         encoding="utf-8",
     )
     loaded = AlfredSettings.load(AlfredPaths.from_env(tmp_path))

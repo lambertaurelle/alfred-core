@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deterministic Zero-Leak Pre-Commit & History Guard for Alfred V7.1 Lean
+# Deterministic Zero-Leak Pre-Commit & History Guard for Alfred V8.0 Mono-Repo
 # Generic patterns live here; instance-private terms load from gitignored instance/secrets/leak_terms.txt.
 set -euo pipefail
 
@@ -15,13 +15,29 @@ fi
 
 VIOLATIONS=0
 
-# 1. Check tracked, staged, and untracked non-ignored file paths against forbidden paths
-FORBIDDEN_PATH_REGEX='^(instance/|worktrees/|data/|secrets/|docs/history/|docs/architecture/swarm/|\.agents/agents/swarm-)|(^|/)(data/|secrets/|client_secret|token\.json|leak_terms\.txt|.*\.pem$|.*\.key$|.*\.env$)'
+# 1. Check tracked, staged, and untracked non-ignored file paths against forbidden paths.
+# Inside instance/, ONLY examples/, *.example.*, and extensions/{__init__.py,README.md,*.example.py} are allowed.
+FORBIDDEN_PATH_REGEX='^(worktrees/|data/|secrets/|docs/history/|docs/architecture/swarm/|\.agents/agents/swarm-)|(^|/)(data/|secrets/|signature_vault/|client_secret|token\.json|mcp_auth\.json|leak_terms\.txt|.*\.pem$|.*\.key$|.*\.env$)'
+ALLOWED_INSTANCE_REGEX='^instance/(examples/.+|config/[^/]+\.example\.(ya?ml|md|json)|config/prompts/[^/]+\.example\.md|extensions/(__init__\.py|README\.md|[^/]+\.example\.py))$'
+
+check_forbidden_paths() {
+    local path_list="$1"
+    local bad=""
+    while IFS= read -r p; do
+        [[ -z "${p}" ]] && continue
+        if printf '%s\n' "${p}" | grep -Eq "${FORBIDDEN_PATH_REGEX}"; then
+            bad="${bad:+${bad}$'\n'}${p}"
+        elif [[ "${p}" == instance/* ]] && ! printf '%s\n' "${p}" | grep -Eq "${ALLOWED_INSTANCE_REGEX}"; then
+            bad="${bad:+${bad}$'\n'}${p}"
+        fi
+    done <<< "${path_list}"
+    printf '%s' "${bad}"
+}
 
 TRACKED_AND_NEW="$( { git ls-files; git diff --cached --name-only; git ls-files --others --exclude-standard; } | sort -u )"
 
 if [[ -n "${TRACKED_AND_NEW}" ]]; then
-    BAD_PATHS="$(printf '%s\n' "${TRACKED_AND_NEW}" | grep -E "${FORBIDDEN_PATH_REGEX}" || true)"
+    BAD_PATHS="$(check_forbidden_paths "${TRACKED_AND_NEW}")"
     if [[ -n "${BAD_PATHS}" ]]; then
         echo "ERROR [Forbidden Tracked/Staged Paths]:" >&2
         echo "${BAD_PATHS}" >&2
@@ -67,7 +83,7 @@ while IFS= read -r rel_file; do
     fi
 done <<< "${TRACKED_AND_NEW}"
 
-# 4. Scan staged index diff (catches partial git addstaging even if working tree was edited after)
+# 4. Scan staged index diff (catches partial git add staging even if working tree was edited after)
 STAGED_ADDED="$(git diff --cached -U0 | grep -E '^\+[^+]' || true)"
 if [[ -n "${STAGED_ADDED}" ]]; then
     STAGED_LEAKS="$(printf '%s\n' "${STAGED_ADDED}" | grep -E "${LEAK_CONTENT_REGEX}" | head -n 20 || true)"
@@ -84,7 +100,8 @@ fi
 
 # 5. Scan entire Git commit history (patches, paths, and author metadata) if commits exist
 if git rev-parse --verify HEAD >/dev/null 2>&1; then
-    HIST_PATHS="$(git log --all --name-only --pretty=format: | sort -u | grep -E "${FORBIDDEN_PATH_REGEX}" || true)"
+    ALL_HIST_PATHS="$(git log --all --name-only --pretty=format: | sort -u)"
+    HIST_PATHS="$(check_forbidden_paths "${ALL_HIST_PATHS}")"
     if [[ -n "${HIST_PATHS}" ]]; then
         echo "ERROR [Forbidden Paths Found in Git Commit History]:" >&2
         echo "${HIST_PATHS}" >&2
@@ -95,7 +112,7 @@ if git rev-parse --verify HEAD >/dev/null 2>&1; then
     HIST_PATCH_LEAKS="$(printf '%s\n' "${HIST_ADDED_REMOVED}" | grep -E "${LEAK_CONTENT_REGEX}" | head -n 20 || true)"
     if [[ -n "${EXTRA_CASE_INSENSITIVE_REGEX}" ]]; then
         HIST_EXTRA="$(printf '%s\n' "${HIST_ADDED_REMOVED}" | grep -iE "${EXTRA_CASE_INSENSITIVE_REGEX}" | head -n 20 || true)"
-        [[ -n "${HIST_EXTRA}" ]] && HIST_PATCH_LEAKS="${HIST_PATCH_LEAKS:+${HIST_PATCH_LEAKS}$'\n'}${HIST_EXTRA}"
+        [[ -n "${HIST_EXTRA}" ]] && HIST_PATCH_LEAKS="${HIST_PATCH_LEAKS:+${HIST_PATCH_LEAKS}$'\n'}${HIST_PATCH_LEAKS}"
     fi
     if [[ -n "${HIST_PATCH_LEAKS}" ]]; then
         echo "ERROR [Sensitive Content Found in Git Commit History]:" >&2

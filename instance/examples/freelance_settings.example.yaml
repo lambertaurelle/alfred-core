@@ -1,0 +1,14 @@
+# Fictional configuration snippet for instance/examples/ extensions
+extensions:
+  freelance_billing_tracker:
+    default_daily_rate_eur: 750
+    active_clients:
+      - "ACME_INDUSTRIES"
+      - "NOVA_LABS"
+  home_preventive_maintenance:
+    lead_days: 30
+    deadlines:
+      - label: "Révision pompe à chaleur"
+        due_date: "2026-10-15"
+      - label: "Contrôle technique véhicule"
+        due_date: "2026-11-20"

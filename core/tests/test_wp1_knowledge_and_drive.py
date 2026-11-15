@@ -88,37 +88,39 @@ def test_knowledge_service_progressive_tiers_and_backup(tmp_path: Path) -> None:
         state_store=store,
         backup_fn=record_backup,
     )
-    assert len(svc.bootstrap_templates_if_empty()) == 4
-    assert len(svc.scan_frontmatters()) == 4
-
-    ranked = svc.select_relevant_frontmatters("contrat nounou pajemploi vacances")
-    assert ranked[0][1].id == "assistante_maternelle"
-
-    # Accent-insensitive French matching ("regles" <-> "Règles", "préavis" <-> "preavis")
-    accent_hits = svc.select_relevant_frontmatters("regles classement")
-    assert accent_hits and accent_hits[0][1].id == "drive_taxonomy_and_filing_rules"
-    preavis_hits = svc.select_relevant_frontmatters("quel est le préavis")
-    assert preavis_hits and preavis_hits[0][1].id == "assistante_maternelle"
-
-    doc = svc.load_document("assistante_maternelle")
-    assert "Garde Nounou" in doc.body
+    bootstrapped = svc.bootstrap_templates_if_empty()
+    assert len(bootstrapped) >= 2
+    assert all("assistante_maternelle" not in name for name in bootstrapped)
+    assert len(svc.scan_frontmatters()) == len(bootstrapped)
 
     new_fm = FrontmatterSchema(
-        id="assistante_maternelle",
-        title="Contrat Assistante Maternelle Actif",
-        domain="childcare",
-        summary="Contrat signé avec horaires exacts et tarif net.",
-        keywords=["nounou", "contrat"],
+        id="patrimoine_immobilier",
+        title="Patrimoine Immobilier et Baux",
+        domain="immobilier",
+        summary="Synthèse des baux signés avec échéances et préavis.",
+        keywords=["immobilier", "bail", "préavis"],
         drive_source_ids=["drive_pdf_01"],
     )
-    saved = svc.upsert_document("02_assistante_maternelle.md", new_fm, "# Contrat\n- 08h30\n")
+    saved = svc.upsert_document("02_patrimoine_immobilier.md", new_fm, "# Bail\n- 3 mois\n")
     assert saved.frontmatter.drive_source_ids == ["drive_pdf_01"]
     assert len(backups) == 1
     assert len(store.knowledge_audit.read_all()) == 1
 
+    ranked = svc.select_relevant_frontmatters("bail immobilier echeances")
+    assert ranked[0][1].id == "patrimoine_immobilier"
+
+    # Accent-insensitive French matching ("regles" <-> "Règles", "preavis" <-> "préavis")
+    accent_hits = svc.select_relevant_frontmatters("regles classement")
+    assert accent_hits and accent_hits[0][1].id == "drive_taxonomy_and_filing_rules"
+    preavis_hits = svc.select_relevant_frontmatters("quel est le preavis")
+    assert preavis_hits and preavis_hits[0][1].id == "patrimoine_immobilier"
+
+    doc = svc.load_document("patrimoine_immobilier")
+    assert "3 mois" in doc.body
+
     with pytest.raises(ValueError, match="150"):
         svc.upsert_document(
-            "02_assistante_maternelle.md",
+            "02_patrimoine_immobilier.md",
             new_fm,
             "\n".join(f"L{i}" for i in range(155)),
         )
@@ -143,7 +145,7 @@ def test_drive_init_and_delta_sync(tmp_path: Path) -> None:
         },
         {
             "id": "doc_1",
-            "name": "Contrat_Nounou",
+            "name": "Contrat_Assurance_Habitation",
             "mimeType": "application/vnd.google-apps.document",
             "parents": ["fld_1"],
             "modifiedTime": "2026-02-01T10:00:00Z",
@@ -174,7 +176,7 @@ def test_drive_init_and_delta_sync(tmp_path: Path) -> None:
     index, plan_md = svc.init_drive()
     assert index.folder_count == 1
     assert index.file_count == 1
-    assert index.entries["doc_1"].path == "/01_Administratif/Contrat_Nounou"
+    assert index.entries["doc_1"].path == "/01_Administratif/Contrat_Assurance_Habitation"
     assert "00_drive_taxonomy_and_filing_rules.md" in plan_md
     assert len(svc.search_index("Contrat")) == 1
 

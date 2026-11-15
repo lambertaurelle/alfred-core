@@ -1,24 +1,24 @@
-"""Command-line controller exposing Alfred V7.1 Lean Stage-1/2/3 workflows."""
+"""Command-line controller exposing Alfred V8.0 Family Office Chief of Staff workflows."""
 
 from __future__ import annotations
 
 import argparse
-import calendar as pycal
 import json
 import sys
 from collections.abc import Callable
-from datetime import date, datetime
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
+from alfred.controllers.app_factory import build_cli_controller
 from alfred.controllers.calendar_cli import (
-    handle_confirm_event,
-    handle_create_event,
-    handle_delete_event,
-    handle_hold_allowlist,
-    handle_list_events,
+    dispatch_calendar_command,
+    print_skipped_disabled,
     register_calendar_parsers,
+)
+from alfred.controllers.onboarding_cli import (
+    ONBOARDING_AND_BRIDGE_COMMANDS,
+    dispatch_onboarding_and_bridges,
+    register_onboarding_and_bridge_parsers,
 )
 from alfred.controllers.routine_cli import (
     handle_archive_email,
@@ -32,38 +32,56 @@ from alfred.controllers.routine_cli import (
     handle_sync_agy_ui,
     register_routine_and_gmail_parsers,
 )
-from alfred.domain.models import (
-    AlfredSettings,
-    FrontmatterSchema,
-    NounouContract,
-    VacationPeriod,
+from alfred.controllers.tasks_cli import (
+    CONTACT_COMMANDS,
+    SUITE_COMMANDS,
+    TASK_COMMANDS,
+    dispatch_tasks_contacts_suite,
+    register_tasks_contacts_suite_parsers,
 )
+from alfred.domain.models import AlfredPaths, AlfredSettings, FrontmatterSchema
 from alfred.repositories.state_store import StateStore
 from alfred.services.agy_session_manager import AgySessionManager
-from alfred.services.calendar_service import CalendarService
+from alfred.services.delegation_service import DelegationService
 from alfred.services.drive_service import DriveService
 from alfred.services.evolve_worktree_service import EvolveWorktreeService
 from alfred.services.gmail_service import GmailService
 from alfred.services.google_auth import GoogleOAuthService
+from alfred.services.google_workspace_suite import GoogleWorkspaceSuiteService
 from alfred.services.inbox_triage_service import InboxTriageService
 from alfred.services.knowledge_service import KnowledgeService
-from alfred.services.nounou_service import NounouService
-from alfred.services.pajemploi_calculator import PajemploiCalculator
+from alfred.services.mcp_bridge_service import McpBridgeService
+from alfred.services.onboarding_service import OnboardingService
 from alfred.services.routine_service import RoutineService
+from alfred.services.signature_vault_service import SignatureVaultService
 from alfred.services.workspace_service import WorkspaceService
+
+__all__ = ["CliController", "build_cli_controller"]
+
+CALENDAR_COMMANDS = frozenset(
+    {
+        "list-calendars",
+        "query-freebusy",
+        "list-events",
+        "hold-allowlist",
+        "create-event",
+        "update-event",
+        "confirm-event",
+        "delete-event",
+    }
+)
+ALL_TASKS_SUITE_COMMANDS = TASK_COMMANDS | CONTACT_COMMANDS | SUITE_COMMANDS
 
 
 class CliController:
-    """Dispatch CLI subcommands across Auth, Drive, Knowledge, Inbox, Calendar, and Evolve."""
+    """Dispatch CLI subcommands across Onboarding, Knowledge, Inbox, Calendar, Tasks, & Evolve."""
 
     def __init__(
         self,
         knowledge_service: KnowledgeService,
         drive_service: DriveService,
         inbox_service: InboxTriageService,
-        nounou_service: NounouService,
-        pajemploi_calculator: PajemploiCalculator,
-        calendar_service: CalendarService,
+        calendar_service: Any,
         evolve_service: EvolveWorktreeService,
         state_store: StateStore,
         gmail_service: GmailService | None = None,
@@ -73,31 +91,43 @@ class CliController:
         workspace_service: WorkspaceService | None = None,
         agy_manager: AgySessionManager | None = None,
         routine_service: RoutineService | None = None,
+        tasks_service: Any = None,
+        contacts_service: Any = None,
+        suite_service: GoogleWorkspaceSuiteService | None = None,
+        delegation_service: DelegationService | None = None,
+        onboarding_service: OnboardingService | None = None,
+        signature_service: SignatureVaultService | None = None,
+        mcp_service: McpBridgeService | None = None,
+        paths: AlfredPaths | None = None,
     ) -> None:
-        """Initialize the CLI controller with injected domain services.
+        """Initialize the V8 CLI controller with injected domain services.
 
         Args:
             knowledge_service: 3-tier YAML frontmatter knowledge service.
-            drive_service: Google Drive scaffolder and native reader service.
+            drive_service: Google Drive scaffolder, discovery, and native reader service.
             inbox_service: New-email triage service with 3 exclusive outputs.
-            nounou_service: Childcare planning and vacation notice service.
-            pajemploi_calculator: Deterministic monthly Pajemploi calculator.
-            calendar_service: Google Calendar v3 connector.
-            evolve_service: Isolated git worktree and Dual-Repo PR service.
+            calendar_service: Google Calendar v3 multi-calendar connector.
+            evolve_service: Isolated Mono-Repo git worktree and PR service.
             state_store: Local atomic state facade.
-            gmail_service: Optional Gmail API connector for post-Gate draft actions.
+            gmail_service: Optional Gmail API connector.
             oauth_service: Optional GoogleOAuthService for interactive OAuth2 bootstrap.
             timezone: Configured local timezone string (default 'Europe/Paris').
-            settings: Optional AlfredSettings instance for calendar and runtime config.
-            workspace_service: Optional Antigravity workspace project provisioner.
+            settings: Optional AlfredSettings instance.
+            workspace_service: Optional Antigravity 6-workspace provisioner.
             agy_manager: Optional Antigravity session manager for live Gate spawning.
             routine_service: Optional RoutineService orchestrating systemd & periodic jobs.
+            tasks_service: Optional Google Tasks v1 service.
+            contacts_service: Optional Google People v1 contacts service.
+            suite_service: Optional Google Workspace Suite (Docs/Sheets/Slides/Forms) service.
+            delegation_service: Optional specialist cross-project DelegationService.
+            onboarding_service: Optional OnboardingService for status and OAuth guides.
+            signature_service: Optional SignatureVaultService for human-consented PDF signing.
+            mcp_service: Optional McpBridgeService for OAuth 2.1 Gemini App bridge.
+            paths: Optional resolved AlfredPaths layout.
         """
         self._knowledge = knowledge_service
         self._drive = drive_service
         self._inbox = inbox_service
-        self._nounou = nounou_service
-        self._pajemploi = pajemploi_calculator
         self._calendar = calendar_service
         self._evolve = evolve_service
         self._store = state_store
@@ -108,25 +138,58 @@ class CliController:
         self._workspaces = workspace_service
         self._agy = agy_manager
         self._routines = routine_service
+        self._tasks = tasks_service
+        self._contacts = contacts_service
+        self._suite = suite_service
+        self._delegation = delegation_service
+        self._onboarding = onboarding_service
+        self._signature = signature_service
+        self._mcp = mcp_service
+        self._paths = paths
 
     def run(self, argv: list[str]) -> int:
-        """Parse CLI arguments and execute the requested Alfred workflow.
+        """Parse CLI arguments and execute the requested Alfred V8 workflow.
 
         Args:
             argv: Command-line argument list excluding program name.
-
-        Returns:
-            POSIX exit status code (0 on success).
         """
         args = self._build_parser().parse_args(argv)
-        self._knowledge.bootstrap_templates_if_empty()
-        handler = self._build_handlers().get(str(args.command))
+        cmd = str(args.command)
+        if cmd not in {"status-onboarding", "oauth-guide", "apply-onboarding", "auth-google"}:
+            self._knowledge.bootstrap_templates_if_empty()
+        if cmd in CALENDAR_COMMANDS:
+            return dispatch_calendar_command(
+                cmd, self._calendar, self._settings, self._store,
+                self._gmail, self._agy, self._timezone, args,
+            )
+        if cmd in ALL_TASKS_SUITE_COMMANDS:
+            return dispatch_tasks_contacts_suite(
+                cmd, self._tasks, self._contacts, self._suite, self._settings, args
+            )
+        if cmd in ONBOARDING_AND_BRIDGE_COMMANDS:
+            return self._dispatch_onboarding_bridge(cmd, args)
+        handler = self._core_handlers().get(cmd)
         return handler(args) if handler is not None else 1
 
-    def _build_handlers(self) -> dict[str, Callable[[argparse.Namespace], int]]:
-        """Build the dispatch table mapping CLI subcommand names to handler callables."""
+    def _dispatch_onboarding_bridge(self, cmd: str, args: argparse.Namespace) -> int:
+        """Ensure lazy fallback services exist and dispatch onboarding/bridge commands."""
+        paths = self._paths or AlfredPaths.from_env()
+        onb = self._onboarding or OnboardingService(paths, self._settings, self._store)
+        dlg = self._delegation or DelegationService(
+            paths, self._settings, self._store, self._agy, self._gmail
+        )
+        sig = self._signature or SignatureVaultService(paths, self._settings, self._store)
+        mcp = self._mcp or McpBridgeService(
+            paths, self._settings, self._store, self._agy, self._knowledge
+        )
+        return dispatch_onboarding_and_bridges(
+            cmd, onb, dlg, sig, mcp, self._gmail, self._drive, self._agy, self._settings, args
+        )
+
+    def _core_handlers(self) -> dict[str, Callable[[argparse.Namespace], int]]:
+        """Return handlers for auth, workspaces, knowledge, drive, inbox, routines, & evolve."""
         return {
-            "auth-google": lambda a: self._handle_auth_google(int(a.port), not bool(a.no_browser)),
+            "auth-google": self._handle_auth_google,
             "init-workspaces": lambda a: self._handle_init_workspaces(bool(a.prune_legacy)),
             "scan-knowledge": lambda a: self._handle_scan_knowledge(str(a.query)),
             "load-knowledge": lambda a: self._handle_load_knowledge(str(a.doc)),
@@ -137,34 +200,11 @@ class CliController:
             "read-drive": lambda a: self._handle_read_drive(str(a.file_id)),
             "poll-inbox": self._handle_poll_inbox,
             "send-draft": lambda a: handle_send_draft(self._gmail, self._settings, a),
-            "archive-email": lambda a: handle_archive_email(self._gmail, a),
+            "archive-email": lambda a: handle_archive_email(self._gmail, a, self._settings),
             "backfill-inbox-archives": lambda _a: handle_backfill_inbox_archives(
                 self._inbox, self._agy
             ),
             "sync-agy-ui": lambda a: handle_sync_agy_ui(self._agy, a),
-            "list-events": lambda a: handle_list_events(
-                self._calendar, self._settings, self._store, self._timezone, a
-            ),
-            "hold-allowlist": lambda a: handle_hold_allowlist(
-                self._calendar, self._store, self._gmail, a
-            ),
-            "create-event": lambda a: handle_create_event(
-                self._calendar, self._settings, self._store, self._gmail,
-                self._agy, self._timezone, a,
-            ),
-            "confirm-event": lambda a: handle_confirm_event(
-                self._calendar, self._settings, self._store, self._agy,
-                self._timezone, a, gmail_service=self._gmail,
-            ),
-            "delete-event": lambda a: handle_delete_event(
-                self._calendar, self._settings, self._store, a
-            ),
-            "init-nounou": lambda a: self._handle_init_nounou(
-                Path(a.contract_json), bool(a.execute)
-            ),
-            "seed-nounou": self._handle_seed_nounou,
-            "check-vacation": self._handle_check_vacation,
-            "close-pajemploi": self._handle_close_pajemploi_cmd,
             "evolve": self._handle_evolve,
             "run-routines": lambda a: handle_run_routines(self._routines, a),
             "install-routines": lambda a: handle_install_routines(self._routines, a),
@@ -175,20 +215,23 @@ class CliController:
 
     def _build_parser(self) -> argparse.ArgumentParser:
         """Construct the top-level argparse command parser."""
-        parser = argparse.ArgumentParser(prog="alfred", description="Alfred V7.1 Lean CLI")
+        parser = argparse.ArgumentParser(prog="alfred", description="Alfred V8.0 Family Office CLI")
         sub = parser.add_subparsers(dest="command", required=True)
 
         p_auth = sub.add_parser("auth-google")
         p_auth.add_argument("--port", type=int, default=0)
         p_auth.add_argument("--no-browser", action="store_true")
+        p_auth.add_argument("--print-url", action="store_true")
+        p_auth.add_argument("--redirect-url", default="")
 
         p_ws = sub.add_parser("init-workspaces")
         p_ws.add_argument("--prune-legacy", action="store_true")
 
         self._register_knowledge_and_drive_parsers(sub)
-        self._register_inbox_parsers(sub)
+        self._register_inbox_and_evolve_parsers(sub)
         register_calendar_parsers(sub)
-        self._register_nounou_and_evolve_parsers(sub)
+        register_tasks_contacts_suite_parsers(sub)
+        register_onboarding_and_bridge_parsers(sub)
         register_routine_and_gmail_parsers(sub)
         return parser
 
@@ -201,14 +244,10 @@ class CliController:
         p_load.add_argument("--doc", required=True)
 
         p_ups = sub.add_parser("upsert-knowledge")
-        p_ups.add_argument("--file", required=True)
-        p_ups.add_argument("--id", required=True)
-        p_ups.add_argument("--title", required=True)
-        p_ups.add_argument("--domain", required=True)
-        p_ups.add_argument("--summary", required=True)
+        for flag in ("--file", "--id", "--title", "--domain", "--summary", "--body-file"):
+            p_ups.add_argument(flag, required=True)
         p_ups.add_argument("--keyword", action="append", default=[])
         p_ups.add_argument("--drive-source-id", action="append", default=[])
-        p_ups.add_argument("--body-file", required=True)
 
         p_drv = sub.add_parser("init-drive")
         p_drv.add_argument("--execute", action="store_true")
@@ -221,55 +260,28 @@ class CliController:
         p_rdrv = sub.add_parser("read-drive")
         p_rdrv.add_argument("--file-id", required=True)
 
-    def _register_inbox_parsers(self, sub: Any) -> None:
-        """Register Gmail inbox triage and post-Gate draft sending subcommands."""
+    def _register_inbox_and_evolve_parsers(self, sub: Any) -> None:
+        """Register Gmail inbox triage, draft sending, and Mono-Repo evolve subcommands."""
         p_poll = sub.add_parser("poll-inbox")
         p_poll.add_argument("--spawn-agy", action="store_true")
         p_poll.add_argument("--cognitive-agy", action="store_true")
 
         p_dr = sub.add_parser("send-draft")
         p_dr.add_argument("--draft-id", required=True)
-        p_dr.add_argument("--thread-id", default="")
-        p_dr.add_argument("--to", default="")
-        p_dr.add_argument("--subject", default="")
-        p_dr.add_argument("--body", default="")
+        for flag in ("--thread-id", "--to", "--subject", "--body"):
+            p_dr.add_argument(flag, default="")
         p_dr.add_argument("--keep-in-inbox", action="store_true")
         p_dr.add_argument("--unstar", action="store_true")
 
-    def _register_nounou_and_evolve_parsers(self, sub: Any) -> None:
-        """Register Garde Nounou childcare, Pajemploi, and Dual-Repo evolve subcommands."""
-        p_init_n = sub.add_parser("init-nounou")
-        p_init_n.add_argument("--contract-json", required=True)
-        p_init_n.add_argument("--execute", action="store_true")
-
-        p_seed = sub.add_parser("seed-nounou")
-        p_seed.add_argument("--date", default="")
-        p_seed.add_argument("--apply", action="store_true")
-        p_seed.add_argument("--spawn-agy", action="store_true")
-
-        p_vac = sub.add_parser("check-vacation")
-        p_vac.add_argument("--start", required=True)
-        p_vac.add_argument("--end", required=True)
-        p_vac.add_argument("--source", default="parents")
-        p_vac.add_argument("--persist", action="store_true")
-        p_vac.add_argument("--spawn-agy", action="store_true")
-
-        p_paj = sub.add_parser("close-pajemploi")
-        p_paj.add_argument("--year", type=int, default=0)
-        p_paj.add_argument("--month", type=int, default=0)
-        p_paj.add_argument("--spawn-agy", action="store_true")
-
         p_ev = sub.add_parser("evolve")
-        p_ev.add_argument("--id", required=True)
-        p_ev.add_argument("--title", required=True)
-        p_ev.add_argument("--description", required=True)
+        for flag in ("--id", "--title", "--description"):
+            p_ev.add_argument(flag, required=True)
         p_ev.add_argument("--execute", action="store_true")
         p_ev.add_argument("--spawn-agy", action="store_true")
-        p_ev.add_argument("--core-worktree", default="")
-        p_ev.add_argument("--instance-worktree", default="")
+        p_ev.add_argument("--worktree", default="")
 
     def _handle_init_workspaces(self, prune_legacy: bool) -> int:
-        """Provision the 4 distinct Antigravity projects and print JSON status."""
+        """Provision the 6 specialist Antigravity projects and print JSON status."""
         if self._workspaces is None:
             raise RuntimeError("WorkspaceService is not wired on CliController.")
         statuses = self._workspaces.init_workspaces(prune_legacy=prune_legacy)
@@ -282,18 +294,37 @@ class CliController:
         """Optionally materialize a live Antigravity Web Gate session for a workspace."""
         if spawn and self._agy is not None:
             self._agy.create_session(
-                workspace=workspace,
-                source_message_id=source_id,
-                implementation_plan_md=plan_md,
-                spawn_live=True,
+                workspace=workspace, source_message_id=source_id,
+                implementation_plan_md=plan_md, spawn_live=True,
             )
             self._agy.daemon_sync.sync_if_needed()
 
-    def _handle_auth_google(self, port: int, open_browser: bool) -> int:
-        """Execute interactive OAuth2 InstalledAppFlow consent and write token.json."""
+    def _handle_auth_google(self, args: argparse.Namespace) -> int:
+        """Execute interactive, print-url, or redirect-url OAuth2 consent flow."""
         if self._oauth is None:
             raise RuntimeError("GoogleOAuthService is not wired on CliController.")
-        token_path = self._oauth.bootstrap_interactive_token(port=port, open_browser=open_browser)
+        port = int(args.port)
+        print_url = bool(args.print_url)
+        redirect_url = str(args.redirect_url).strip()
+        if print_url and redirect_url:
+            raise ValueError("Cannot pass both --print-url and --redirect-url simultaneously.")
+        if print_url:
+            eff_port = port if port > 0 else 8085
+            auth_url = self._oauth.start_headless_auth(port=eff_port)
+            payload = {
+                "auth_url": auth_url,
+                "redirect_uri": f"http://localhost:{eff_port}/",
+                "status": "PENDING_CODE",
+            }
+            print(json.dumps(payload, indent=2))
+            return 0
+        if redirect_url:
+            token_path = self._oauth.complete_headless_auth(redirect_url)
+            print(json.dumps({"token_path": str(token_path), "status": "OK"}, indent=2))
+            return 0
+        token_path = self._oauth.bootstrap_interactive_token(
+            port=port, open_browser=not bool(args.no_browser)
+        )
         print(json.dumps({"token_path": str(token_path), "status": "OK"}, indent=2))
         return 0
 
@@ -317,17 +348,14 @@ class CliController:
     def _handle_upsert_knowledge(self, args: argparse.Namespace) -> int:
         """Upsert a Tier-2 reference .md file with Drive backup and print its JSON."""
         fm = FrontmatterSchema(
-            id=str(args.id),
-            title=str(args.title),
-            domain=str(args.domain),
-            summary=str(args.summary),
-            keywords=[str(k) for k in args.keyword],
+            id=str(args.id), title=str(args.title), domain=str(args.domain),
+            summary=str(args.summary), keywords=[str(k) for k in args.keyword],
             drive_source_ids=[str(d) for d in args.drive_source_id],
         )
         body = (
             sys.stdin.read()
             if str(args.body_file) == "-"
-            else Path(args.body_file).read_text(encoding="utf-8")
+            else Path(str(args.body_file)).read_text(encoding="utf-8")
         )
         doc = self._knowledge.upsert_document(str(args.file), fm, body)
         print(json.dumps(doc.model_dump(mode="json"), indent=2, ensure_ascii=False))
@@ -335,6 +363,8 @@ class CliController:
 
     def _handle_init_drive(self, execute: bool) -> int:
         """Run Stage-2 init-drive Gate plan or Stage-3 taxonomy persistence."""
+        if not self._settings.features.drive_knowledge_sync:
+            return print_skipped_disabled("drive_knowledge_sync", "init-drive")
         if execute:
             doc = self._drive.execute_init_drive_taxonomy(self._knowledge)
             print(
@@ -353,6 +383,8 @@ class CliController:
 
     def _handle_sync_drive(self) -> int:
         """Synchronize incremental Google Drive changes and print summary JSON."""
+        if not self._settings.features.drive_knowledge_sync:
+            return print_skipped_disabled("drive_knowledge_sync", "sync-drive")
         index = self._drive.sync_changes()
         summary = {
             "folder_count": index.folder_count,
@@ -370,6 +402,8 @@ class CliController:
 
     def _handle_poll_inbox(self, args: argparse.Namespace) -> int:
         """Poll newly arrived Gmail messages with optional live agy spawn and cognitive triage."""
+        if not self._settings.features.inbox_auto_triage:
+            return print_skipped_disabled("inbox_auto_triage", "poll-inbox")
         if args.spawn_agy or args.cognitive_agy:
             decisions = self._inbox.poll_new_messages(
                 spawn_live_agy=True if args.spawn_agy else None,
@@ -379,96 +413,27 @@ class CliController:
             decisions = self._inbox.poll_new_messages()
         if decisions and self._agy is not None:
             self._agy.daemon_sync.sync_if_needed()
-        payload = [d.model_dump(mode="json") for d in decisions]
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
-        return 0
-
-    def _handle_init_nounou(self, contract_json_path: Path, execute: bool) -> int:
-        """Generate Gate plan or execute Garde Nounou initialization from contract JSON."""
-        raw = json.loads(contract_json_path.read_text(encoding="utf-8"))
-        contract = NounouContract.model_validate(raw)
-        if execute:
-            saved = self._nounou.execute_init_nounou(contract)
-            print(json.dumps(saved.model_dump(mode="json"), indent=2, ensure_ascii=False))
-            return 0
-        print(self._nounou.prepare_init_nounou_plan(contract))
-        return 0
-
-    def _handle_seed_nounou(self, args: argparse.Namespace) -> int:
-        """Seed or preview M+1 Garde Nounou schedule."""
-        ref_dt = date.fromisoformat(args.date) if args.date else date.today()
-        _, plan_md = self._nounou.seed_next_month_schedule(ref_dt, bool(args.apply))
-        if not args.apply:
-            self._maybe_spawn_gate(
-                "alfred-calendar", f"seed:{ref_dt}", plan_md, bool(args.spawn_agy)
-            )
-        print(plan_md)
-        return 0
-
-    def _handle_check_vacation(self, args: argparse.Namespace) -> int:
-        """Evaluate ~1-month contractual vacation notice compliance."""
-        alert = self._nounou.evaluate_vacation_notice(
-            VacationPeriod(start_date=args.start, end_date=args.end, source=args.source),
-            reference_date=date.today(),
-            persist=bool(args.persist),
-        )
-        if not args.persist:
-            self._maybe_spawn_gate(
-                "alfred-calendar",
-                f"vacation:{args.start}:{args.end}",
-                alert.implementation_plan_markdown,
-                bool(args.spawn_agy),
-            )
-        print(alert.implementation_plan_markdown)
-        return 0
-
-    def _handle_close_pajemploi_cmd(self, args: argparse.Namespace) -> int:
-        """Parse optional year/month flags and print deterministic Pajemploi closing plan."""
-        today = date.today()
-        yr = int(args.year) if args.year else today.year
-        mo = int(args.month) if args.month else today.month
-        return self._handle_close_pajemploi(yr, mo, spawn_agy=bool(args.spawn_agy))
-
-    def _handle_close_pajemploi(self, year: int, month: int, spawn_agy: bool = False) -> int:
-        """Fetch Garde Nounou events for (year, month) in local TZ and print Pajemploi plan."""
-        contract = self._store.nounou_contract.load()
-        _, last_day = pycal.monthrange(year, month)
-        tz = ZoneInfo(self._timezone)
-        t_min = datetime(year, month, 1, 0, 0, 0, tzinfo=tz).isoformat()
-        t_max = datetime(year, month, last_day, 23, 59, 59, tzinfo=tz).isoformat()
-        events = (
-            self._calendar.list_events(contract.calendar_id, t_min, t_max)
-            if contract.calendar_id
-            else []
-        )
-        report = self._pajemploi.calculate_monthly_report(year, month, contract, events)
-        self._maybe_spawn_gate(
-            "alfred-calendar",
-            f"pajemploi:{year:04d}-{month:02d}",
-            report.implementation_plan_markdown,
-            spawn_agy,
-        )
-        print(report.implementation_plan_markdown)
+        out = [d.model_dump(mode="json") for d in decisions]
+        print(json.dumps(out, indent=2, ensure_ascii=False))
         return 0
 
     def _handle_evolve(self, args: argparse.Namespace) -> int:
-        """Generate Stage-2 evolution Gate plan or execute Stage-3 Dual-Repo PR creation."""
+        """Generate Stage-2 evolution Gate plan or execute Stage-3 Mono-Repo PR creation."""
         if args.execute:
-            if args.core_worktree and args.instance_worktree:
-                core_wt = Path(args.core_worktree)
-                inst_wt = Path(args.instance_worktree)
-            else:
-                core_wt, inst_wt = self._evolve.create_isolated_worktrees(str(args.id))
-            prs = self._evolve.execute_and_open_dual_prs(
-                proposal_id=str(args.id),
-                title=str(args.title),
-                body=str(args.description),
-                core_worktree=core_wt,
-                instance_worktree=inst_wt,
+            wt = (
+                Path(str(args.worktree))
+                if args.worktree
+                else self._evolve.create_isolated_worktree(str(args.id))
             )
-            print(json.dumps([p.model_dump(mode="json") for p in prs], indent=2))
+            pr = self._evolve.execute_and_open_pr(
+                proposal_id=str(args.id), title=str(args.title),
+                body=str(args.description), worktree=wt,
+            )
+            print(json.dumps(pr.model_dump(mode="json"), indent=2, ensure_ascii=False))
             return 0
-        _, plan_md = self._evolve.prepare_evolution_plan(args.id, args.title, args.description)
+        _, plan_md = self._evolve.prepare_evolution_plan(
+            str(args.id), str(args.title), str(args.description)
+        )
         self._maybe_spawn_gate("alfred-evolve", f"evolve:{args.id}", plan_md, bool(args.spawn_agy))
         print(plan_md)
         return 0

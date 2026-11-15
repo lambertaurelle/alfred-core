@@ -13,7 +13,7 @@ def _utc_now_iso() -> str:
 
 
 class RoutinesConfig(BaseModel):
-    """Configuration schema for Alfred's periodic inbox, Drive, and calendar routines."""
+    """Configuration schema for Alfred's periodic inbox, Drive, and extension routines."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -21,7 +21,7 @@ class RoutinesConfig(BaseModel):
     periodic_interval_sec: int = Field(default=1800, ge=60)
     spawn_agy: bool = True
     cognitive_agy: bool = True
-    vacation_lookahead_days: int = Field(default=45, ge=7)
+    backup_instance_config_to_drive: bool = True
 
     @classmethod
     def from_dict(cls, raw: object) -> RoutinesConfig:
@@ -40,7 +40,9 @@ class RoutinesConfig(BaseModel):
             periodic_interval_sec=int(raw.get("periodic_interval_sec", 1800)),
             spawn_agy=bool(raw.get("spawn_agy", True)),
             cognitive_agy=bool(raw.get("cognitive_agy", True)),
-            vacation_lookahead_days=int(raw.get("vacation_lookahead_days", 45)),
+            backup_instance_config_to_drive=bool(
+                raw.get("backup_instance_config_to_drive", True)
+            ),
         )
 
 
@@ -71,13 +73,14 @@ class RoutineTickReport(BaseModel):
 
 
 class RoutinesStatusReport(BaseModel):
-    """Live diagnostic snapshot of bookmarks, contract readiness, and systemd timers."""
+    """Live diagnostic snapshot of bookmarks, enabled features, and systemd timers."""
 
     gmail_history_id: str | None = None
     gmail_last_polled_at: str = ""
     drive_page_token_initialized: bool = False
     drive_last_synced_at: str = ""
-    nounou_contract_initialized: bool = False
+    enabled_features: list[str] = Field(default_factory=list)
+    active_extensions: list[str] = Field(default_factory=list)
     systemd_timers_installed: list[str] = Field(default_factory=list)
     systemd_timers_active: dict[str, bool] = Field(default_factory=dict)
     last_runs: dict[str, RoutineJobRun] = Field(default_factory=dict)
@@ -85,11 +88,13 @@ class RoutinesStatusReport(BaseModel):
 
 
 class WorkspaceProjectStatus(BaseModel):
-    """Provisioned Antigravity project descriptor for one Alfred workspace."""
+    """Provisioned Antigravity project descriptor for one Alfred specialist workspace."""
 
     role: str
     project_name: str
     project_id: str = ""
     workspace_dir: str
+    default_model: str = ""
     agents_discovered: list[str] = Field(default_factory=list)
     created: bool = False
+    skipped_disabled: bool = False

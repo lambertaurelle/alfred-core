@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import email
+import email.policy
 import html
 import re
 from email.message import EmailMessage as MimeEmailMessage
@@ -73,58 +75,57 @@ class GmailService:
         self._cached_addresses: frozenset[str] | None = None
 
     def get_current_history_id(self) -> str:
-        """Fetch the current mailbox historyId without touching past messages.
-
-        Returns:
-            Current Gmail historyId string.
-        """
-        client = self._require_client()
-        profile = client.users().getProfile(userId="me").execute()
+        """Fetch the current mailbox historyId without touching past messages."""
+        profile = self._require_client().users().getProfile(userId="me").execute()
         return str(profile["historyId"])
 
-    def get_authenticated_addresses(self) -> frozenset[str]:
-        """Return lowercase primary and sendAs alias email addresses for the mailbox owner.
-
-        Returns:
-            Cached frozenset of lowercase email addresses owned by the authenticated user.
-        """
-        if self._cached_addresses is not None:
-            return self._cached_addresses
-        found: set[str] = set()
+    def list_send_as_identities(self) -> list[dict[str, Any]]:
+        """Discover primary mailbox address and verified sendAs aliases via Gmail API."""
+        identities: dict[str, dict[str, Any]] = {}
         client = self._require_client()
         try:
             profile = client.users().getProfile(userId="me").execute()
-            primary = profile.get("emailAddress") if isinstance(profile, dict) else None
-            if isinstance(primary, str) and "@" in primary:
-                found.add(primary.strip().lower())
+            raw_addr = profile.get("emailAddress", "") if isinstance(profile, dict) else ""
+            primary = str(raw_addr).strip().lower()
+            if "@" in primary:
+                identities[primary] = {
+                    "email": primary, "display_name": "", "is_primary": True,
+                    "is_default": True, "verification_status": "accepted",
+                }
         except Exception:
             pass
         try:
             resp = client.users().settings().sendAs().list(userId="me").execute()
-            items = resp.get("sendAs", []) if isinstance(resp, dict) else []
-            for entry in items:
-                alias = entry.get("sendAsEmail") if isinstance(entry, dict) else None
-                if isinstance(alias, str) and "@" in alias:
-                    found.add(alias.strip().lower())
+            for entry in (resp.get("sendAs", []) if isinstance(resp, dict) else []):
+                if not isinstance(entry, dict):
+                    continue
+                addr = str(entry.get("sendAsEmail", "")).strip().lower()
+                if "@" not in addr:
+                    continue
+                identities[addr] = {
+                    "email": addr,
+                    "display_name": str(entry.get("displayName", "")).strip(),
+                    "is_primary": bool(entry.get("isPrimary", False)),
+                    "is_default": bool(entry.get("isDefault", False)),
+                    "verification_status": str(entry.get("verificationStatus", "accepted")),
+                }
         except Exception:
             pass
-        self._cached_addresses = frozenset(found)
+        return sorted(identities.values(), key=lambda item: (not item["is_primary"], item["email"]))
+
+    def get_authenticated_addresses(self) -> frozenset[str]:
+        """Return cached lowercase primary and sendAs alias addresses for the mailbox owner."""
+        if self._cached_addresses is None:
+            self._cached_addresses = frozenset(
+                str(item["email"]) for item in self.list_send_as_identities()
+            )
         return self._cached_addresses
 
-    def list_new_messages_since(
-        self,
-        start_history_id: str,
-    ) -> tuple[list[EmailMessage], str]:
+    def list_new_messages_since(self, start_history_id: str) -> tuple[list[EmailMessage], str]:
         """List newly added incoming messages across all history pages since start_history_id.
 
         Args:
             start_history_id: Bookmark Gmail historyId from previous poll.
-
-        Returns:
-            Tuple of (ordered list of new incoming EmailMessage items, latest historyId).
-
-        Raises:
-            GmailHistoryExpiredError: If Gmail reports HTTP 404 on expired start_history_id.
         """
         client = self._require_client()
         candidates, latest_history_id = self._collect_added_message_ids(client, start_history_id)
@@ -143,24 +144,14 @@ class GmailService:
         Args:
             query: Gmail search query string (e.g. 'from:user@example.com').
             max_results: Maximum number of messages to retrieve.
-
-        Returns:
-            Ordered list of matching normalized EmailMessage records.
         """
         client = self._require_client()
-        resp = (
-            client.users()
-            .messages()
-            .list(userId="me", q=query, maxResults=max(1, int(max_results)))
-            .execute()
-        )
+        q_max = max(1, int(max_results))
+        resp = client.users().messages().list(userId="me", q=query, maxResults=q_max).execute()
         results: list[EmailMessage] = []
         for stub in resp.get("messages", []):
             msg_id = str(stub.get("id", ""))
-            if not msg_id:
-                continue
-            fetched = self._fetch_message_or_none(client, msg_id)
-            if fetched is not None:
+            if msg_id and (fetched := self._fetch_message_or_none(client, msg_id)) is not None:
                 results.append(fetched)
         return results
 
@@ -169,9 +160,6 @@ class GmailService:
 
         Args:
             message_id: Target Gmail message identifier.
-
-        Returns:
-            Normalized EmailMessage or None on HTTP 404 / missing client.
         """
         try:
             client = self._require_client()
@@ -184,14 +172,9 @@ class GmailService:
 
         Args:
             thread_id: Target Gmail thread identifier.
-
-        Returns:
-            List of normalized EmailMessage records belonging to thread_id.
         """
-        client = self._require_client()
-        req = client.users().threads().get(userId="me", id=thread_id, format="full")
-        raw_thread = req.execute()
-        return [self._parse_raw_message(raw_m) for raw_m in raw_thread.get("messages", [])]
+        req = self._require_client().users().threads().get(userId="me", id=thread_id, format="full")
+        return [self._parse_raw_message(raw_m) for raw_m in req.execute().get("messages", [])]
 
     def restore_inbox_label(self, message_id: str) -> None:
         """Re-apply the INBOX label to an archived Gmail message.
@@ -211,6 +194,7 @@ class GmailService:
         body_text: str,
         in_reply_to: str = "",
         references: str = "",
+        from_addr: str = "",
     ) -> str:
         """Create a Gmail draft reply in the target thread without sending it.
 
@@ -221,11 +205,9 @@ class GmailService:
             body_text: Plain-text draft body.
             in_reply_to: Optional RFC 2822 Message-ID of the parent email.
             references: Optional RFC 2822 References header chain.
-
-        Returns:
-            Created Gmail draft_id.
+            from_addr: Optional explicit From header override (defaults to identity sendAs).
         """
-        raw = self._encode_mime(to_addr, subject, body_text, in_reply_to, references)
+        raw = self._encode_mime(to_addr, subject, body_text, in_reply_to, references, from_addr)
         body = {"message": {"threadId": thread_id, "raw": raw}}
         created = self._require_client().users().drafts().create(userId="me", body=body).execute()
         return str(created["id"])
@@ -239,6 +221,7 @@ class GmailService:
         body_text: str,
         in_reply_to: str = "",
         references: str = "",
+        from_addr: str = "",
     ) -> str:
         """Update an existing Gmail draft after user inline comment corrections.
 
@@ -250,20 +233,12 @@ class GmailService:
             body_text: Revised plain-text body.
             in_reply_to: Optional RFC 2822 Message-ID of the parent email.
             references: Optional RFC 2822 References header chain.
-
-        Returns:
-            Updated Gmail draft_id.
+            from_addr: Optional explicit From header override (defaults to identity sendAs).
         """
-        raw = self._encode_mime(to_addr, subject, body_text, in_reply_to, references)
+        raw = self._encode_mime(to_addr, subject, body_text, in_reply_to, references, from_addr)
         body = {"message": {"threadId": thread_id, "raw": raw}}
-        updated = (
-            self._require_client()
-            .users()
-            .drafts()
-            .update(userId="me", id=draft_id, body=body)
-            .execute()
-        )
-        return str(updated["id"])
+        res = self._require_client().users().drafts().update(userId="me", id=draft_id, body=body)
+        return str(res.execute()["id"])
 
     def send_draft(
         self, draft_id: str, archive_inbox: bool = False, thread_id: str = "", unstar: bool = False
@@ -275,9 +250,6 @@ class GmailService:
             archive_inbox: When True, remove INBOX and UNREAD from the sent thread.
             thread_id: Optional explicit threadId fallback when archiving.
             unstar: When True and archive_inbox is True, also remove STARRED.
-
-        Returns:
-            Sent Gmail message identifier.
         """
         return self.send_draft_with_archive(draft_id, archive_inbox, thread_id, unstar)[0]
 
@@ -291,17 +263,12 @@ class GmailService:
             archive_inbox: When True, archive the thread after sending.
             thread_id: Optional explicit Gmail threadId fallback.
             unstar: When True and archiving, also remove STARRED.
-
-        Returns:
-            Tuple of (sent_message_id, thread_archived_bool).
         """
-        sent = (
-            self._require_client()
-            .users()
-            .drafts()
-            .send(userId="me", body={"id": draft_id})
-            .execute()
-        )
+        client = self._require_client()
+        eff_from = self._settings.identity.format_from_header()
+        if eff_from:
+            self._enforce_draft_from_header(client, draft_id, eff_from)
+        sent = client.users().drafts().send(userId="me", body={"id": draft_id}).execute()
         sent_id = str(sent["id"])
         raw_th = sent.get("threadId") if isinstance(sent, dict) else None
         resolved_th = thread_id.strip() or (raw_th.strip() if isinstance(raw_th, str) else "")
@@ -309,6 +276,38 @@ class GmailService:
             self.archive_thread(resolved_th, mark_read=True, unstar=unstar)
             return sent_id, True
         return sent_id, False
+
+    def _enforce_draft_from_header(self, client: Any, draft_id: str, eff_from: str) -> None:
+        """Update draft MIME From header when identity.default_send_as_email is configured."""
+        try:
+            req = client.users().drafts().get(userId="me", id=draft_id, format="raw")
+            draft_obj = req.execute()
+        except Exception:
+            return
+        msg_obj = draft_obj.get("message") if isinstance(draft_obj, dict) else None
+        if not isinstance(msg_obj, dict):
+            return
+        raw_b64 = msg_obj.get("raw")
+        new_raw = ""
+        if isinstance(raw_b64, str) and raw_b64:
+            padded = raw_b64 + "=" * (-len(raw_b64) % 4)
+            parsed = email.message_from_bytes(
+                base64.urlsafe_b64decode(padded), policy=email.policy.default
+            )
+            if "From" in parsed:
+                parsed.replace_header("From", eff_from)
+            else:
+                parsed["From"] = eff_from
+            new_raw = base64.urlsafe_b64encode(parsed.as_bytes()).decode("ascii")
+        elif isinstance(msg_obj.get("payload"), dict):
+            pm = self._parse_raw_message(msg_obj)
+            new_raw = self._encode_mime(pm.recipient, pm.subject, pm.body_text, from_addr=eff_from)
+        if new_raw:
+            upd_msg: dict[str, Any] = {"raw": new_raw}
+            if msg_obj.get("threadId"):
+                upd_msg["threadId"] = str(msg_obj["threadId"])
+            body = {"id": draft_id, "message": upd_msg}
+            client.users().drafts().update(userId="me", id=draft_id, body=body).execute()
 
     def archive_thread(self, thread_id: str, mark_read: bool = True, unstar: bool = False) -> None:
         """Archive an entire Gmail thread by removing INBOX (and optional UNREAD/STARRED).
@@ -419,7 +418,12 @@ class GmailService:
             str(h.get("name", "")).lower(): str(h.get("value", ""))
             for h in payload.get("headers", [])
         }
-        body_text = self._extract_body_text(payload)
+        html_b64 = self._find_mime_part_data(payload, "text/html")
+        raw_html = _decode_base64url(html_b64) if html_b64 else ""
+        plain_b64 = self._find_mime_part_data(payload, "text/plain")
+        fallback_txt = _html_to_plain_text(raw_html) if raw_html else ""
+        body_text = _decode_base64url(plain_b64) if plain_b64 else fallback_txt
+        mimes, filenames = self._collect_mime_metadata(payload)
         return EmailMessage(
             message_id=str(raw["id"]),
             thread_id=str(raw.get("threadId", "")),
@@ -428,19 +432,28 @@ class GmailService:
             subject=headers.get("subject", ""),
             snippet=str(raw.get("snippet", "")),
             body_text=body_text,
+            raw_html=raw_html,
             headers=headers,
             label_ids=[str(lbl) for lbl in raw.get("labelIds", [])],
+            mime_types=mimes,
+            attachment_filenames=filenames,
         )
 
-    def _extract_body_text(self, payload: dict[str, Any]) -> str:
-        """Extract text/plain first across MIME tree, falling back to stripped text/html."""
-        plain = self._find_mime_part_data(payload, "text/plain")
-        if plain:
-            return _decode_base64url(plain)
-        raw_html = self._find_mime_part_data(payload, "text/html")
-        if raw_html:
-            return _html_to_plain_text(_decode_base64url(raw_html))
-        return ""
+    def _collect_mime_metadata(self, payload: dict[str, Any]) -> tuple[list[str], list[str]]:
+        """Collect all lowercase MIME types and attachment filenames across a Gmail MIME tree."""
+        mimes: list[str] = []
+        filenames: list[str] = []
+        stack = [payload]
+        while stack:
+            part = stack.pop()
+            mt = str(part.get("mimeType", "")).strip().lower()
+            if mt and mt not in mimes:
+                mimes.append(mt)
+            fname = str(part.get("filename", "")).strip()
+            if fname and fname not in filenames:
+                filenames.append(fname)
+            stack.extend(reversed(part.get("parts", [])))
+        return mimes, filenames
 
     def _find_mime_part_data(self, payload: dict[str, Any], target_mime: str) -> str:
         """Recursively find base64url body data for target_mime in a Gmail MIME tree."""
@@ -461,9 +474,13 @@ class GmailService:
         body_text: str,
         in_reply_to: str = "",
         references: str = "",
+        from_addr: str = "",
     ) -> str:
         """Encode an RFC 2822 UTF-8 email message into URL-safe base64."""
         mime = MimeEmailMessage()
+        eff_from = from_addr.strip() or self._settings.identity.format_from_header()
+        if eff_from:
+            mime["From"] = eff_from
         mime["To"] = to_addr
         mime["Subject"] = subject
         if in_reply_to:

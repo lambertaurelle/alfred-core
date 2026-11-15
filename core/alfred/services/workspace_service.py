@@ -1,4 +1,4 @@
-"""Provision and verify the 4 distinct Antigravity projects for Alfred V7.1 Lean."""
+"""Provision and verify the 6 distinct Antigravity specialist projects for Alfred V8.0."""
 
 from __future__ import annotations
 
@@ -14,7 +14,14 @@ from alfred.domain.models import AlfredPaths, AlfredSettings, WorkspaceProjectSt
 from alfred.repositories.json_repository import atomic_write_text
 from alfred.services.agy_session_manager import AgySessionManager
 
-CANONICAL_WORKSPACE_ROLES: tuple[str, ...] = ("life", "inbox", "calendar", "evolve")
+CANONICAL_WORKSPACE_ROLES: tuple[str, ...] = (
+    "onboard",
+    "life",
+    "inbox",
+    "calendar",
+    "tasks",
+    "evolve",
+)
 LEGACY_PRUNABLE_NAMES: frozenset[str] = frozenset({"Alfred", "CLI Project"})
 
 
@@ -51,13 +58,13 @@ class WorkspaceService:
         self._runner_fn = runner_fn
 
     def init_workspaces(self, prune_legacy: bool = False) -> list[WorkspaceProjectStatus]:
-        """Provision the 4 Antigravity workspace projects and optionally prune empty legacy ones.
+        """Provision the 6 Antigravity specialist projects and optionally prune legacy ones.
 
         Args:
             prune_legacy: When True, remove empty 'Alfred' / 'CLI Project' entries with 0 sessions.
 
         Returns:
-            Ordered list of WorkspaceProjectStatus descriptors for the 4 workspaces.
+            Ordered list of WorkspaceProjectStatus descriptors for the 6 workspaces.
         """
         self._projects_dir.mkdir(parents=True, exist_ok=True)
         statuses: list[WorkspaceProjectStatus] = []
@@ -70,12 +77,14 @@ class WorkspaceService:
             project_id, created = self._ensure_antigravity_project(project_name, ws_dir)
             keep_ids.add(project_id)
             agents = self._verify_project_agents(project_name, ws_dir)
+            default_model = self._settings.models.resolve_for_workspace(role)[0]
             statuses.append(
                 WorkspaceProjectStatus(
                     role=role,
                     project_name=project_name,
                     project_id=project_id,
                     workspace_dir=str(ws_dir),
+                    default_model=default_model,
                     agents_discovered=agents,
                     created=created,
                 )

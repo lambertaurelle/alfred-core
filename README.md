@@ -1,77 +1,108 @@
-# 🎩 Alfred — Personal Chief of Staff (Version 7.1 Lean & Antigravity-Native)
+# 🎩 Alfred V8.0 — Family Office Chief of Staff
 
-**Alfred** est un assistant personnel souverain propulsé **100 % par Google Antigravity Web** et directement connecté aux APIs natives **Google Workspace** (Gmail, Google Drive, Google Calendar) à **0,00 € de coût marginal**.
-
----
-
-## ✨ Philosophie V7.1 Lean : Zéro Usine à Gaz & Efficacité Maximale en Tokens
-
-1. **100 % Antigravity Web UI** : Pas de bot Google Chat externe, pas de WebApp superflue à maintenir — toutes les interactions, revues et validations passent par l'interface native d'Antigravity Web et ses artefacts **`implementation_plan.md`** annotables par commentaires inline.
-2. **Pattern Universel en 3 Étapes avec Recherche Adaptative** :
-   - **1. Analyse & Recherche Adaptative en Mode Turbo (`Read-Only`)** : S'adapte à la question (0 sous-agent si auto-suffisant, 1 sous-agent sur les Frontmatters YAML / Fiches de Référence, ou *spread* parallèle multi-agents sur Drive, Gmail, Calendar et le Web).
-   - **2. Gate Systématique (`implementation_plan.md`)** : Un agent synthétiseur rédige le plan d'implémentation (`RequestFeedback: true`). Aucune action d'écriture ne s'exécute tant que le plan n'est pas validé (`Proceed`).
-   - **3. Agent Exécuteur Unique** : Applique les changements validés, maintient à jour les Fiches de Référence `.md`, et génère les Pull Requests sur les 2 dépôts Git dans `alfred-evolve`.
-3. **Architecture de Connaissance Hybride en 3 Étages (Progressive Disclosure)** :
-   - **Étage 1 — Frontmatters YAML (`instance/data/knowledge/*.md`)** : Scan instantané à ~50 tokens des métadonnées YAML.
-   - **Étage 2 — Fiches de Référence *Up-to-Date* (`<= 150 lignes`) + `drive_metadata_index.json`** : Synthèse à jour sauvegardée automatiquement dans `_ALFRED_REFERENTIEL_` sur Google Drive, complétée par la taxonomie construite au First-Run (`init-drive`).
-   - **Étage 3 — Documents Bruts Google Drive (`drive_read`)** : Extraction directe à 0 OCR sur les Docs/Sheets/PDF natifs uniquement lorsqu'un détail de pièce justificative est nécessaire.
+Assistant personnel souverain sur **Antigravity Web** + **Google Workspace** + **Pont MCP OAuth 2.1 pour Gemini App**, structuré en mono-repo zéro-fuite (`core/` générique open-source, `instance/` privé gitignoré).
 
 ---
 
-## 🎯 Les 4 Cas d'Usage Cœurs
+## 1. Les 6 Workspaces Spécialisés & Routage Modèles
 
-1. **`init-drive` — Scaffolding Exhaustif du Google Drive au First-Run** :
-   - Analyse l'arborescence complète de votre Google Drive, construit `drive_metadata_index.json` et propose dans `implementation_plan.md` la fiche maîtresse `00_drive_taxonomy_and_filing_rules.md`.
-2. **`alfred-inbox` — Routine des Nouveaux E-mails à 3 Sorties Exclusives** :
-   - **`SILENT_NO_ACTION`** : Ignore le bruit et les notifications passives de portails (*« Vous avez de nouveaux documents sur votre espace Generali »*, factures d'abonnement courantes sans anomalie) et **archive automatiquement** la conversation Antigravity.
-   - **`DRAFT_REPLY`** : Crée un brouillon dans Gmail, garde la conversation Antigravity Web allumée et présente le brouillon dans `implementation_plan.md` pour correction par commentaires inline.
-   - **`USER_ACTION_REQUIRED`** : Étoile automatiquement l'e-mail (`STARRED`) dans Gmail, garde la conversation allumée et livre dans `implementation_plan.md` un **défrichage complet** de l'action à réaliser.
-3. **`alfred-calendar` — Suivi de l'Assistante Maternelle (`Garde Nounou`)** :
-   - Initialisé à partir du **contrat signé** (`init-nounou`), il gère le calendrier dédié **`Garde Nounou`** (`seed-nounou` le 20 du mois $M$ pour $M+1$, vacances et préavis ~1 mois, et clôture Pajemploi déterministe `close-pajemploi` à `last_day - 3` y compris en février).
-4. **`alfred-life` & `alfred-evolve` — Requêtes Libres & Évolutivité Dual-Git** :
-   - Posez toute question dans `alfred-life` ou demandez une évolution dans `alfred-evolve` (développée en TDD strict dans un `git worktree` isolé avec génération automatique des **Pull Requests sur les 2 dépôts Git** : `alfred-core` et `alfred-instance`).
+| Workspace | Rôle Métier | Modèle Principal | Exécution Post-Gate (`Proceed`) |
+| :--- | :--- | :--- | :--- |
+| `alfred-onboard` | Onboarding interactif, flags modulaires, OAuth2 & taxonomie Drive | `gemini-pro-orchestrator` | `plan-executor` (`Hydrogen`) |
+| `alfred-life` | Hub Family Office libre, études (`study-orchestrator`) & MCP | `gemini-pro-orchestrator` | `plan-executor` (`Hydrogen`) |
+| `alfred-inbox` | Triage e-mails (pré-filtre 0-token, pare-feu SPF/DKIM, 3 sorties) | `gemini-4-hydrogen-medium` | `plan-executor` (`Hydrogen`) |
+| `alfred-calendar` | Multi-calendriers, `[HOLD]` allowlistés & disponibilités | `gemini-4-hydrogen-medium` | `plan-executor` (`Hydrogen`) |
+| `alfred-tasks` | Google Tasks, échéances RFC 3339 & Google Contacts | `gemini-4-hydrogen-medium` | `plan-executor` (`Hydrogen`) |
+| `alfred-evolve` | Évolutivité Mono-Repo en `git worktree` isolé & extensions | `gemini-pro-orchestrator` | Triade `tdd-red` $\rightarrow$ `tdd-green` $\rightarrow$ `tdd-verifier` |
 
 ---
 
-## 🚀 Onboarding & CLI Quickstart
+## 2. Quickstart (`bootstrap.sh` $\rightarrow$ `alfred-onboard`)
 
 ```bash
-# 1. Authentification OAuth2 Google Workspace & Initialisation des 4 Projets Antigravity
-.venv/bin/alfred auth-google
+# 1. Bootstrap de l'environnement, instance/ gitignoré et hooks Zéro-Fuite
+./scripts/bootstrap.sh
+
+# 2. Diagnostic modulaire, guide GCP OAuth2 minimal et consentement initial
+.venv/bin/alfred status-onboarding --json
+.venv/bin/alfred oauth-guide
+.venv/bin/alfred auth-google                    # poste local avec navigateur
+# Serveur distant (SSH headless) :
+# .venv/bin/alfred auth-google --no-browser
+# (ou en 2 étapes : --print-url puis --redirect-url "<url_localhost>")
+
+# 3. Provisionnement des 6 projets Antigravity et découverte Google Drive
 .venv/bin/alfred init-workspaces --prune-legacy
+.venv/bin/alfred discover-drive --json
+# Ouvrir ensuite le projet 'alfred-onboard' dans Antigravity Web pour valider la configuration.
+```
 
-# 2. First-Run Google Drive (Étape 2 Gate -> Étape 3 Persistance Taxonomie)
-.venv/bin/alfred init-drive
-.venv/bin/alfred init-drive --execute
+---
 
-# 3. Référentiel 3-Étages & Google Drive (0-OCR natif)
-.venv/bin/alfred scan-knowledge --query "nounou"
-.venv/bin/alfred load-knowledge --doc "02_assistante_maternelle.md"
-.venv/bin/alfred upsert-knowledge --file "03_dossiers_actifs_et_administratif.md" \
-  --id "dossiers_actifs_et_administratif" --title "Dossiers Actifs" \
-  --domain "admin" --summary "Suivi administratif à jour" --body-file /tmp/body.md
-.venv/bin/alfred search-drive --query "contrat"
-.venv/bin/alfred sync-drive
-.venv/bin/alfred read-drive --file-id "<drive_file_id>"
+## 3. Modules Fonctionnels, APIs GCP & Scopes OAuth2
 
-# 4. Routine Inbox (3 sorties exclusives ; archivage Gmail automatique en fin de traitement interactif)
-.venv/bin/alfred poll-inbox --spawn-agy --cognitive-agy
-.venv/bin/alfred send-draft --draft-id "<draft_id>" --thread-id "<thread_id>" --to "contact@example.com" --body "Confirmé."
-.venv/bin/alfred archive-email --thread-id "<thread_id>" --unstar
+Seules les APIs et permissions correspondant aux modules activés dans `instance/config/settings.yaml` (`features.*`) sont requises (`SKIPPED_DISABLED` propre si désactivé) :
 
-# 5. Calendriers & Assistante Maternelle (Garde Nounou + Pajemploi)
-.venv/bin/alfred list-events --calendar primary --from "2026-05-01T00:00:00Z" --to "2026-05-31T23:59:59Z"
-.venv/bin/alfred list-events --calendar nounou --from "2026-05-01T00:00:00Z" --to "2026-05-31T23:59:59Z"
-.venv/bin/alfred init-nounou --contract-json instance/data/state/nounou_contract.json --execute
-.venv/bin/alfred seed-nounou --date 2026-05-20 --apply
-.venv/bin/alfred check-vacation --start 2026-08-01 --end 2026-08-15 --persist
-.venv/bin/alfred close-pajemploi --year 2026 --month 5
+| Feature Flag (`settings.yaml`) | Défaut | API(s) Google Cloud | Scopes OAuth2 (`https://www.googleapis.com/auth/...`) |
+| :--- | :---: | :--- | :--- |
+| `drive_knowledge_sync` | `true` | `drive.googleapis.com`, `sheets.googleapis.com` | `drive` |
+| `inbox_auto_triage` | `true` | `gmail.googleapis.com` | `gmail.modify`, `gmail.compose`, `gmail.settings.basic` |
+| `gmail_drafts_and_send` | `true` | `gmail.googleapis.com` | `gmail.modify`, `gmail.compose`, `gmail.settings.basic` |
+| `calendar_management` | `true` | `calendar-json.googleapis.com` | `calendar` |
+| `tasks_management` | `true` | `tasks.googleapis.com` | `tasks` |
+| `contacts_lookup` | `true` | `people.googleapis.com` | `contacts`, `contacts.other.readonly` |
+| `google_docs_suite` | `false` | `docs`, `sheets`, `slides`, `forms.googleapis.com` | `documents`, `spreadsheets`, `presentations`, `forms.body`, `forms.responses.readonly` |
+| `signature_delegation` | `false` | Local (`signature_vault/` protégé par `PreToolUse`) | Aucun scope additionnel (préparation PDF ; signature humaine hors-bande) |
+| `mcp_gemini_bridge` | `false` | Local (`127.0.0.1:8765` OAuth 2.1 PKCE `S256`) | Aucun scope GCP (authentification dédiée PBKDF2 `mcp_oauth.json`) |
 
-# 6. Évolutivité Dual-Git & 5 Gardiens Déterministes
-.venv/bin/alfred evolve --id "feat_01" --title "Nouvelle règle" --description "Détail" --execute
-python3 core/scripts/check_code_architecture.py --root core/
-.venv/bin/pytest --cov=core --cov-fail-under=90
-.venv/bin/ruff check core
-.venv/bin/mypy --strict core/alfred core/scripts core/tests
+---
+
+## 4. Identité `sendAs` vs Exclusion d'Invités Google Calendar
+
+| Clé `identity.*` (`settings.yaml`) | Exemple | Effet Déterministe |
+| :--- | :--- | :--- |
+| `default_send_as_email` | `contact@domaine-perso.example` | En-tête `From:` appliqué aux brouillons et envois Gmail (vérifié via `gmail.settings.basic`). |
+| `default_send_as_display_name` | `Cabinet Exemple` | Nom d'affichage RFC 2822 combiné à `default_send_as_email`. |
+| `calendar_organizer_email` | `agenda@domaine-perso.example` | Adresse organisatrice exclue d'office de toute liste `attendees`. |
+| `never_invite_emails` | `["archive@example.com"]` | Adresses personnelles/alias **jamais** ajoutées en invités Google Calendar (zéro auto-invitation). |
+
+---
+
+## 5. Exposition Externe MCP pour Gemini App (OAuth 2.1 PKCE + HTTPS TLS)
+
+Le pont MCP (`/.well-known/*`, `/oauth/{register,authorize,token}` PKCE `S256`, `POST /mcp` : `alfred_life_brain_dump`, `alfred_session_status`, `alfred_approve_plan`, `alfred_quick_context`) se déploie en 3 étapes :
+
+### 1. Côté Serveur Alfred (`apply-onboarding` + `setup-mcp` + `install-routines`)
+```bash
+# Local cloudflared (sur la même machine, host 127.0.0.1 par défaut) :
+.venv/bin/alfred apply-onboarding --enable mcp_gemini_bridge --mcp-public-url "https://alfred.domaine-perso.example"
+# Tunnel cloudflared déporté sur un autre conteneur/hôte du LAN (ajouter --mcp-host "0.0.0.0") :
+.venv/bin/alfred apply-onboarding --enable mcp_gemini_bridge --mcp-host "0.0.0.0" --mcp-public-url "https://alfred.domaine-perso.example"
+
+# Initialiser le PIN PBKDF2-HMAC-SHA256 puis installer et démarrer alfred-mcp.service :
+.venv/bin/alfred setup-mcp --pin "<PIN>"
+.venv/bin/alfred install-routines
+```
+
+### 2. Côté Réseau (`Option A — Cloudflare Zero Trust Tunnel` vs `Option B — Port 443 Direct Caddy/Nginx`)
+- **Option A — Cloudflare Zero Trust Tunnel (`cloudflared`)** : Public Hostname `alfred.domaine-perso.example` $\rightarrow$ Service `HTTP` `127.0.0.1:8765` (local) ou `<IP_SERVEUR_ALFRED>:8765` (tunnel LAN déporté). **Aucune application Cloudflare Access (OTP/Login)** devant ce sous-domaine (l'OAuth 2.1 + PIN d'Alfred gère l'authentification) + règle WAF **Skip** sur `/.well-known/*`, `/oauth/*`, `/mcp` :
+  - Expression WAF : `(http.host eq "alfred.domaine-perso.example" and (starts_with(http.request.uri.path, "/.well-known/") or starts_with(http.request.uri.path, "/oauth/") or http.request.uri.path eq "/mcp"))`
+- **Option B — Port 443 Direct (Caddy / Nginx)** : pointer le DNS `A` `alfred.domaine-perso.example` (ex. `203.0.113.10`, port `443`) vers `reverse_proxy 127.0.0.1:8765` (`flush_interval -1`, `X-Forwarded-Proto`/`Host`) avec TLS automatique.
+
+### 3. Côté Gemini App
+Connecter `https://alfred.domaine-perso.example/mcp` dans Gemini App et valider le `<PIN>` sur l'écran OAuth 2.1 d'Alfred.
+
+---
+
+## 6. Commandes CLI & Gardiens Déterministes
+
+```bash
+.venv/bin/alfred scan-knowledge && .venv/bin/alfred poll-inbox --spawn-agy --cognitive-agy
+.venv/bin/alfred list-calendars && .venv/bin/alfred query-freebusy --from "2026-11-16T08:00:00Z" --to "2026-11-16T18:00:00Z"
+.venv/bin/alfred list-tasks && .venv/bin/alfred search-contacts --query "Alice"
+.venv/bin/alfred delegate --to tasks --title "Relance" --brief "Vérifier échéance"
+.venv/bin/python core/scripts/check_code_architecture.py --root core/
 bash core/scripts/check-upstream-leak.sh
+.venv/bin/ruff check core && .venv/bin/mypy --strict core/alfred core/scripts core/tests
+.venv/bin/pytest --cov=core --cov-fail-under=90
 ```

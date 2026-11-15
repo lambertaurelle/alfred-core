@@ -1,15 +1,34 @@
 # ==============================================================================
-# ALFRED V7.1 LEAN — ZERO UPSTREAM LEAK INVARIANT (.gitignore)
+# ALFRED V8.0 — MONO-REPO ZERO UPSTREAM LEAK INVARIANT (.gitignore)
 # ==============================================================================
-instance/
 worktrees/
 .venv/
 venv/
 ENV/
 
-# Private & runtime artifacts
+# Instance overlay: ignore all private data/secrets/active configs & active extensions,
+# while allowing versioned *.example.* templates, extension contract, and instance/examples/.
+instance/*
+!instance/config/
+instance/config/*
+!instance/config/*.example.yaml
+!instance/config/*.example.yml
+!instance/config/prompts/
+instance/config/prompts/*
+!instance/config/prompts/*.example.md
+!instance/extensions/
+instance/extensions/*
+!instance/extensions/__init__.py
+!instance/extensions/README.md
+!instance/extensions/*.example.py
+!instance/examples/
+
+# Private & runtime artifacts anywhere in the tree
+instance/data/
+instance/secrets/
 secrets/
 **/secrets/
+**/signature_vault/
 **/cache/
 *.lock
 *.env
@@ -22,6 +41,7 @@ secrets/
 credentials*.json
 client_secret*.json
 token*.json
+mcp_auth*.json
 
 # Python build, test & cache artifacts
 __pycache__/

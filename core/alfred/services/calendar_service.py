@@ -1,48 +1,31 @@
-"""Google Calendar API v3 connector for primary [HOLD]/confirmed events and Garde Nounou."""
+"""Google Calendar API v3 generic multi-calendar service, [HOLD] lifecycle, and FreeBusy."""
 
 from __future__ import annotations
 
-import re
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from alfred.domain.calendar_models import CalendarSlotProposal
-from alfred.domain.models import AlfredPaths, AlfredSettings, CalendarEventItem
+from alfred.domain.calendar_models import (
+    CalendarListEntry,
+    CalendarSlotProposal,
+    FreeBusyInterval,
+)
+from alfred.domain.models import AlfredPaths, AlfredSettings, CalendarEventItem, fold_accents
 from alfred.repositories.state_store import StateStore
+from alfred.services.calendar_helpers import (
+    build_confirmed_payload,
+    build_hold_payload,
+    build_time_bounds,
+    compute_confirmation_window,
+    match_existing_hold,
+    normalize_emails,
+    parse_event_item,
+    strip_hold_prefix,
+)
 from alfred.services.google_auth import GoogleOAuthService
-
-HOLD_PREFIX_RE = re.compile(r"^\s*\[hold\]\s*:?\s*", re.IGNORECASE)
-
-
-def _normalize_emails(emails: list[str] | set[str] | frozenset[str]) -> list[str]:
-    """Return deduplicated lowercase email addresses preserving first-seen order."""
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for raw in emails:
-        cleaned = raw.strip().lower()
-        if "@" in cleaned and cleaned not in seen:
-            seen.add(cleaned)
-            ordered.append(cleaned)
-    return ordered
-
-
-def _strip_hold_prefix(summary: str) -> str:
-    """Remove any leading '[HOLD]' prefix from an event summary."""
-    cleaned = HOLD_PREFIX_RE.sub("", summary).strip()
-    return cleaned or summary.strip()
-
-
-def _parse_iso_dt(iso_str: str) -> datetime | None:
-    """Parse an ISO date or datetime string into an aware UTC datetime, or None."""
-    try:
-        parsed = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
-    except ValueError:
-        return None
 
 
 class CalendarService:
-    """Google Calendar v3 service managing Garde Nounou, allowlisted [HOLD]s, and invites."""
+    """Generic multi-calendar Google Calendar v3 service with self-alias attendee exclusion."""
 
     def __init__(
         self,
@@ -66,6 +49,24 @@ class CalendarService:
         self._calendar_client = calendar_client
         self._oauth = oauth_service or GoogleOAuthService(paths, settings)
         self._state_store = state_store
+        self._cached_calendars: list[CalendarListEntry] | None = None
+
+    def sanitize_guest_attendees(
+        self,
+        candidates: list[str] | set[str] | frozenset[str],
+        owner_addresses: frozenset[str] = frozenset(),
+    ) -> list[str]:
+        """Strip never_invite_emails, sendAs aliases, and owner addresses from event attendees.
+
+        Args:
+            candidates: Raw candidate attendee email addresses.
+            owner_addresses: Authenticated mailbox & sendAs addresses owned by user.
+
+        Returns:
+            Ordered list of external guest emails safe to invite on Google Calendar.
+        """
+        blocked = self._settings.identity.blocked_calendar_attendees(owner_addresses)
+        return [addr for addr in normalize_emails(candidates) if addr not in blocked]
 
     def get_effective_hold_allowlist(
         self,
@@ -77,17 +78,20 @@ class CalendarService:
             owner_addresses: Authenticated user email addresses resolved via Gmail API.
 
         Returns:
-            Frozenset of allowlisted lowercase email addresses.
+            Frozenset of allowlisted lowercase email addresses minus never_invite_emails.
         """
         persisted = (
             self._state_store.hold_allowlist.load().emails
             if self._state_store is not None
             else []
         )
-        allowed = set(_normalize_emails(persisted))
+        allowed = set(normalize_emails(persisted))
         if self._settings.calendar.include_authenticated_owners_in_hold_allowlist:
-            allowed.update(_normalize_emails(owner_addresses))
-        return frozenset(allowed)
+            allowed.update(normalize_emails(owner_addresses))
+        hard_blocked = set(normalize_emails(self._settings.identity.never_invite_emails))
+        if "@" in self._settings.identity.default_send_as_email:
+            hard_blocked.add(self._settings.identity.default_send_as_email.strip().lower())
+        return frozenset(allowed - hard_blocked)
 
     def set_hold_allowlist_entry(self, email: str, remove: bool = False) -> list[str]:
         """Add or remove an email address in the persistent [HOLD] allowlist state.
@@ -98,9 +102,6 @@ class CalendarService:
 
         Returns:
             Updated sorted list of persisted allowlist emails.
-
-        Raises:
-            RuntimeError: If StateStore is not wired on CalendarService.
         """
         if self._state_store is None:
             raise RuntimeError("StateStore is not wired on CalendarService.")
@@ -111,100 +112,244 @@ class CalendarService:
             lambda cur: cur.model_copy(
                 update={
                     "emails": sorted(
-                        set(_normalize_emails(cur.emails)) - {norm}
+                        set(normalize_emails(cur.emails)) - {norm}
                         if remove
-                        else set(_normalize_emails(cur.emails)) | {norm}
+                        else set(normalize_emails(cur.emails)) | {norm}
                     )
                 }
             )
         )
         return list(updated.emails)
 
+    def list_calendars(self, refresh: bool = False) -> list[CalendarListEntry]:
+        """List all Google Calendars accessible by the authenticated user across pages.
+
+        Args:
+            refresh: When True, bypass in-memory calendar list cache.
+
+        Returns:
+            Ordered list of CalendarListEntry objects (primary calendar first).
+        """
+        if self._cached_calendars is not None and not refresh:
+            return list(self._cached_calendars)
+        client = self._require_client()
+        entries: list[CalendarListEntry] = []
+        page_token: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {"pageToken": page_token} if page_token else {}
+            listing = client.calendarList().list(**kwargs).execute()
+            for raw in listing.get("items", []):
+                entries.append(
+                    CalendarListEntry(
+                        calendar_id=str(raw.get("id", "")),
+                        summary=str(raw.get("summary", "")),
+                        primary=bool(raw.get("primary", False)),
+                        access_role=str(raw.get("accessRole", "")),
+                        time_zone=str(raw.get("timeZone", "")),
+                    )
+                )
+            page_token = listing.get("nextPageToken")
+            if not page_token:
+                break
+        entries.sort(key=lambda item: (not item.primary, fold_accents(item.summary)))
+        self._cached_calendars = entries
+        return list(entries)
+
+    def resolve_calendar_selector(self, selector: str) -> str:
+        """Resolve 'primary', a calendar ID, or a display name to its Google Calendar ID.
+
+        Args:
+            selector: User-provided calendar identifier or summary name.
+
+        Returns:
+            Resolved Google Calendar ID string.
+        """
+        cleaned = selector.strip()
+        if not cleaned or cleaned.lower() == "primary":
+            return self._settings.primary_calendar_id
+        if "@" in cleaned:
+            return cleaned
+        try:
+            calendars = self.list_calendars()
+        except Exception:
+            return cleaned
+        for cal in calendars:
+            if cal.calendar_id == cleaned:
+                return cal.calendar_id
+        folded = fold_accents(cleaned)
+        for cal in calendars:
+            if fold_accents(cal.summary) == folded:
+                return cal.calendar_id
+        return cleaned
+
     def ensure_calendar(self, calendar_name: str) -> str:
         """Find an existing Google Calendar by summary across pages or create it idempotently.
 
         Args:
-            calendar_name: Display name of the calendar (e.g. 'Garde Nounou').
+            calendar_name: Display name of the secondary calendar (e.g. 'Famille').
 
         Returns:
             Google Calendar identifier.
         """
-        client = self._require_client()
-        page_token: str | None = None
-        while True:
-            kwargs: dict[str, Any] = {}
-            if page_token:
-                kwargs["pageToken"] = page_token
-            listing = client.calendarList().list(**kwargs).execute()
-            for entry in listing.get("items", []):
-                if str(entry.get("summary", "")) == calendar_name:
-                    return str(entry["id"])
-            page_token = listing.get("nextPageToken")
-            if not page_token:
-                break
+        for entry in self.list_calendars(refresh=True):
+            if entry.summary == calendar_name:
+                return entry.calendar_id
         created = (
-            client.calendars()
+            self._require_client()
+            .calendars()
             .insert(body={"summary": calendar_name, "timeZone": self._settings.timezone})
             .execute()
         )
+        self._cached_calendars = None
         return str(created["id"])
 
+    def query_freebusy(
+        self, time_min_iso: str, time_max_iso: str, calendar_ids: list[str] | None = None
+    ) -> list[FreeBusyInterval]:
+        """Query Google Calendar FreeBusy busy windows across one or more calendars.
+
+        Args:
+            time_min_iso: Inclusive lower bound ISO-8601 timestamp.
+            time_max_iso: Inclusive upper bound ISO-8601 timestamp.
+            calendar_ids: Optional list of calendar IDs/names (defaults to primary).
+        """
+        targets = [
+            self.resolve_calendar_selector(c)
+            for c in (calendar_ids or [self._settings.primary_calendar_id])
+        ]
+        items_spec = [{"id": c} for c in targets]
+        body = {"timeMin": time_min_iso, "timeMax": time_max_iso, "items": items_spec}
+        resp = self._require_client().freebusy().query(body=body).execute()
+        cal_map = resp.get("calendars", {}) if isinstance(resp, dict) else {}
+        intervals = [
+            FreeBusyInterval(calendar_id=cid, start_iso=str(it["start"]), end_iso=str(it["end"]))
+            for cid in targets
+            for it in (cal_map.get(cid, {}).get("busy", []) if isinstance(cal_map, dict) else [])
+            if isinstance(it, dict) and it.get("start") and it.get("end")
+        ]
+        return sorted(intervals, key=lambda iv: (iv.start_iso, iv.end_iso))
+
     def list_events(
-        self,
-        calendar_id: str,
-        time_min_iso: str,
-        time_max_iso: str,
+        self, calendar_id: str, time_min_iso: str, time_max_iso: str
     ) -> list[CalendarEventItem]:
         """List expanded single events across all pages within [time_min_iso, time_max_iso].
 
         Args:
-            calendar_id: Target Google Calendar identifier.
+            calendar_id: Target Google Calendar identifier or summary.
             time_min_iso: Inclusive lower bound ISO-8601 timestamp.
             time_max_iso: Inclusive upper bound ISO-8601 timestamp.
-
-        Returns:
-            Ordered list of CalendarEventItem objects including [HOLD] metadata.
         """
+        resolved_cal = self.resolve_calendar_selector(calendar_id)
         client = self._require_client()
         events: list[CalendarEventItem] = []
         page_token: str | None = None
         while True:
             kwargs: dict[str, Any] = {
-                "calendarId": calendar_id,
+                "calendarId": resolved_cal,
                 "timeMin": time_min_iso,
                 "timeMax": time_max_iso,
                 "singleEvents": True,
                 "orderBy": "startTime",
                 "maxResults": 2500,
+                **({"pageToken": page_token} if page_token else {}),
             }
-            if page_token:
-                kwargs["pageToken"] = page_token
             resp = client.events().list(**kwargs).execute()
-            for raw in resp.get("items", []):
-                events.append(self._parse_event_item(raw))
+            events.extend(parse_event_item(raw) for raw in resp.get("items", []))
             page_token = resp.get("nextPageToken")
             if not page_token:
                 break
         return events
 
-    def insert_event(self, calendar_id: str, event: CalendarEventItem) -> str:
-        """Insert a timed or all-day calendar event and return its Google Calendar event_id.
+    def insert_event(
+        self,
+        calendar_id: str,
+        event: CalendarEventItem,
+        send_invites: bool = False,
+        owner_addresses: frozenset[str] = frozenset(),
+    ) -> str:
+        """Insert a timed, all-day, or recurring event while stripping blocked self-aliases.
 
         Args:
-            calendar_id: Target Google Calendar identifier.
+            calendar_id: Target Google Calendar identifier or summary.
             event: CalendarEventItem specification to create.
-
-        Returns:
-            Created Google Calendar event_id.
+            send_invites: Whether Google Calendar should email external attendees.
+            owner_addresses: Authenticated mailbox & alias addresses to exclude from guests.
         """
-        client = self._require_client()
-        body = self._build_time_bounds(event.start_iso, event.end_iso)
+        resolved_cal = self.resolve_calendar_selector(calendar_id)
+        body = build_time_bounds(event.start_iso, event.end_iso, self._settings.timezone)
         body["summary"] = event.summary
         body["description"] = event.description
         if event.location:
             body["location"] = event.location
-        created = client.events().insert(calendarId=calendar_id, body=body).execute()
-        return str(created["id"])
+        if event.recurrence:
+            body["recurrence"] = list(event.recurrence)
+        guests = self.sanitize_guest_attendees(event.attendees, owner_addresses)
+        events_api = self._require_client().events()
+        if guests:
+            body["attendees"] = [{"email": addr} for addr in guests]
+            mode = "all" if send_invites else "none"
+            created = events_api.insert(calendarId=resolved_cal, body=body, sendUpdates=mode)
+            return str(created.execute()["id"])
+        return str(events_api.insert(calendarId=resolved_cal, body=body).execute()["id"])
+
+    def update_event(
+        self,
+        calendar_id: str,
+        event_id: str,
+        summary: str | None = None,
+        start_iso: str | None = None,
+        end_iso: str | None = None,
+        description: str | None = None,
+        location: str | None = None,
+        attendees: list[str] | None = None,
+        recurrence: list[str] | None = None,
+        send_invites: bool = True,
+        owner_addresses: frozenset[str] = frozenset(),
+    ) -> str:
+        """Patch an existing Google Calendar event while stripping blocked self-aliases.
+
+        Args:
+            calendar_id: Target Google Calendar identifier or summary.
+            event_id: Identifier of the event to update.
+            summary: Optional updated title.
+            start_iso: Optional updated start ISO timestamp/date (requires end_iso).
+            end_iso: Optional updated end ISO timestamp/date (requires start_iso).
+            description: Optional updated description.
+            location: Optional updated location.
+            attendees: Optional replacement attendee list (filtered against blocked aliases).
+            recurrence: Optional replacement RRULE list.
+            send_invites: Whether Google Calendar should notify external guests.
+            owner_addresses: Authenticated mailbox & alias addresses to exclude from guests.
+        """
+        resolved_cal = self.resolve_calendar_selector(calendar_id)
+        patch_body: dict[str, Any] = {}
+        if start_iso is not None and end_iso is not None:
+            patch_body.update(build_time_bounds(start_iso, end_iso, self._settings.timezone))
+        for field_name, val in (
+            ("summary", summary), ("description", description), ("location", location)
+        ):
+            if val is not None:
+                patch_body[field_name] = val
+        if recurrence is not None:
+            patch_body["recurrence"] = list(recurrence)
+        send_mode = "none"
+        if attendees is not None:
+            guests = self.sanitize_guest_attendees(attendees, owner_addresses)
+            patch_body["attendees"] = [{"email": addr} for addr in guests]
+            if guests and send_invites:
+                send_mode = "all"
+        updated = (
+            self._require_client()
+            .events()
+            .patch(
+                calendarId=resolved_cal,
+                eventId=event_id,
+                body=patch_body,
+                sendUpdates=send_mode,
+            )
+            .execute()
+        )
+        return str(updated.get("id") or event_id)
 
     def create_hold_event(
         self,
@@ -214,59 +359,33 @@ class CalendarService:
         message_id: str = "",
         owner_addresses: frozenset[str] = frozenset(),
     ) -> str:
-        """Create an opaque [HOLD] block sending invites strictly to allowlisted attendees.
+        """Create an opaque [HOLD] block sending invites strictly to allowlisted non-blocked guests.
 
         Args:
             calendar_id: Target Google Calendar identifier (typically 'primary').
             slot: Proposed CalendarSlotProposal to block tentatively.
             thread_id: Optional Gmail threadId linked to this [HOLD].
             message_id: Optional Gmail messageId linked to this [HOLD].
-            owner_addresses: Authenticated owner email addresses for allowlist union.
-
-        Returns:
-            Created (or deduplicated existing) Google Calendar event_id.
+            owner_addresses: Authenticated owner email addresses.
         """
-        hold_summary = f"[HOLD] {_strip_hold_prefix(slot.summary)}"
-        existing = self.list_events(calendar_id, slot.start_iso, slot.end_iso)
-        for ev in existing:
-            if (
-                ev.summary == hold_summary
-                and ev.start_iso == slot.start_iso
-                and ev.end_iso == slot.end_iso
+        resolved_cal = self.resolve_calendar_selector(calendar_id)
+        hold_summary = f"[HOLD] {strip_hold_prefix(slot.summary)}"
+        for ev in self.list_events(resolved_cal, slot.start_iso, slot.end_iso):
+            if (ev.summary, ev.start_iso, ev.end_iso) == (
+                hold_summary, slot.start_iso, slot.end_iso
             ):
                 return ev.event_id
-
         allowlist = self.get_effective_hold_allowlist(owner_addresses)
-        all_candidates = _normalize_emails(slot.attendees)
-        allowed_guests = [addr for addr in all_candidates if addr in allowlist]
-
-        body = self._build_time_bounds(slot.start_iso, slot.end_iso)
-        body.update(
-            {
-                "summary": hold_summary,
-                "description": slot.description,
-                "transparency": "opaque",
-                "attendees": [{"email": addr} for addr in allowed_guests],
-                "extendedProperties": {
-                    "private": {
-                        "alfred_hold": "true",
-                        "alfred_thread_id": thread_id,
-                        "alfred_message_id": message_id,
-                        "alfred_candidate_attendees": ",".join(all_candidates),
-                    }
-                },
-            }
+        all_candidates = self.sanitize_guest_attendees(slot.attendees, frozenset())
+        allowed_guests = [addr for addr in normalize_emails(slot.attendees) if addr in allowlist]
+        body = build_hold_payload(
+            slot, self._settings.timezone, allowed_guests, all_candidates, thread_id, message_id
         )
-        if slot.location:
-            body["location"] = slot.location
         send_updates = "all" if (allowed_guests and slot.send_invites) else "none"
-        client = self._require_client()
-        created = (
-            client.events()
-            .insert(calendarId=calendar_id, body=body, sendUpdates=send_updates)
-            .execute()
+        res = self._require_client().events().insert(
+            calendarId=resolved_cal, body=body, sendUpdates=send_updates
         )
-        return str(created["id"])
+        return str(res.execute()["id"])
 
     def confirm_event(
         self,
@@ -275,8 +394,9 @@ class CalendarService:
         thread_id: str = "",
         hold_event_id: str = "",
         release_thread_holds: bool = True,
+        owner_addresses: frozenset[str] = frozenset(),
     ) -> tuple[str, list[str]]:
-        """Convert a [HOLD] (or create a firm event), invite guests, and free unused [HOLD]s.
+        """Convert a [HOLD] (or create a firm event), invite external guests, and free [HOLD]s.
 
         Args:
             calendar_id: Target Google Calendar identifier.
@@ -284,178 +404,82 @@ class CalendarService:
             thread_id: Optional Gmail threadId used to match and release alternative [HOLD]s.
             hold_event_id: Optional explicit [HOLD] event_id to convert.
             release_thread_holds: When True, remove unchosen [HOLD] blocks on thread_id.
-
-        Returns:
-            Tuple of (confirmed_event_id, list of released alternative hold event_ids).
+            owner_addresses: Authenticated owner & sendAs addresses excluded from guests.
         """
-        window_events = self._list_confirmation_window(calendar_id, slot.start_iso, slot.end_iso)
-        matched_hold = self._match_existing_hold(window_events, slot, thread_id, hold_event_id)
-        merged_attendees = _normalize_emails(
+        resolved_cal = self.resolve_calendar_selector(calendar_id)
+        w_min, w_max = compute_confirmation_window(slot.start_iso, slot.end_iso)
+        window_events = self.list_events(resolved_cal, w_min, w_max)
+        matched_hold = match_existing_hold(window_events, slot, thread_id, hold_event_id)
+        raw_guests = (
             slot.attendees
             if slot.attendees
             else (matched_hold.candidate_attendees if matched_hold is not None else [])
         )
+        merged_attendees = self.sanitize_guest_attendees(raw_guests, owner_addresses)
         eff_thread = thread_id or (matched_hold.thread_id if matched_hold is not None else "")
-        body = self._build_time_bounds(slot.start_iso, slot.end_iso)
-        body.update(
-            {
-                "summary": _strip_hold_prefix(slot.summary),
-                "description": slot.description
-                or (matched_hold.description if matched_hold is not None else ""),
-                "status": "confirmed",
-                "transparency": "opaque",
-                "attendees": [{"email": addr} for addr in merged_attendees],
-                "extendedProperties": {
-                    "private": {
-                        "alfred_hold": "false",
-                        "alfred_thread_id": eff_thread,
-                    }
-                },
-            }
+        body = build_confirmed_payload(
+            slot, self._settings.timezone, merged_attendees, eff_thread, matched_hold
         )
-        loc = slot.location or (matched_hold.location if matched_hold is not None else "")
-        if loc:
-            body["location"] = loc
         send_updates = "all" if (merged_attendees and slot.send_invites) else "none"
         confirmed_id = self._upsert_confirmed_event(
-            calendar_id, body, send_updates, matched_hold.event_id if matched_hold else ""
+            resolved_cal, body, send_updates, matched_hold.event_id if matched_hold else ""
         )
-        released: list[str] = []
-        if release_thread_holds and eff_thread:
-            for ev in window_events:
-                if ev.is_hold and ev.thread_id == eff_thread and ev.event_id != confirmed_id:
-                    self.delete_event(
-                        calendar_id, ev.event_id, send_updates="all" if ev.attendees else "none"
-                    )
-                    released.append(ev.event_id)
+        released = self._release_other_holds(
+            resolved_cal, window_events, eff_thread, confirmed_id, release_thread_holds
+        )
         return (confirmed_id, released)
 
-    def _upsert_confirmed_event(
+    def _release_other_holds(
         self,
         calendar_id: str,
-        body: dict[str, Any],
-        send_updates: str,
-        existing_hold_id: str,
+        events: list[CalendarEventItem],
+        thread_id: str,
+        confirmed_id: str,
+        enabled: bool,
+    ) -> list[str]:
+        """Delete unused [HOLD] events belonging to thread_id after confirmation."""
+        if not (enabled and thread_id):
+            return []
+        released: list[str] = []
+        for ev in events:
+            if ev.is_hold and ev.thread_id == thread_id and ev.event_id != confirmed_id:
+                self.delete_event(
+                    calendar_id, ev.event_id, send_updates="all" if ev.attendees else "none"
+                )
+                released.append(ev.event_id)
+        return released
+
+    def _upsert_confirmed_event(
+        self, calendar_id: str, body: dict[str, Any], send_updates: str, existing_hold_id: str
     ) -> str:
         """Update an existing [HOLD] in place or insert a new confirmed Google Calendar event."""
-        client = self._require_client()
+        events_api = self._require_client().events()
         if existing_hold_id:
-            saved = (
-                client.events()
-                .update(
-                    calendarId=calendar_id,
-                    eventId=existing_hold_id,
-                    body=body,
-                    sendUpdates=send_updates,
-                )
-                .execute()
-            )
+            saved = events_api.update(
+                calendarId=calendar_id,
+                eventId=existing_hold_id,
+                body=body,
+                sendUpdates=send_updates,
+            ).execute()
             return str(saved.get("id") or existing_hold_id)
-        saved = (
-            client.events()
-            .insert(calendarId=calendar_id, body=body, sendUpdates=send_updates)
-            .execute()
-        )
-        return str(saved["id"])
+        inserted = events_api.insert(
+            calendarId=calendar_id, body=body, sendUpdates=send_updates
+        ).execute()
+        return str(inserted["id"])
 
     def delete_event(self, calendar_id: str, event_id: str, send_updates: str = "") -> None:
         """Delete an event from a Google Calendar post-Gate validation.
 
         Args:
-            calendar_id: Target Google Calendar identifier.
+            calendar_id: Target Google Calendar identifier or summary.
             event_id: Identifier of the event to remove.
             send_updates: Optional Google Calendar sendUpdates mode ('all' or 'none').
         """
-        client = self._require_client()
-        kwargs: dict[str, Any] = {"calendarId": calendar_id, "eventId": event_id}
+        resolved_cal = self.resolve_calendar_selector(calendar_id)
+        kwargs: dict[str, Any] = {"calendarId": resolved_cal, "eventId": event_id}
         if send_updates:
             kwargs["sendUpdates"] = send_updates
-        client.events().delete(**kwargs).execute()
-
-    def _build_time_bounds(self, start_iso: str, end_iso: str) -> dict[str, Any]:
-        """Construct start/end Google Calendar v3 payload dicts for timed or all-day bounds."""
-        is_all_day = "T" not in start_iso and "T" not in end_iso
-        start_spec = (
-            {"date": start_iso}
-            if is_all_day
-            else {"dateTime": start_iso, "timeZone": self._settings.timezone}
-        )
-        end_spec = (
-            {"date": end_iso}
-            if is_all_day
-            else {"dateTime": end_iso, "timeZone": self._settings.timezone}
-        )
-        return {"start": start_spec, "end": end_spec}
-
-    def _parse_event_item(self, raw: dict[str, Any]) -> CalendarEventItem:
-        """Normalize a raw Google Calendar v3 event resource into a CalendarEventItem."""
-        start_obj = raw.get("start", {})
-        end_obj = raw.get("end", {})
-        start_iso = str(start_obj.get("dateTime") or start_obj.get("date") or "")
-        end_iso = str(end_obj.get("dateTime") or end_obj.get("date") or "")
-        summary = str(raw.get("summary", ""))
-        priv = raw.get("extendedProperties", {}).get("private", {})
-        if not isinstance(priv, dict):
-            priv = {}
-        is_hold = str(priv.get("alfred_hold", "")).lower() == "true" or bool(
-            HOLD_PREFIX_RE.match(summary)
-        )
-        cand_raw = str(priv.get("alfred_candidate_attendees", ""))
-        candidates = _normalize_emails(cand_raw.split(",")) if cand_raw else []
-        att_list = _normalize_emails(
-            [str(a.get("email", "")) for a in raw.get("attendees", []) if isinstance(a, dict)]
-        )
-        return CalendarEventItem(
-            event_id=str(raw.get("id", "")),
-            summary=summary,
-            start_iso=start_iso,
-            end_iso=end_iso,
-            description=str(raw.get("description", "")),
-            location=str(raw.get("location", "")),
-            attendees=att_list,
-            is_hold=is_hold,
-            thread_id=str(priv.get("alfred_thread_id", "")),
-            candidate_attendees=candidates,
-        )
-
-    def _list_confirmation_window(
-        self,
-        calendar_id: str,
-        start_iso: str,
-        end_iso: str,
-    ) -> list[CalendarEventItem]:
-        """List events in a +/- 21-day window around start_iso to locate thread [HOLD]s."""
-        anchor = _parse_iso_dt(start_iso)
-        if anchor is None:
-            return self.list_events(calendar_id, start_iso, end_iso)
-        t_min = (anchor - timedelta(days=21)).isoformat()
-        t_max = (anchor + timedelta(days=21)).isoformat()
-        return self.list_events(calendar_id, t_min, t_max)
-
-    def _match_existing_hold(
-        self,
-        events: list[CalendarEventItem],
-        slot: CalendarSlotProposal,
-        thread_id: str,
-        hold_event_id: str,
-    ) -> CalendarEventItem | None:
-        """Find the best matching [HOLD] event by explicit ID, thread+slot, or slot time."""
-        holds = [ev for ev in events if ev.is_hold]
-        if hold_event_id:
-            for ev in holds:
-                if ev.event_id == hold_event_id:
-                    return ev
-        if thread_id:
-            for ev in holds:
-                if ev.thread_id == thread_id and ev.start_iso == slot.start_iso:
-                    return ev
-            for ev in holds:
-                if ev.thread_id == thread_id:
-                    return ev
-        for ev in holds:
-            if ev.start_iso == slot.start_iso and ev.end_iso == slot.end_iso:
-                return ev
-        return None
+        self._require_client().events().delete(**kwargs).execute()
 
     def _require_client(self) -> Any:
         """Return injected Calendar client or build lazily via GoogleOAuthService."""

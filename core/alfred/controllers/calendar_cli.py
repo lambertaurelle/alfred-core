@@ -1,4 +1,4 @@
-"""CLI subcommand registration and handlers for alfred-calendar [HOLD]s, invites, and events."""
+"""CLI subcommand registration and handlers for alfred-calendar [HOLD]s, FreeBusy, and events."""
 
 from __future__ import annotations
 
@@ -12,16 +12,41 @@ from alfred.domain.calendar_models import CalendarSlotProposal
 from alfred.domain.models import AlfredSettings, CalendarEventItem
 from alfred.repositories.state_store import StateStore
 from alfred.services.agy_session_manager import AgySessionManager
-from alfred.services.calendar_service import CalendarService
 from alfred.services.gmail_service import GmailService
 
 
+def print_skipped_disabled(feature_name: str, command: str = "") -> int:
+    """Print a standardized SKIPPED_DISABLED JSON payload on stdout and return exit code 0.
+
+    Args:
+        feature_name: Disabled feature flag identifier in settings.features.
+        command: Optional CLI subcommand name that was skipped.
+    """
+    payload: dict[str, str] = {
+        "status": "SKIPPED_DISABLED",
+        "feature": feature_name,
+        "details": f"Feature '{feature_name}' is disabled in instance/config/settings.yaml.",
+    }
+    if command:
+        payload["command"] = command
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    return 0
+
+
 def register_calendar_parsers(sub: Any) -> None:
-    """Register Google Calendar listing, [HOLD] allowlist, creation, confirmation, and deletion.
+    """Register Google Calendar listing, FreeBusy, [HOLD] allowlist, and event mutation commands.
 
     Args:
         sub: Argparse subparsers collection attached to top-level alfred parser.
     """
+    p_cals = sub.add_parser("list-calendars")
+    p_cals.add_argument("--refresh", action="store_true")
+
+    p_fb = sub.add_parser("query-freebusy")
+    p_fb.add_argument("--from", dest="from_iso", required=True)
+    p_fb.add_argument("--to", dest="to_iso", required=True)
+    p_fb.add_argument("--calendar", action="append", default=[])
+
     p_list = sub.add_parser("list-events")
     p_list.add_argument("--calendar", default="primary")
     p_list.add_argument("--from", dest="from_iso", required=True)
@@ -32,6 +57,11 @@ def register_calendar_parsers(sub: Any) -> None:
     p_allow.add_argument("--add", action="append", default=[])
     p_allow.add_argument("--remove", action="append", default=[])
 
+    _register_event_mutation_parsers(sub)
+
+
+def _register_event_mutation_parsers(sub: Any) -> None:
+    """Register create-event, update-event, confirm-event, and delete-event subparsers."""
     p_create = sub.add_parser("create-event")
     p_create.add_argument("--calendar", default="primary")
     p_create.add_argument("--summary", required=True)
@@ -39,12 +69,25 @@ def register_calendar_parsers(sub: Any) -> None:
     p_create.add_argument("--to", dest="to_iso", required=True)
     p_create.add_argument("--hold", action="store_true")
     p_create.add_argument("--attendee", action="append", default=[])
+    p_create.add_argument("--rrule", action="append", default=[])
     p_create.add_argument("--no-send-invites", action="store_true")
     p_create.add_argument("--location", default="")
     p_create.add_argument("--description", default="")
     p_create.add_argument("--thread-id", default="")
     p_create.add_argument("--message-id", default="")
     p_create.add_argument("--archive-trace", action="store_true")
+
+    p_upd = sub.add_parser("update-event")
+    p_upd.add_argument("--calendar", default="primary")
+    p_upd.add_argument("--event-id", required=True)
+    p_upd.add_argument("--summary", default=None)
+    p_upd.add_argument("--from", dest="from_iso", default=None)
+    p_upd.add_argument("--to", dest="to_iso", default=None)
+    p_upd.add_argument("--location", default=None)
+    p_upd.add_argument("--description", default=None)
+    p_upd.add_argument("--attendee", action="append", default=None)
+    p_upd.add_argument("--rrule", action="append", default=None)
+    p_upd.add_argument("--no-send-invites", action="store_true")
 
     p_conf = sub.add_parser("confirm-event")
     p_conf.add_argument("--calendar", default="primary")
@@ -68,50 +111,28 @@ def register_calendar_parsers(sub: Any) -> None:
     p_del.add_argument("--notify", action="store_true")
 
 
-def resolve_calendar_id(
-    cal_spec: str,
-    settings: AlfredSettings,
-    store: StateStore,
-) -> str:
-    """Resolve 'primary', 'nounou', or an explicit Google Calendar ID.
+def resolve_calendar_id(cal_spec: str, calendar_service: Any, settings: AlfredSettings) -> str:
+    """Resolve 'primary', a calendar summary, or an explicit Google Calendar ID.
 
     Args:
         cal_spec: User-supplied calendar selector.
-        settings: Runtime settings providing primary_calendar_id.
-        store: Local StateStore providing nounou_contract and bookmarks.
-
-    Returns:
-        Resolved Google Calendar identifier string.
+        calendar_service: Wired CalendarService or duck-typed double.
+        settings: Runtime settings providing primary_calendar_id fallback.
     """
-    if cal_spec == "primary":
-        return settings.primary_calendar_id
-    if cal_spec == "nounou":
-        contract_cal_id = (
-            store.nounou_contract.load().calendar_id if store.nounou_contract.exists() else ""
-        )
-        cal_id = contract_cal_id or (store.bookmarks.load().nounou_calendar_id or "")
-        if not cal_id:
-            raise ValueError(
-                "Garde Nounou calendar is not initialized; run 'alfred init-nounou --execute'."
-            )
-        return cal_id
-    return cal_spec
+    resolver = getattr(calendar_service, "resolve_calendar_selector", None)
+    if callable(resolver):
+        return str(resolver(cal_spec))
+    cleaned = cal_spec.strip()
+    return settings.primary_calendar_id if not cleaned or cleaned.lower() == "primary" else cleaned
 
 
-def normalize_calendar_bound(
-    raw_iso: str,
-    timezone: str,
-    is_end: bool,
-) -> tuple[str, datetime]:
+def normalize_calendar_bound(raw_iso: str, timezone: str, is_end: bool) -> tuple[str, datetime]:
     """Normalize an ISO date or timestamp into an RFC3339 string and aware datetime.
 
     Args:
         raw_iso: Raw ISO date ('YYYY-MM-DD') or datetime string.
         timezone: IANA timezone name (e.g. 'Europe/Paris').
         is_end: When True and raw_iso is date-only, use 23:59:59 instead of 00:00:00.
-
-    Returns:
-        Tuple of (RFC3339 timestamp string, timezone-aware datetime).
     """
     text = raw_iso.strip()
     tz = ZoneInfo(timezone)
@@ -133,8 +154,7 @@ def _normalize_event_iso(raw_iso: str, timezone: str, is_end: bool) -> str:
     if "T" not in text and " " not in text:
         date.fromisoformat(text)
         return text
-    iso_str, _ = normalize_calendar_bound(text, timezone, is_end=is_end)
-    return iso_str
+    return normalize_calendar_bound(text, timezone, is_end=is_end)[0]
 
 
 def _safe_owner_addresses(gmail_service: GmailService | None) -> frozenset[str]:
@@ -148,66 +168,18 @@ def _safe_owner_addresses(gmail_service: GmailService | None) -> frozenset[str]:
     return raw if isinstance(raw, frozenset) else frozenset()
 
 
-def handle_list_events(
-    calendar_service: CalendarService,
-    settings: AlfredSettings,
-    store: StateStore,
-    timezone: str,
-    args: argparse.Namespace,
-) -> int:
-    """Resolve calendar ID and print listed events within [--from, --to] as JSON.
-
-    Args:
-        calendar_service: Wired CalendarService instance.
-        settings: Runtime settings.
-        store: Local StateStore.
-        timezone: Configured IANA timezone.
-        args: Parsed CLI namespace.
-
-    Returns:
-        POSIX exit status code (0 on success).
-    """
-    cal_id = resolve_calendar_id(str(args.calendar), settings, store)
-    t_min, start_dt = normalize_calendar_bound(str(args.from_iso), timezone, is_end=False)
-    t_max, end_dt = normalize_calendar_bound(str(args.to_iso), timezone, is_end=True)
+def _normalize_window(from_raw: str, to_raw: str, timezone: str) -> tuple[str, str]:
+    """Normalize and validate an ordered [--from, --to] calendar window."""
+    t_min, start_dt = normalize_calendar_bound(from_raw, timezone, is_end=False)
+    t_max, end_dt = normalize_calendar_bound(to_raw, timezone, is_end=True)
     if end_dt < start_dt:
-        raise ValueError(f"Calendar --to '{args.to_iso}' precedes --from '{args.from_iso}'.")
-    events = calendar_service.list_events(cal_id, t_min, t_max)
-    print(json.dumps([e.model_dump(mode="json") for e in events], indent=2, ensure_ascii=False))
-    return 0
+        raise ValueError(f"Calendar --to '{to_raw}' precedes --from '{from_raw}'.")
+    return t_min, t_max
 
 
-def handle_hold_allowlist(
-    calendar_service: CalendarService,
-    store: StateStore,
-    gmail_service: GmailService | None,
-    args: argparse.Namespace,
-) -> int:
-    """List, add, or remove email addresses in the persistent [HOLD] allowlist.
-
-    Args:
-        calendar_service: Wired CalendarService instance.
-        store: Local StateStore persisting calendar_hold_allowlist.json.
-        gmail_service: Optional GmailService providing authenticated owner addresses.
-        args: Parsed CLI namespace (--list, --add, --remove).
-
-    Returns:
-        POSIX exit status code (0 on success).
-    """
-    for addr in args.add:
-        calendar_service.set_hold_allowlist_entry(str(addr), remove=False)
-    for addr in args.remove:
-        calendar_service.set_hold_allowlist_entry(str(addr), remove=True)
-    owners = _safe_owner_addresses(gmail_service)
-    persisted = sorted(store.hold_allowlist.load().emails)
-    effective = sorted(calendar_service.get_effective_hold_allowlist(owners))
-    payload = {"emails": persisted, "effective_allowlist": effective}
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
-    return 0
-
-
-def handle_create_event(
-    calendar_service: CalendarService,
+def dispatch_calendar_command(
+    cmd: str,
+    calendar_service: Any,
     settings: AlfredSettings,
     store: StateStore,
     gmail_service: GmailService | None,
@@ -215,63 +187,191 @@ def handle_create_event(
     timezone: str,
     args: argparse.Namespace,
 ) -> int:
-    """Create a [HOLD] block (respecting allowlist) or a standard Google Calendar event.
+    """Dispatch any alfred-calendar CLI command with unified feature-flag gating.
 
     Args:
-        calendar_service: Wired CalendarService instance.
-        settings: Runtime settings.
-        store: Local StateStore.
-        gmail_service: Optional GmailService for owner allowlist union.
+        cmd: Parsed calendar subcommand name.
+        calendar_service: Wired CalendarService or duck-typed double.
+        settings: Runtime settings including features.calendar_management.
+        store: Local StateStore persisting [HOLD] allowlist entries.
+        gmail_service: Optional GmailService for owner addresses and thread archiving.
         agy_manager: Optional AgySessionManager for archived trace creation.
         timezone: Configured IANA timezone.
         args: Parsed CLI namespace.
-
-    Returns:
-        POSIX exit status code (0 on success).
     """
-    cal_id = resolve_calendar_id(str(args.calendar), settings, store)
+    if not settings.features.calendar_management:
+        return print_skipped_disabled("calendar_management", cmd)
+    if cmd == "list-calendars":
+        entries = calendar_service.list_calendars(refresh=bool(args.refresh))
+        payload: Any = [e.model_dump(mode="json") for e in entries]
+    elif cmd == "query-freebusy":
+        t_min, t_max = _normalize_window(str(args.from_iso), str(args.to_iso), timezone)
+        cal_ids = [str(c) for c in args.calendar if str(c).strip()] or None
+        ivs = calendar_service.query_freebusy(t_min, t_max, calendar_ids=cal_ids)
+        payload = [iv.model_dump(mode="json") for iv in ivs]
+    elif cmd == "list-events":
+        cal_id = resolve_calendar_id(str(args.calendar), calendar_service, settings)
+        t_min, t_max = _normalize_window(str(args.from_iso), str(args.to_iso), timezone)
+        events = calendar_service.list_events(cal_id, t_min, t_max)
+        payload = [e.model_dump(mode="json") for e in events]
+    elif cmd == "hold-allowlist":
+        payload = _exec_hold_allowlist(calendar_service, store, gmail_service, args)
+    elif cmd == "create-event":
+        payload = _exec_create_event(
+            calendar_service, settings, gmail_service, agy_manager, timezone, args
+        )
+    elif cmd == "update-event":
+        payload = _exec_update_event(calendar_service, settings, gmail_service, timezone, args)
+    elif cmd == "confirm-event":
+        payload = _exec_confirm_event(
+            calendar_service, settings, gmail_service, agy_manager, timezone, args
+        )
+    else:
+        cal_id = resolve_calendar_id(str(args.calendar), calendar_service, settings)
+        ev_id = str(args.event_id)
+        calendar_service.delete_event(cal_id, ev_id, send_updates="all" if args.notify else "")
+        payload = {"deleted_event_id": ev_id, "calendar_id": cal_id}
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _exec_hold_allowlist(
+    calendar_service: Any,
+    store: StateStore,
+    gmail_service: GmailService | None,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Apply --add / --remove mutations and return current [HOLD] allowlist dictionary."""
+    for addr in args.add:
+        calendar_service.set_hold_allowlist_entry(str(addr), remove=False)
+    for addr in args.remove:
+        calendar_service.set_hold_allowlist_entry(str(addr), remove=True)
+    owners = _safe_owner_addresses(gmail_service)
+    return {
+        "emails": sorted(store.hold_allowlist.load().emails),
+        "effective_allowlist": sorted(calendar_service.get_effective_hold_allowlist(owners)),
+    }
+
+
+def _exec_create_event(
+    calendar_service: Any,
+    settings: AlfredSettings,
+    gmail_service: GmailService | None,
+    agy_manager: AgySessionManager | None,
+    timezone: str,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Create a [HOLD] block or firm Google Calendar event and optionally archive trace."""
+    cal_id = resolve_calendar_id(str(args.calendar), calendar_service, settings)
     start_iso = _normalize_event_iso(str(args.from_iso), timezone, is_end=False)
     end_iso = _normalize_event_iso(str(args.to_iso), timezone, is_end=True)
     summary = str(args.summary)
+    owners = _safe_owner_addresses(gmail_service)
     if args.hold:
         slot = CalendarSlotProposal(
-            summary=summary,
-            start_iso=start_iso,
-            end_iso=end_iso,
+            summary=summary, start_iso=start_iso, end_iso=end_iso,
             attendees=[str(a) for a in args.attendee],
             send_invites=not bool(args.no_send_invites),
-            location=str(args.location),
-            description=str(args.description),
+            location=str(args.location), description=str(args.description),
         )
         ev_id = calendar_service.create_hold_event(
-            cal_id,
-            slot,
-            thread_id=str(args.thread_id),
-            message_id=str(args.message_id),
-            owner_addresses=_safe_owner_addresses(gmail_service),
+            cal_id, slot, thread_id=str(args.thread_id),
+            message_id=str(args.message_id), owner_addresses=owners,
         )
     else:
         item = CalendarEventItem(
-            summary=summary,
-            start_iso=start_iso,
-            end_iso=end_iso,
-            description=str(args.description),
-            location=str(args.location),
+            summary=summary, start_iso=start_iso, end_iso=end_iso,
+            description=str(args.description), location=str(args.location),
+            attendees=[str(a) for a in args.attendee],
+            recurrence=[str(r) for r in args.rrule],
         )
-        ev_id = calendar_service.insert_event(cal_id, item)
+        ev_id = calendar_service.insert_event(
+            cal_id, item, send_invites=not bool(args.no_send_invites), owner_addresses=owners
+        )
+    _maybe_archive_calendar_trace(
+        agy_manager, bool(args.archive_trace),
+        f"{'[HOLD]' if args.hold else '[EVENT]'} {summary}",
+        f"- **Event ID** : `{ev_id}` (`{start_iso}` -> `{end_iso}`)\n", str(ev_id),
+    )
+    return {"event_id": str(ev_id), "calendar_id": cal_id, "hold": bool(args.hold)}
 
-    if args.archive_trace and agy_manager is not None:
-        prefix = "[HOLD]" if args.hold else "[EVENT]"
+
+def _exec_update_event(
+    calendar_service: Any,
+    settings: AlfredSettings,
+    gmail_service: GmailService | None,
+    timezone: str,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Patch an existing Google Calendar event and return serialized dictionary."""
+    cal_id = resolve_calendar_id(str(args.calendar), calendar_service, settings)
+    s_iso = (
+        _normalize_event_iso(str(args.from_iso), timezone, False) if args.from_iso else None
+    )
+    e_iso = _normalize_event_iso(str(args.to_iso), timezone, True) if args.to_iso else None
+    attendees = [str(a) for a in args.attendee] if args.attendee is not None else None
+    recurrence = [str(r) for r in args.rrule] if args.rrule is not None else None
+    updated = calendar_service.update_event(
+        cal_id, str(args.event_id), summary=args.summary, start_iso=s_iso, end_iso=e_iso,
+        description=args.description, location=args.location, attendees=attendees,
+        recurrence=recurrence, send_invites=not bool(args.no_send_invites),
+        owner_addresses=_safe_owner_addresses(gmail_service),
+    )
+    if isinstance(updated, CalendarEventItem):
+        return updated.model_dump(mode="json")
+    return {"event_id": str(updated), "calendar_id": cal_id, "summary": str(args.summary or "")}
+
+
+def _exec_confirm_event(
+    calendar_service: Any,
+    settings: AlfredSettings,
+    gmail_service: GmailService | None,
+    agy_manager: AgySessionManager | None,
+    timezone: str,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    """Confirm a [HOLD] slot, release sibling holds, and archive source email thread."""
+    cal_id = resolve_calendar_id(str(args.calendar), calendar_service, settings)
+    start_iso = _normalize_event_iso(str(args.from_iso), timezone, is_end=False)
+    end_iso = _normalize_event_iso(str(args.to_iso), timezone, is_end=True)
+    summary, thread_id = str(args.summary), str(args.thread_id)
+    slot = CalendarSlotProposal(
+        summary=summary, start_iso=start_iso, end_iso=end_iso,
+        attendees=[str(a) for a in args.attendee], send_invites=bool(args.send_invites),
+        location=str(args.location), description=str(args.description),
+    )
+    conf_id, released = calendar_service.confirm_event(
+        cal_id, slot, thread_id=thread_id, hold_event_id=str(args.hold_event_id),
+        release_thread_holds=not bool(args.no_release_holds),
+        owner_addresses=_safe_owner_addresses(gmail_service),
+    )
+    email_archived = _try_archive_source_thread(
+        gmail_service, settings, thread_id, bool(getattr(args, "keep_in_inbox", False))
+    )
+    _maybe_archive_calendar_trace(
+        agy_manager, bool(args.archive_trace), f"[CONFIRMED] {summary}",
+        f"- **Confirmed** : `{conf_id}` (`{start_iso}` -> `{end_iso}`)\n", str(conf_id),
+    )
+    return {
+        "confirmed_event_id": conf_id, "released_hold_ids": released,
+        "calendar_id": cal_id, "email_thread_archived": email_archived,
+    }
+
+
+def _maybe_archive_calendar_trace(
+    agy_manager: AgySessionManager | None,
+    enabled: bool,
+    title: str,
+    trace_md: str,
+    source_id: str,
+) -> None:
+    """Materialize an archived Antigravity trace session when --archive-trace is requested."""
+    if enabled and agy_manager is not None:
         agy_manager.create_and_archive_trace(
-            workspace="alfred-calendar",
-            title=f"{prefix} {summary}",
-            trace_markdown=f"- **Event ID** : `{ev_id}` (`{start_iso}` -> `{end_iso}`)\n",
-            source_message_id=ev_id,
-            spawn_live=True,
+            workspace="alfred-calendar", title=title,
+            trace_markdown=trace_md, source_message_id=source_id, spawn_live=True,
         )
         agy_manager.daemon_sync.sync_if_needed()
-    print(json.dumps({"event_id": ev_id, "calendar_id": cal_id, "hold": bool(args.hold)}, indent=2))
-    return 0
 
 
 def _try_archive_source_thread(
@@ -294,100 +394,3 @@ def _try_archive_source_thread(
         return True
     except Exception:
         return False
-
-
-def handle_confirm_event(
-    calendar_service: CalendarService,
-    settings: AlfredSettings,
-    store: StateStore,
-    agy_manager: AgySessionManager | None,
-    timezone: str,
-    args: argparse.Namespace,
-    gmail_service: GmailService | None = None,
-) -> int:
-    """Convert a [HOLD] (or insert firm event), send validated invites, and free unused [HOLD]s.
-
-    Args:
-        calendar_service: Wired CalendarService instance.
-        settings: Runtime settings.
-        store: Local StateStore.
-        agy_manager: Optional AgySessionManager for archived trace creation.
-        timezone: Configured IANA timezone.
-        args: Parsed CLI namespace.
-        gmail_service: Optional GmailService to archive the source email thread by default.
-
-    Returns:
-        POSIX exit status code (0 on success).
-    """
-    cal_id = resolve_calendar_id(str(args.calendar), settings, store)
-    start_iso = _normalize_event_iso(str(args.from_iso), timezone, is_end=False)
-    end_iso = _normalize_event_iso(str(args.to_iso), timezone, is_end=True)
-    summary = str(args.summary)
-    thread_id = str(args.thread_id)
-    slot = CalendarSlotProposal(
-        summary=summary,
-        start_iso=start_iso,
-        end_iso=end_iso,
-        attendees=[str(a) for a in args.attendee],
-        send_invites=bool(args.send_invites),
-        location=str(args.location),
-        description=str(args.description),
-    )
-    conf_id, released = calendar_service.confirm_event(
-        cal_id,
-        slot,
-        thread_id=thread_id,
-        hold_event_id=str(args.hold_event_id),
-        release_thread_holds=not bool(args.no_release_holds),
-    )
-    email_archived = _try_archive_source_thread(
-        gmail_service, settings, thread_id, bool(getattr(args, "keep_in_inbox", False))
-    )
-    if args.archive_trace and agy_manager is not None:
-        agy_manager.create_and_archive_trace(
-            workspace="alfred-calendar",
-            title=f"[CONFIRMED] {summary}",
-            trace_markdown=(
-                f"- **Confirmed Event ID** : `{conf_id}` (`{start_iso}` -> `{end_iso}`)\n"
-                f"- **Released [HOLD]s** : `{', '.join(released) or 'none'}`\n"
-            ),
-            source_message_id=conf_id,
-            spawn_live=True,
-        )
-        agy_manager.daemon_sync.sync_if_needed()
-    payload = {
-        "confirmed_event_id": conf_id,
-        "released_hold_ids": released,
-        "calendar_id": cal_id,
-        "email_thread_archived": email_archived,
-    }
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
-    return 0
-
-
-def handle_delete_event(
-    calendar_service: CalendarService,
-    settings: AlfredSettings,
-    store: StateStore,
-    args: argparse.Namespace,
-) -> int:
-    """Delete an event from Google Calendar post-Gate validation.
-
-    Args:
-        calendar_service: Wired CalendarService instance.
-        settings: Runtime settings.
-        store: Local StateStore.
-        args: Parsed CLI namespace (--calendar, --event-id, --notify).
-
-    Returns:
-        POSIX exit status code (0 on success).
-    """
-    cal_id = resolve_calendar_id(str(args.calendar), settings, store)
-    ev_id = str(args.event_id)
-    calendar_service.delete_event(
-        cal_id,
-        ev_id,
-        send_updates="all" if bool(args.notify) else "",
-    )
-    print(json.dumps({"deleted_event_id": ev_id, "calendar_id": cal_id}, indent=2))
-    return 0

@@ -1,4 +1,4 @@
-"""Antigravity Web UI session manager, live agy CLI bridge, and native silent auto-archiver."""
+"""Antigravity Web UI session manager, model-tiered agy CLI bridge, and title sync."""
 
 from __future__ import annotations
 
@@ -30,13 +30,14 @@ from alfred.services.agy_archive_store import (
     is_error_envelope,
     parse_calendar_action,
     parse_json_object,
+    sanitize_annotation_title,
     unwrap_triage_payload,
 )
 from alfred.services.agy_daemon_sync import AgyDaemonSyncService
 
 
 class AgySessionManager:
-    """Manage Antigravity Web conversation lifecycle, Gate plans, and native silent archiving."""
+    """Manage Antigravity Web conversation lifecycle, model routing, and readable titles."""
 
     def __init__(
         self,
@@ -79,6 +80,7 @@ class AgySessionManager:
         )
         self._plans_dir = self._paths.state_dir / "plans"
         self._plans_dir.mkdir(parents=True, exist_ok=True)
+        self._last_needs_orchestrator_study: bool = False
 
     @property
     def archive_store(self) -> AgyArchiveStore:
@@ -90,14 +92,36 @@ class AgySessionManager:
         """Return the idle-safe AgyDaemonSyncService instance."""
         return self._daemon_sync
 
+    @property
+    def last_needs_orchestrator_study(self) -> bool:
+        """Return whether the most recent cognitive triage requested Orchestrator study."""
+        return self._last_needs_orchestrator_study
+
+    def build_model_cli_flags(self, workspace: str, trace: bool = False) -> list[str]:
+        """Build --model (and --effort ONLY on non-orchestrator models) CLI flags.
+
+        Args:
+            workspace: Target specialist workspace role or slug.
+            trace: When True, use lightweight trace model routing.
+
+        Returns:
+            CLI argument list (omits --effort whenever model is an orchestrator).
+        """
+        model_id, effort = (
+            self._settings.models.resolve_trace()
+            if trace
+            else self._settings.models.resolve_for_workspace(workspace)
+        )
+        flags = ["--model", model_id]
+        if effort is not None:
+            flags.extend(["--effort", effort])
+        return flags
+
     def resolve_workspace_cwd(self, workspace: str | None) -> Path:
         """Resolve the physical workspace directory for agy CLI execution or fallback to root_dir.
 
         Args:
             workspace: Optional workspace role or slug (e.g. 'alfred-inbox').
-
-        Returns:
-            Existing workspace directory Path or Alfred root_dir.
         """
         if workspace:
             project_slug = self._settings.resolve_workspace_project(workspace)
@@ -115,27 +139,35 @@ class AgySessionManager:
         source_message_id: str = "",
         implementation_plan_md: str | None = None,
         spawn_live: bool = False,
+        title: str = "",
+        parent_session_id: str = "",
     ) -> ActiveSessionRecord:
-        """Spawn a tracked Antigravity Web conversation and optionally materialize its Gate plan.
+        """Spawn a tracked Antigravity Web conversation with a clean sidebar title and Gate plan.
 
         Args:
             workspace: Target workspace slug ('alfred-inbox', 'alfred-calendar', etc.).
             source_message_id: Optional triggering message or event identifier.
             implementation_plan_md: Optional Markdown content written to implementation_plan.md.
             spawn_live: When True and a plan is given, spawn a live agy Web Gate conversation.
-
-        Returns:
-            Created ActiveSessionRecord with ACTIVE status.
+            title: Optional explicit human-readable conversation title.
+            parent_session_id: Optional originating parent conversation UUID.
         """
+        clean_title = sanitize_annotation_title(
+            title or f"[{workspace}] {source_message_id or 'Validation Gate'}"
+        )
         live_id: str | None = None
         if spawn_live and implementation_plan_md is not None:
             live_id = self._spawn_live_plan_session(
                 workspace=workspace,
                 source_message_id=source_message_id,
                 implementation_plan_md=implementation_plan_md,
+                title=clean_title,
             )
 
         session_id = live_id or f"agy_{workspace.replace('-', '_')}_{uuid.uuid4().hex[:10]}"
+        if live_id:
+            self._archive_store.set_conversation_title(live_id, clean_title, archived=False)
+
         plan_path_str = ""
         if implementation_plan_md is not None:
             session_dir = self._plans_dir / session_id
@@ -148,7 +180,9 @@ class AgySessionManager:
             session_id=session_id,
             workspace=workspace,
             status="ACTIVE",
+            title=clean_title,
             source_message_id=source_message_id,
+            parent_session_id=parent_session_id,
             plan_path=plan_path_str,
         )
         self._state_store.conversations.update(
@@ -178,22 +212,21 @@ class AgySessionManager:
             outcome: Outcome summary persisted in ActiveSessionRecord.
             existing_conv_id: Optional existing conversation UUID to reuse and archive in-place.
             spawn_live: When True and existing_conv_id is None, spawn a lightweight agy trace.
-            archived_at: Optional explicit archival ISO-8601 timestamp (for historical backfill).
-
-        Returns:
-            Persisted ActiveSessionRecord with status 'ARCHIVED'.
+            archived_at: Optional explicit archival ISO-8601 timestamp.
         """
         resolved_id = existing_conv_id
         if not resolved_id and spawn_live:
             resolved_id = self._spawn_live_trace_session(workspace, title, trace_markdown)
         session_id = resolved_id or f"agy_{workspace.replace('-', '_')}_{uuid.uuid4().hex[:10]}"
         ts = archived_at or utc_now_iso()
-        self._archive_store.archive_conversation(session_id, title=title, archived_at_iso=ts)
+        clean_title = sanitize_annotation_title(title)
+        self._archive_store.archive_conversation(session_id, title=clean_title, archived_at_iso=ts)
         record = ActiveSessionRecord(
             session_id=session_id,
             workspace=workspace,
             status="ARCHIVED",
-            outcome=outcome or title,
+            title=clean_title,
+            outcome=outcome or clean_title,
             source_message_id=source_message_id,
             created_at=ts,
             archived_at=ts,
@@ -212,15 +245,12 @@ class AgySessionManager:
         docs: list[KnowledgeDocument],
         user_addresses: frozenset[str] = frozenset(),
     ) -> tuple[InboxOutputType, str, str | None]:
-        """Classify an ambiguous email and draft a reply via agy CLI (3-tuple legacy API).
+        """Classify an ambiguous email and draft a reply via agy CLI (3-tuple API).
 
         Args:
             msg: Normalized incoming Gmail message.
             docs: Loaded Tier-2 reference KnowledgeDocument list for factual grounding.
             user_addresses: Optional authenticated user addresses/aliases for self-mail context.
-
-        Returns:
-            Tuple of (InboxOutputType, rationale string, optional draft reply body).
         """
         out_type, reason, draft_body, _cal_action, conv_id = self.classify_email_full(
             msg, docs, user_addresses=user_addresses
@@ -235,34 +265,27 @@ class AgySessionManager:
         user_addresses: frozenset[str] = frozenset(),
         calendar_context: str = "",
     ) -> tuple[InboxOutputType, str, str | None, CalendarTriageAction, str | None]:
-        """Classify an email inside project alfred-inbox, returning calendar_action & conv_id.
+        """Classify an email inside project alfred-inbox using Hydrogen light model routing.
 
         Args:
             msg: Normalized incoming Gmail message.
             docs: Loaded Tier-2 reference KnowledgeDocument list.
             user_addresses: Optional authenticated owner email addresses.
             calendar_context: Optional upcoming primary calendar & [HOLD] context block.
-
-        Returns:
-            5-tuple (output_type, reason, draft_body, calendar_action, classifier_conv_id).
         """
+        self._last_needs_orchestrator_study = False
         agy_bin = self._locate_agy_binary()
         if agy_bin is None:
             return self._fallback_triage("agy unavailable")
         target_project = self._settings.resolve_workspace_project("alfred-inbox")
         schema_json = json.dumps(COGNITIVE_TRIAGE_SCHEMA, ensure_ascii=False)
-        prompt = build_cognitive_triage_prompt(msg, docs, user_addresses, calendar_context)
+        prompt = build_cognitive_triage_prompt(
+            msg, docs, user_addresses, calendar_context, paths=self._paths
+        )
         cmd = [
-            agy_bin,
-            "--project",
-            target_project,
-            "--output-format",
-            "json",
-            "--json-schema",
-            schema_json,
-            "--print",
-            prompt,
-            "--disable-slash-commands",
+            agy_bin, "--project", target_project, *self.build_model_cli_flags("alfred-inbox"),
+            "--output-format", "json", "--json-schema", schema_json,
+            "--print", prompt, "--disable-slash-commands",
         ]
         completed = self._run_agy_command(cmd, cwd=self.resolve_workspace_cwd("alfred-inbox"))
         if completed is None or completed.returncode != 0:
@@ -277,23 +300,20 @@ class AgySessionManager:
         except ValueError:
             self.purge_classifier_session(conv_id)
             return self._fallback_triage("unknown agy output_type")
+        self._last_needs_orchestrator_study = bool(
+            unwrapped.get("needs_orchestrator_study", False)
+        )
         reason = str(unwrapped.get("reason") or "Classified via agy cognitive triage")
         raw_draft = unwrapped.get("draft_body")
         draft_body = raw_draft.strip() if isinstance(raw_draft, str) and raw_draft.strip() else None
         return (output_type, reason, draft_body, parse_calendar_action(unwrapped), conv_id)
 
     def _fallback_triage(
-        self,
-        suffix: str,
+        self, suffix: str
     ) -> tuple[InboxOutputType, str, str | None, CalendarTriageAction, str | None]:
         """Return safe default DRAFT_REPLY tuple when agy CLI triage fails."""
-        return (
-            InboxOutputType.DRAFT_REPLY,
-            f"Direct human inquiry requiring a reply draft ({suffix})",
-            None,
-            CalendarTriageAction(),
-            None,
-        )
+        rsn = f"Direct human inquiry requiring a reply draft ({suffix})"
+        return (InboxOutputType.DRAFT_REPLY, rsn, None, CalendarTriageAction(), None)
 
     def purge_classifier_session(self, conv_id: str | None) -> None:
         """Purge an intermediate classifier conversation when replaced by a Gate session.
@@ -310,9 +330,6 @@ class AgySessionManager:
         Args:
             session_id: Active Antigravity session identifier.
             implementation_plan_md: Markdown Gate document content.
-
-        Returns:
-            Resolved Path to the written implementation_plan.md file.
         """
         session_dir = self._plans_dir / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
@@ -337,10 +354,7 @@ class AgySessionManager:
         return plan_file
 
     def auto_archive_silent_session(
-        self,
-        session_id: str,
-        reason: str,
-        title: str | None = None,
+        self, session_id: str, reason: str, title: str | None = None
     ) -> ActiveSessionRecord:
         """Immediately auto-archive a SILENT_NO_ACTION conversation and write .pbtxt if live.
 
@@ -348,26 +362,17 @@ class AgySessionManager:
             session_id: Target Antigravity session identifier.
             reason: Concise classification rationale recorded in state.
             title: Optional explicit sidebar title for annotations/<session_id>.pbtxt.
-
-        Returns:
-            Updated ActiveSessionRecord marked with status 'ARCHIVED'.
-
-        Raises:
-            KeyError: If session_id is unknown.
         """
         state = self._state_store.conversations.load()
         if session_id not in state.sessions:
             raise KeyError(f"Unknown Antigravity session: {session_id}")
-
         ts = utc_now_iso()
-        self._archive_store.archive_conversation(
-            session_id,
-            title=title or f"[SILENT] {reason}",
-            archived_at_iso=ts,
-        )
+        clean_title = sanitize_annotation_title(title or f"[SILENT] {reason}")
+        self._archive_store.archive_conversation(session_id, title=clean_title, archived_at_iso=ts)
         archived = state.sessions[session_id].model_copy(
             update={
                 "status": "ARCHIVED",
+                "title": clean_title,
                 "outcome": f"SILENT_NO_ACTION: {reason}",
                 "archived_at": ts,
             }
@@ -380,13 +385,33 @@ class AgySessionManager:
             self._archive_hook(session_id)
         return archived
 
-    def locate_agy_binary(self) -> str | None:
-        """Resolve an executable agy CLI binary path or None when unavailable.
+    def repair_session_titles(self) -> list[str]:
+        """Repair blank or boilerplate conversation titles in SQLite using StateStore titles."""
+        known = {
+            sid: rec.title
+            for sid, rec in self._state_store.conversations.load().sessions.items()
+            if rec.title
+        }
+        repaired = self._archive_store.repair_blank_or_boilerplate_titles(known)
+        if repaired:
+            self._daemon_sync.mark_dirty(repaired[0], reason="repair_titles")
+        return repaired
 
-        Returns:
-            Executable path string or None.
-        """
+    def locate_agy_binary(self) -> str | None:
+        """Resolve an executable agy CLI binary path or None when unavailable."""
         return self._locate_agy_binary()
+
+    def run_agy_command(
+        self, cmd: list[str], cwd: Path | None = None, timeout: int = 180
+    ) -> subprocess.CompletedProcess[str] | None:
+        """Execute an agy CLI command in target cwd with configurable timeout.
+
+        Args:
+            cmd: Command argv list starting with agy binary.
+            cwd: Optional working directory path.
+            timeout: Subprocess timeout in seconds.
+        """
+        return self._run_agy_command(cmd, cwd=cwd, timeout=timeout)
 
     def _locate_agy_binary(self) -> str | None:
         """Resolve an executable agy CLI binary via override, PATH, or ~/.local/bin/agy."""
@@ -399,8 +424,8 @@ class AgySessionManager:
         if which_hit:
             return which_hit
         if "/" in configured:
-            candidate = Path(configured)
-            return str(candidate) if candidate.is_file() and os.access(candidate, os.X_OK) else None
+            cand = Path(configured)
+            return str(cand) if cand.is_file() and os.access(cand, os.X_OK) else None
         if configured == "agy":
             default_bin = Path.home() / ".local" / "bin" / "agy"
             if default_bin.is_file() and os.access(default_bin, os.X_OK):
@@ -408,44 +433,33 @@ class AgySessionManager:
         return None
 
     def _run_agy_command(
-        self,
-        cmd: list[str],
-        cwd: Path | None = None,
+        self, cmd: list[str], cwd: Path | None = None, timeout: int = 180
     ) -> subprocess.CompletedProcess[str] | None:
         """Execute an agy CLI command via injected runner or subprocess in target cwd."""
         try:
             if self._runner_fn is not None:
                 return self._runner_fn(cmd)
             return subprocess.run(
-                cmd,
-                cwd=cwd or self._paths.root_dir,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=180,
+                cmd, cwd=cwd or self._paths.root_dir, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, check=False, timeout=timeout,
             )
         except (OSError, subprocess.SubprocessError):
             return None
 
     def _spawn_live_trace_session(
-        self,
-        workspace: str,
-        title: str,
-        trace_markdown: str,
+        self, workspace: str, title: str, trace_markdown: str
     ) -> str | None:
         """Spawn a fast, zero-tool Antigravity trace conversation in target workspace."""
         agy_bin = self._locate_agy_binary()
         if agy_bin is None:
             return None
-        target_project = self._settings.resolve_workspace_project(workspace)
         prompt = (
-            f"Trace automatique `{workspace}` — **{title}** (zéro appel d'outil ni lecture de "
-            "fichier ; réponds en une seule phrase confirmant l'archivage de cette trace) :\n\n"
-            f"{trace_markdown}"
+            f"# {title}\n\nTrace automatique d'audit (zéro appel d'outil ; "
+            f"confirme l'archivage en une phrase) :\n\n{trace_markdown}"
         )
         cmd = [
-            agy_bin, "--project", target_project, "--effort", "low",
+            agy_bin, "--project", self._settings.resolve_workspace_project(workspace),
+            *self.build_model_cli_flags(workspace, trace=True),
             "--disable-slash-commands", "--output-format", "json", "--print", prompt,
         ]
         completed = self._run_agy_command(cmd, cwd=self.resolve_workspace_cwd(workspace))
@@ -455,26 +469,23 @@ class AgySessionManager:
         return extract_conversation_id(parsed) if parsed is not None else None
 
     def _spawn_live_plan_session(
-        self,
-        workspace: str,
-        source_message_id: str,
-        implementation_plan_md: str,
+        self, workspace: str, source_message_id: str, implementation_plan_md: str, title: str = ""
     ) -> str | None:
         """Spawn a live Antigravity Web Gate session via agy CLI and return conversation ID."""
         agy_bin = self._locate_agy_binary()
         if agy_bin is None:
             return None
+        heading = title or f"[{workspace}] {source_message_id}"
         prompt = (
-            f"Workspace: {workspace} | Source: {source_message_id}\n"
+            f"# {heading}\n\n"
             "Stage-1 research is complete; do not read workspace files or run shell/search "
             "commands. Materialize the blocking Gate artifact `implementation_plan.md` with "
             "`UserFacing: true` and `RequestFeedback: true` using the following exact Markdown, "
-            "then stop immediately:\n\n"
-            f"{implementation_plan_md}"
+            f"then stop immediately:\n\n{implementation_plan_md}"
         )
-        target_project = self._settings.resolve_workspace_project(workspace)
         cmd = [
-            agy_bin, "--project", target_project, "--add-dir", str(self._paths.root_dir),
+            agy_bin, "--project", self._settings.resolve_workspace_project(workspace),
+            *self.build_model_cli_flags(workspace), "--add-dir", str(self._paths.root_dir),
             "--agent", "plan-synthesizer", "--mode", "plan",
             "--output-format", "json", "-p", prompt,
         ]

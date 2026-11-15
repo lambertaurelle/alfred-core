@@ -1,51 +1,62 @@
-"""Pure domain models and configuration schemas for Alfred V7.1 Lean."""
+"""Pure domain models and configuration schemas for Alfred V8.0 Chief of Staff."""
 
 from __future__ import annotations
 
 import os
 import unicodedata
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from alfred.domain.calendar_models import (
-    CalendarConfig as CalendarConfig,
+    CalendarConfig,
+    EvolutionProposalRecord,
+    EvolutionProposalsLedger,
+    HoldAllowlistState,
+    PullRequestArtifact,
 )
-from alfred.domain.calendar_models import (
-    EvolutionProposalRecord as EvolutionProposalRecord,
+from alfred.domain.feature_models import (
+    FeatureFlagsConfig,
+    IdentityConfig,
+    InboxFilterConfig,
+    McpServerConfig,
+    ModelRoutingConfig,
+    SecurityConfig,
 )
-from alfred.domain.calendar_models import (
-    EvolutionProposalsLedger as EvolutionProposalsLedger,
-)
-from alfred.domain.calendar_models import (
-    HoldAllowlistState as HoldAllowlistState,
-)
-from alfred.domain.calendar_models import (
-    PajemploiReport as PajemploiReport,
-)
-from alfred.domain.calendar_models import (
-    PullRequestArtifact as PullRequestArtifact,
-)
-from alfred.domain.routine_models import (
-    RoutinesConfig as RoutinesConfig,
-)
-from alfred.domain.routine_models import (
-    WorkspaceProjectStatus as WorkspaceProjectStatus,
-)
+from alfred.domain.routine_models import RoutinesConfig, WorkspaceProjectStatus
+
+__all__ = [
+    "CalendarConfig", "EvolutionProposalRecord", "EvolutionProposalsLedger",
+    "FeatureFlagsConfig", "HoldAllowlistState", "IdentityConfig", "InboxFilterConfig",
+    "McpServerConfig", "ModelRoutingConfig", "PullRequestArtifact", "RoutinesConfig",
+    "SecurityConfig", "WorkspaceProjectStatus",
+]
+
+
+def _subdict(raw: dict[str, object], key: str) -> dict[str, object]:
+    """Return nested dict under key or an empty dict."""
+    val = raw.get(key)
+    return dict(val) if isinstance(val, dict) else {}
 
 DEFAULT_OAUTH_SCOPES: tuple[str, ...] = (
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.compose",
+    "https://www.googleapis.com/auth/gmail.settings.basic",
     "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/tasks",
+    "https://www.googleapis.com/auth/contacts",
+    "https://www.googleapis.com/auth/contacts.other.readonly",
 )
 DEFAULT_WORKSPACES: dict[str, str] = {
+    "onboard": "alfred-onboard",
     "life": "alfred-life",
     "inbox": "alfred-inbox",
     "calendar": "alfred-calendar",
+    "tasks": "alfred-tasks",
     "evolve": "alfred-evolve",
 }
 
@@ -106,6 +117,11 @@ class AlfredPaths(BaseModel):
         return self.core_dir / "templates" / "knowledge"
 
     @property
+    def templates_prompts_dir(self) -> Path:
+        """Return Markdown prompt templates directory path."""
+        return self.core_dir / "templates" / "prompts"
+
+    @property
     def instance_dir(self) -> Path:
         """Return private instance overlay directory path."""
         return self.root_dir / "instance"
@@ -118,12 +134,30 @@ class AlfredPaths(BaseModel):
     @property
     def example_settings_path(self) -> Path:
         """Return fallback example settings YAML path."""
+        inst_example = self.instance_dir / "config" / "settings.example.yaml"
+        if inst_example.exists():
+            return inst_example
         return self.core_dir / "config" / "settings.example.yaml"
 
     @property
+    def extensions_dir(self) -> Path:
+        """Return personal active extensions directory path."""
+        return self.instance_dir / "extensions"
+
+    @property
+    def examples_dir(self) -> Path:
+        """Return versioned example extensions directory path."""
+        return self.instance_dir / "examples"
+
+    @property
     def secrets_dir(self) -> Path:
-        """Return OAuth2 secrets directory path."""
+        """Return OAuth2 and runtime secrets directory path."""
         return self.instance_dir / "secrets"
+
+    @property
+    def signature_vault_dir(self) -> Path:
+        """Return isolated handwritten signature vault directory path."""
+        return self.secrets_dir / "signature_vault"
 
     @property
     def knowledge_dir(self) -> Path:
@@ -164,12 +198,12 @@ class AlfredPaths(BaseModel):
 class AlfredSettings(BaseModel):
     """Structural runtime settings loaded from YAML without personal hardcoded values."""
 
-    project_name: str = "Alfred Personal Chief of Staff"
+    project_name: str = "Alfred Family Office Chief of Staff"
     timezone: str = "Europe/Paris"
     language: str = "fr-FR"
     referentiel_drive_folder_name: str = "_ALFRED_REFERENTIEL_"
-    nounou_calendar_name: str = "Garde Nounou"
     primary_calendar_id: str = "primary"
+    default_tasklist_id: str = "@default"
     oauth_scopes: list[str] = Field(default_factory=lambda: list(DEFAULT_OAUTH_SCOPES))
     agy_binary: str = "agy"
     agy_remote_control_service: str = "antigravity-cli-daemon.service"
@@ -179,15 +213,21 @@ class AlfredSettings(BaseModel):
     workspaces: dict[str, str] = Field(default_factory=lambda: dict(DEFAULT_WORKSPACES))
     max_knowledge_body_lines: int = 150
     core_base_branch: str = "main"
-    instance_base_branch: str = "main"
+    features: FeatureFlagsConfig = Field(default_factory=FeatureFlagsConfig)
+    identity: IdentityConfig = Field(default_factory=IdentityConfig)
+    models: ModelRoutingConfig = Field(default_factory=ModelRoutingConfig)
+    inbox_filters: InboxFilterConfig = Field(default_factory=InboxFilterConfig)
+    security: SecurityConfig = Field(default_factory=SecurityConfig)
+    mcp: McpServerConfig = Field(default_factory=McpServerConfig)
     routines: RoutinesConfig = Field(default_factory=RoutinesConfig)
     calendar: CalendarConfig = Field(default_factory=CalendarConfig)
+    extensions_config: dict[str, dict[str, object]] = Field(default_factory=dict)
 
     def resolve_workspace_project(self, workspace: str) -> str:
         """Resolve a workspace role or slug into its configured Antigravity project name.
 
         Args:
-            workspace: Logical role ('inbox', 'calendar', 'life', 'evolve') or workspace slug.
+            workspace: Logical role ('inbox', 'calendar', 'tasks', 'life', 'evolve', 'onboard').
 
         Returns:
             Target Antigravity project name.
@@ -217,43 +257,59 @@ class AlfredSettings(BaseModel):
         if not candidate.exists():
             return cls()
         raw = yaml.safe_load(candidate.read_text(encoding="utf-8")) or {}
-        google_cfg = raw.get("google", {})
-        agy_cfg = raw.get("antigravity", {})
-        inbox_cfg = raw.get("inbox", {})
-        know_cfg = raw.get("knowledge", {})
-        evolve_cfg = raw.get("evolve", {})
-        raw_scopes = google_cfg.get("oauth_scopes") or list(DEFAULT_OAUTH_SCOPES)
-        raw_ws = agy_cfg.get("workspaces")
+        return cls._from_raw_dict(raw if isinstance(raw, dict) else {})
+
+    @classmethod
+    def _from_raw_dict(cls, raw: dict[str, object]) -> AlfredSettings:
+        """Build AlfredSettings from a parsed YAML dictionary."""
+        g_dict, a_dict = _subdict(raw, "google"), _subdict(raw, "antigravity")
+        i_dict, k_dict, e_dict = (
+            _subdict(raw, "inbox"),
+            _subdict(raw, "knowledge"),
+            _subdict(raw, "evolve"),
+        )
+        features = FeatureFlagsConfig.from_dict(raw.get("features"))
+        scopes = features.compute_oauth_scopes()
+        raw_ws = a_dict.get("workspaces")
         ws_map = (
             {**DEFAULT_WORKSPACES, **{str(k): str(v) for k, v in raw_ws.items()}}
             if isinstance(raw_ws, dict)
             else dict(DEFAULT_WORKSPACES)
         )
+        ext_cfg = {
+            str(k): dict(v) for k, v in _subdict(raw, "extensions").items() if isinstance(v, dict)
+        }
         return cls(
-            project_name=str(raw.get("project_name", "Alfred Personal Chief of Staff")),
+            project_name=str(raw.get("project_name", "Alfred Family Office Chief of Staff")),
             timezone=str(raw.get("timezone", "Europe/Paris")),
             language=str(raw.get("language", "fr-FR")),
             referentiel_drive_folder_name=str(
-                google_cfg.get("referentiel_drive_folder_name", "_ALFRED_REFERENTIEL_")
+                g_dict.get("referentiel_drive_folder_name", "_ALFRED_REFERENTIEL_")
             ),
-            nounou_calendar_name=str(google_cfg.get("nounou_calendar_name", "Garde Nounou")),
-            primary_calendar_id=str(google_cfg.get("primary_calendar_id", "primary")),
-            oauth_scopes=[str(s) for s in raw_scopes],
-            agy_binary=str(agy_cfg.get("binary_path", "agy")),
+            primary_calendar_id=str(g_dict.get("primary_calendar_id", "primary")),
+            default_tasklist_id=str(g_dict.get("default_tasklist_id", "@default")),
+            oauth_scopes=scopes,
+            agy_binary=str(a_dict.get("binary_path", "agy")),
             agy_remote_control_service=str(
-                agy_cfg.get("remote_control_service", "antigravity-cli-daemon.service")
+                a_dict.get("remote_control_service", "antigravity-cli-daemon.service")
             ),
-            agy_sync_daemon_on_changes=bool(agy_cfg.get("sync_daemon_on_changes", True)),
-            agy_idle_wal_grace_sec=int(agy_cfg.get("idle_wal_grace_sec", 15)),
+            agy_sync_daemon_on_changes=bool(a_dict.get("sync_daemon_on_changes", True)),
+            agy_idle_wal_grace_sec=int(str(a_dict.get("idle_wal_grace_sec", 15))),
             archive_processed_emails_by_default=bool(
-                inbox_cfg.get("archive_processed_emails_by_default", True)
+                i_dict.get("archive_processed_emails_by_default", True)
             ),
             workspaces=ws_map,
-            max_knowledge_body_lines=int(know_cfg.get("max_body_lines", 150)),
-            core_base_branch=str(evolve_cfg.get("core_base_branch", "main")),
-            instance_base_branch=str(evolve_cfg.get("instance_base_branch", "main")),
+            max_knowledge_body_lines=int(str(k_dict.get("max_body_lines", 150))),
+            core_base_branch=str(e_dict.get("core_base_branch", "main")),
+            features=features,
+            identity=IdentityConfig.from_dict(raw.get("identity")),
+            models=ModelRoutingConfig.from_dict(raw.get("models")),
+            inbox_filters=InboxFilterConfig.from_dict(i_dict),
+            security=SecurityConfig.from_dict(raw.get("security")),
+            mcp=McpServerConfig.from_dict(raw.get("mcp")),
             routines=RoutinesConfig.from_dict(raw.get("routines")),
             calendar=CalendarConfig.from_dict(raw.get("calendar")),
+            extensions_config=ext_cfg,
         )
 
 
@@ -324,7 +380,6 @@ class GoogleSyncBookmarks(BaseModel):
     gmail_last_polled_at: str = ""
     drive_page_token: str | None = None
     drive_last_synced_at: str = ""
-    nounou_calendar_id: str | None = None
     referentiel_folder_id: str | None = None
 
 
@@ -334,15 +389,17 @@ class ActiveSessionRecord(BaseModel):
     session_id: str
     workspace: str
     status: str = "ACTIVE"
+    title: str = ""
     outcome: str = ""
     source_message_id: str = ""
+    parent_session_id: str = ""
     plan_path: str = ""
     created_at: str = Field(default_factory=utc_now_iso)
     archived_at: str | None = None
 
 
 class ActiveConversationsState(BaseModel):
-    """Registry of spawned Antigravity Web sessions and archived silent sessions."""
+    """Registry of spawned Antigravity Web sessions and archived traces."""
 
     sessions: dict[str, ActiveSessionRecord] = Field(default_factory=dict)
 
@@ -369,7 +426,7 @@ class KnowledgeAuditEvent(BaseModel):
 
 
 class InboxOutputType(StrEnum):
-    """Three exclusive outputs for the alfred-inbox new email routine."""
+    """Exclusive outputs for the alfred-inbox new email routine."""
 
     SILENT_NO_ACTION = "SILENT_NO_ACTION"
     DRAFT_REPLY = "DRAFT_REPLY"
@@ -377,7 +434,7 @@ class InboxOutputType(StrEnum):
 
 
 class EmailMessage(BaseModel):
-    """Normalized incoming Gmail message model."""
+    """Normalized incoming Gmail message model including MIME metadata."""
 
     message_id: str
     thread_id: str
@@ -386,8 +443,11 @@ class EmailMessage(BaseModel):
     subject: str
     snippet: str = ""
     body_text: str = ""
+    raw_html: str = ""
     headers: dict[str, str] = Field(default_factory=dict)
     label_ids: list[str] = Field(default_factory=list)
+    mime_types: list[str] = Field(default_factory=list)
+    attachment_filenames: list[str] = Field(default_factory=list)
 
 
 class InboxTriageDecision(BaseModel):
@@ -406,62 +466,13 @@ class InboxTriageDecision(BaseModel):
     suggested_knowledge_update_id: str | None = None
     calendar_session_id: str | None = None
     calendar_action_intent: str = "NONE"
-
-
-class ScheduledWorkday(BaseModel):
-    """Contractual daily childcare schedule entry."""
-
-    weekday: str
-    start_time: str
-    end_time: str
-    hours: float
-
-
-class VacationPeriod(BaseModel):
-    """Registered vacation or leave interval for childcare planning."""
-
-    start_date: str
-    end_date: str
-    source: str = "parents"
-    notified_at: str | None = None
-    label: str = "Vacances"
-
-    @model_validator(mode="after")
-    def _validate_date_order(self) -> VacationPeriod:
-        """Ensure start_date and end_date are valid ISO dates with end_date >= start_date."""
-        start_dt = date.fromisoformat(self.start_date)
-        end_dt = date.fromisoformat(self.end_date)
-        if end_dt < start_dt:
-            raise ValueError(
-                f"Vacation end_date '{self.end_date}' precedes start_date '{self.start_date}'."
-            )
-        if self.notified_at is not None:
-            date.fromisoformat(self.notified_at)
-        return self
-
-
-class NounouContract(BaseModel):
-    """Signed childcare contract specification for Garde Nounou and Pajemploi."""
-
-    contract_id: str
-    employee_name: str
-    child_name: str
-    drive_contract_file_id: str = ""
-    calendar_id: str = ""
-    hourly_rate_net: float
-    overtime_multiplier: float = 1.10
-    base_monthly_net_salary: float
-    base_monthly_hours: int
-    base_monthly_days: int
-    maintenance_allowance_daily: float
-    meal_allowance_daily: float
-    vacation_notice_days: int = 30
-    scheduled_workdays: list[ScheduledWorkday] = Field(default_factory=list)
-    vacations: list[VacationPeriod] = Field(default_factory=list)
+    needs_orchestrator_study: bool = False
+    suspicious_injection: bool = False
+    skipped_pre_filter: bool = False
 
 
 class CalendarEventItem(BaseModel):
-    """Normalized Google Calendar event item with optional [HOLD] & attendee metadata."""
+    """Normalized Google Calendar event item with optional [HOLD], recurrence, & attendees."""
 
     event_id: str = ""
     summary: str
@@ -470,17 +481,7 @@ class CalendarEventItem(BaseModel):
     description: str = ""
     location: str = ""
     attendees: list[str] = Field(default_factory=list)
+    recurrence: list[str] = Field(default_factory=list)
     is_hold: bool = False
     thread_id: str = ""
     candidate_attendees: list[str] = Field(default_factory=list)
-
-
-class VacationNoticeAlert(BaseModel):
-    """Contractual ~1-month vacation notice check outcome."""
-
-    vacation: VacationPeriod
-    days_until_start: int
-    required_notice_days: int
-    is_compliant: bool
-    notice_deadline_date: str
-    implementation_plan_markdown: str

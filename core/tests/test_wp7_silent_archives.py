@@ -186,9 +186,11 @@ def test_cognitive_silent_keeps_and_archives_alfred_inbox_conversation(tmp_path:
 
 
 def test_deterministic_silent_spawns_archived_trace_when_live(tmp_path: Path) -> None:
-    """Deterministic SILENT_NO_ACTION materializes an archived trace in alfred-inbox when live."""
+    """Deterministic SILENT_NO_ACTION materializes an archived trace when enabled in config."""
+    from alfred.domain.feature_models import InboxFilterConfig
+
     paths = AlfredPaths.from_env(tmp_path)
-    settings = AlfredSettings()
+    settings = AlfredSettings(inbox_filters=InboxFilterConfig(silent_creates_agy_session=True))
     store = StateStore(paths)
     agy_dir = tmp_path / "agy_data"
     conv_id = "22222222-3333-4444-5555-666666666666"
@@ -215,6 +217,7 @@ def test_deterministic_silent_spawns_archived_trace_when_live(tmp_path: Path) ->
         DriveService(paths, settings, store),
         agy,
         spawn_live_agy=True,
+        settings=settings,
     )
     msg = EmailMessage(
         message_id="m_det_1",
@@ -222,6 +225,7 @@ def test_deterministic_silent_spawns_archived_trace_when_live(tmp_path: Path) ->
         sender="no-reply@portal.test",
         subject="Newsletter mensuelle",
         headers={"List-Unsubscribe": "<mailto:unsub@portal.test>"},
+        label_ids=["INBOX"],
     )
     decision = triage.process_message(msg, use_cognitive_agy=True)
     assert decision.output_type == InboxOutputType.SILENT_NO_ACTION
