@@ -23,6 +23,9 @@ INBOX_SOURCE_WORKSPACES: frozenset[str] = frozenset({"inbox", "alfred-inbox"})
 class DelegationService:
     """Spawn model-routed Antigravity specialist sessions with Single-Gate safety."""
 
+    BRAIN_COMMAND_TIMEOUT_SEC = 600
+    DEFAULT_COMMAND_TIMEOUT_SEC = 180
+
     def __init__(
         self,
         paths: AlfredPaths,
@@ -113,6 +116,20 @@ class DelegationService:
             model_used=model_used, parent_session_id=parent_session_id,
             details=f"Delegated to {target_project} ({delegation_status}).",
         )
+
+    def resolve_spawn_timeout(self, target_project: str) -> int:
+        """Return CLI spawn timeout (600s for orchestrators, 180s for light workspaces).
+
+        Args:
+            target_project: Target specialist project slug or role.
+
+        Returns:
+            Subprocess timeout in seconds.
+        """
+        model_id, _ = self._settings.models.resolve_for_workspace(target_project)
+        if "orchestrator" in model_id.lower():
+            return self.BRAIN_COMMAND_TIMEOUT_SEC
+        return self.DEFAULT_COMMAND_TIMEOUT_SEC
 
     def _persist_delegated_session(
         self,
@@ -235,8 +252,9 @@ class DelegationService:
             agent_flags = ["--agent", "plan-synthesizer", "--mode", "plan"]
             prompt = (
                 f"# {clean_title}\n\n"
-                f"Délégation depuis `{source_workspace}`{origin}. Rédige l'artefact Gate bloquant "
-                "`implementation_plan.md` (`UserFacing: true`, `RequestFeedback: true`) pour :\n\n"
+                f"Délégation depuis `{source_workspace}`{origin}. Produis directement l'artefact "
+                "Gate bloquant `implementation_plan.md` (`UserFacing: true`, "
+                "`RequestFeedback: true`) sans boucle d'exploration redondante pour :\n\n"
                 f"{brief}"
             )
         else:
@@ -259,11 +277,17 @@ class DelegationService:
             "-p",
             prompt,
         ]
+        before_ids = self._agy_manager.archive_store.snapshot_summary_conversation_ids()
         completed = self._agy_manager.run_agy_command(
             cmd,
             cwd=self._agy_manager.resolve_workspace_cwd(target_project),
+            timeout=self.resolve_spawn_timeout(target_project),
         )
-        if completed is None or completed.returncode != 0:
-            return None
-        parsed = parse_json_object(completed.stdout)
-        return extract_conversation_id(parsed) if parsed is not None else None
+        live_id: str | None = None
+        if completed is not None and completed.returncode == 0:
+            parsed = parse_json_object(completed.stdout)
+            if parsed is not None:
+                live_id = extract_conversation_id(parsed)
+        if live_id is None and before_ids is not None:
+            self._agy_manager.archive_store.purge_incomplete_stubs(exclude_ids=before_ids)
+        return live_id

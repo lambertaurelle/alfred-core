@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import shutil
@@ -77,13 +78,15 @@ def format_annotations_pbtxt(
 class AgyArchiveStore:
     """Persist Antigravity annotations (.pbtxt), clean titles, and prune orphan CLI artifacts."""
 
-    def __init__(self, agy_data_dir: Path) -> None:
+    def __init__(self, agy_data_dir: Path, projects_dir: Path | None = None) -> None:
         """Initialize the archive store rooted at ~/.gemini/antigravity-cli.
 
         Args:
             agy_data_dir: Antigravity CLI data directory containing annotations/ & conversations/.
+            projects_dir: Optional ~/.gemini/config/projects directory for human project names.
         """
         self._agy_data_dir = agy_data_dir
+        self._projects_dir = projects_dir
 
     def set_conversation_title(
         self,
@@ -135,6 +138,97 @@ class AgyArchiveStore:
             conv_id, title=title, archived=True, timestamp_iso=archived_at_iso
         )
 
+    def snapshot_summary_conversation_ids(self) -> set[str] | None:
+        """Return indexed conversation IDs, or None when conversation_summaries.db fails."""
+        summary_db = self._agy_data_dir / "conversation_summaries.db"
+        if not summary_db.is_file():
+            return set()
+        try:
+            conn = sqlite3.connect(summary_db, timeout=5.0)
+            try:
+                rows = conn.execute(
+                    "SELECT conversation_id FROM conversation_summaries"
+                ).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return None
+        return {str(cid).strip() for (cid,) in rows if cid and str(cid).strip()}
+
+    def list_summary_conversation_ids(self) -> set[str]:
+        """Return all conversation IDs currently indexed in conversation_summaries.db."""
+        return self.snapshot_summary_conversation_ids() or set()
+
+    def purge_incomplete_stubs(self, exclude_ids: set[str] | None = None) -> list[str]:
+        """Purge newly created 0-step RUNNING stubs left behind by timed-out CLI spawns.
+
+        Args:
+            exclude_ids: Existing conversation IDs present before the spawn attempt.
+
+        Returns:
+            List of purged conversation UUID strings.
+        """
+        summary_db = self._agy_data_dir / "conversation_summaries.db"
+        if not summary_db.is_file():
+            return []
+        excluded = exclude_ids or set()
+        try:
+            conn = sqlite3.connect(summary_db, timeout=5.0)
+            try:
+                cols = {
+                    str(r[1])
+                    for r in conn.execute("PRAGMA table_info(conversation_summaries)").fetchall()
+                }
+                if "status" not in cols or "step_count" not in cols:
+                    return []
+                rows = conn.execute(
+                    "SELECT conversation_id FROM conversation_summaries "
+                    "WHERE status = 'CASCADE_RUN_STATUS_RUNNING' AND step_count = 0"
+                ).fetchall()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return []
+        purged: list[str] = []
+        for (raw_cid,) in rows:
+            cid = str(raw_cid or "").strip()
+            if cid and cid not in excluded:
+                self.purge_transient_conversation(cid)
+                purged.append(cid)
+        return purged
+
+    def _load_project_names(self) -> dict[str, str]:
+        """Resolve project UUID -> human-readable project name/slug from projects JSON."""
+        proj_dir = self._projects_dir or (self._agy_data_dir.parent / "config" / "projects")
+        if not proj_dir.is_dir():
+            return {}
+        names: dict[str, str] = {}
+        for path in sorted(proj_dir.glob("*.json")):
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if not isinstance(raw, dict):
+                continue
+            pid = str(raw.get("id") or raw.get("project_id") or path.stem).strip()
+            raw_name, raw_slug = raw.get("name"), raw.get("slug")
+            pname = (raw_name.strip() if isinstance(raw_name, str) else "") or (
+                raw_slug.strip() if isinstance(raw_slug, str) else ""
+            )
+            if pid and pname:
+                names[pid] = pname
+        return names
+
+    def _is_pbtxt_archived(self, conv_id: str) -> bool:
+        """Return True when annotations/<conv_id>.pbtxt currently marks archived:true."""
+        pbtxt = self._agy_data_dir / "annotations" / f"{conv_id}.pbtxt"
+        if not pbtxt.is_file():
+            return False
+        try:
+            return "archived:true" in pbtxt.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+
     def repair_blank_or_boilerplate_titles(
         self,
         fallback_titles: dict[str, str] | None = None,
@@ -148,6 +242,7 @@ class AgyArchiveStore:
         if not summary_db.is_file():
             return []
         known = fallback_titles or {}
+        proj_names = self._load_project_names()
         repaired: list[str] = []
         try:
             conn = sqlite3.connect(summary_db, timeout=5.0)
@@ -161,15 +256,19 @@ class AgyArchiveStore:
             return []
         for raw_cid, raw_proj, raw_title in rows:
             cid = str(raw_cid or "")
+            proj_key = str(raw_proj or "").strip()
             cur_title = str(raw_title or "").strip()
             needs_fix = (
                 not cur_title
                 or cur_title.startswith("Workspace:")
+                or cur_title.startswith("/plan Workspace:")
                 or cur_title.startswith("Stage-1 research is complete")
             )
             if cid and needs_fix:
-                replacement = known.get(cid) or f"[{raw_proj or 'alfred'}] Session {cid[:8]}"
-                if self.set_conversation_title(cid, replacement, archived=False) is not None:
+                proj_label = proj_names.get(proj_key) or proj_key or "alfred"
+                replacement = known.get(cid) or f"[{proj_label}] Session {cid[:8]}"
+                was_archived = self._is_pbtxt_archived(cid)
+                if self.set_conversation_title(cid, replacement, archived=was_archived) is not None:
                     repaired.append(cid)
         return repaired
 
@@ -250,13 +349,15 @@ class AgyArchiveStore:
                     "UPDATE conversation_summaries SET title = ? WHERE conversation_id = ?",
                     (clean_title, conv_id),
                 )
-                if self._has_fts_table(conn):
-                    conn.execute(
-                        "UPDATE conversations_fts SET archived = ?, title = ? "
-                        "WHERE conversation_id = ?",
-                        (1 if archived else 0, clean_title, conv_id),
-                    )
                 conn.commit()
+                if self._has_fts_table(conn):
+                    with contextlib.suppress(sqlite3.Error):
+                        conn.execute(
+                            "UPDATE conversations_fts SET archived = ?, title = ? "
+                            "WHERE conversation_id = ?",
+                            (1 if archived else 0, clean_title, conv_id),
+                        )
+                        conn.commit()
             finally:
                 conn.close()
         except sqlite3.Error:

@@ -97,7 +97,13 @@ def build_cognitive_triage_prompt(
         if user_addresses
         else ""
     )
-    spotlighted, _ = wrap_untrusted_email_block(msg, msg.body_text[:4000])
+    marker = "\n\n[Pièce jointe:"
+    if marker in msg.body_text:
+        email_part, att_part = msg.body_text.split(marker, 1)
+        clipped_body = f"{email_part[:2400]}{marker}{att_part[:2400]}"
+    else:
+        clipped_body = msg.body_text[:4000]
+    spotlighted, _ = wrap_untrusted_email_block(msg, clipped_body)
     if paths is not None:
         loader = PromptTemplateLoader(paths)
         custom_rules = loader.load_custom_inbox_rules() or "(Aucune règle personnalisée)"

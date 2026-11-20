@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
+import math
 import os
 import sqlite3
 import subprocess
+import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -77,6 +82,8 @@ class AgyDaemonSyncService:
         enabled: bool = True,
         idle_wal_grace_sec: int = 15,
         systemctl_runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
+        stale_running_grace_sec: int = 720,
+        alfred_root: Path | None = None,
     ) -> None:
         """Initialize the idle-safe Antigravity daemon synchronization service.
 
@@ -87,7 +94,10 @@ class AgyDaemonSyncService:
             enabled: Whether automatic daemon reconciliation is enabled.
             idle_wal_grace_sec: Minimum quiet window in seconds on foreign .db-wal files.
             systemctl_runner: Optional subprocess override for deterministic unit testing.
+            stale_running_grace_sec: Grace window before ignoring orphaned RUNNING rows on disk.
+            alfred_root: Optional ALFRED_ROOT_DIR path used when spawning deferred workers.
         """
+        self._state_dir = state_dir
         self._repo = JsonStateRepository(
             state_dir / "agy_daemon_sync_pending.json",
             DaemonSyncPendingState,
@@ -97,6 +107,28 @@ class AgyDaemonSyncService:
         self._enabled = enabled
         self._wal_grace_sec = max(0, int(idle_wal_grace_sec))
         self._systemctl_runner = systemctl_runner
+        self._stale_running_grace_sec = max(0, int(stale_running_grace_sec))
+        self._alfred_root = alfred_root
+
+    def _load_pending_safe(self) -> DaemonSyncPendingState:
+        """Load DaemonSyncPendingState safely, resetting corrupt JSON files cleanly."""
+        try:
+            return self._repo.load()
+        except (OSError, ValueError):
+            default_state = DaemonSyncPendingState()
+            with contextlib.suppress(OSError):
+                self._repo.save(default_state)
+            return default_state
+
+    def _update_pending_safe(
+        self, mutator: Callable[[DaemonSyncPendingState], DaemonSyncPendingState]
+    ) -> None:
+        """Run an atomic repo update, recovering gracefully if the pending JSON is corrupt."""
+        try:
+            self._repo.update(mutator)
+        except (OSError, ValueError):
+            self._repo.save(DaemonSyncPendingState())
+            self._repo.update(mutator)
 
     def load_state(self) -> DaemonSyncPendingState:
         """Load the current persisted DaemonSyncPendingState from disk.
@@ -104,7 +136,7 @@ class AgyDaemonSyncService:
         Returns:
             Validated DaemonSyncPendingState snapshot.
         """
-        return self._repo.load()
+        return self._load_pending_safe()
 
     def mark_dirty(self, conversation_id: str, reason: str = "cli_mutation") -> bool:
         """Record a real CLI-created or newly archived conversation ID for daemon sync.
@@ -120,7 +152,7 @@ class AgyDaemonSyncService:
             return False
         cid = conversation_id.strip()
         stamp = utc_now_iso()
-        self._repo.update(
+        self._update_pending_safe(
             lambda cur: cur.model_copy(
                 update={
                     "pending": True,
@@ -154,6 +186,25 @@ class AgyDaemonSyncService:
             return (False, f"Recent .db-wal write within {self._wal_grace_sec}s: {wal_id}")
         return (True, "idle")
 
+    @contextlib.contextmanager
+    def _acquire_deferred_lock(self) -> Iterator[bool]:
+        """Acquire non-blocking exclusive flock on agy_deferred_sync.lock."""
+        lock_path = self._state_dir / "agy_deferred_sync.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+", encoding="utf-8")
+        acquired = False
+        try:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            except BlockingIOError:
+                acquired = False
+            yield acquired
+        finally:
+            if acquired:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
+
     def sync_if_needed(
         self,
         force: bool = False,
@@ -168,12 +219,26 @@ class AgyDaemonSyncService:
         Returns:
             DaemonSyncResult describing the reconciliation action taken.
         """
+        with self._acquire_deferred_lock() as acquired:
+            if not acquired:
+                return DaemonSyncResult(
+                    status=DaemonSyncStatus.DEFERRED_ACTIVE_TURN,
+                    details="Deferred daemon sync worker already holds agy_deferred_sync.lock.",
+                )
+            return self._sync_if_needed_unlocked(force=force, runner_override=runner_override)
+
+    def _sync_if_needed_unlocked(
+        self,
+        force: bool = False,
+        runner_override: SystemctlRunner | None = None,
+    ) -> DaemonSyncResult:
+        """Execute daemon reconciliation assuming agy_deferred_sync.lock is held."""
         if not self._enabled and not force:
             return DaemonSyncResult(
                 status=DaemonSyncStatus.DISABLED,
                 details="antigravity.sync_daemon_on_changes is disabled.",
             )
-        current = self._repo.load()
+        current = self._load_pending_safe()
         if not current.pending and not force:
             return DaemonSyncResult(
                 status=DaemonSyncStatus.NO_PENDING_CHANGES,
@@ -190,21 +255,108 @@ class AgyDaemonSyncService:
                 status=DaemonSyncStatus.SKIPPED_DAEMON_INACTIVE,
                 details=f"{self._service_name} is not active.",
             )
-        pending_set = set(current.conversation_ids)
-        idle, reason = self.is_daemon_idle(exclude_ids=pending_set)
+        idle, reason = self.is_daemon_idle(exclude_ids=set(current.conversation_ids))
         if not idle:
-            return DaemonSyncResult(
-                status=DaemonSyncStatus.DEFERRED_ACTIVE_TURN,
-                details=reason,
-            )
+            return DaemonSyncResult(status=DaemonSyncStatus.DEFERRED_ACTIVE_TURN, details=reason)
         return self._restart_and_clear(list(current.conversation_ids), runner)
+
+    def wait_until_idle_and_sync(
+        self,
+        timeout_sec: float = 90.0,
+        poll_interval_sec: float = 2.0,
+        force: bool = False,
+        sleep_fn: Callable[[float], None] = time.sleep,
+    ) -> DaemonSyncResult:
+        """Poll until active Antigravity turns become idle (up to timeout_sec) and sync daemon.
+
+        Args:
+            timeout_sec: Maximum wait duration in seconds before returning deferred status.
+            poll_interval_sec: Sleep interval in seconds between idle checks.
+            force: When True, reconcile even when pending flag is False.
+            sleep_fn: Injectable sleep function for deterministic testing.
+
+        Returns:
+            Final DaemonSyncResult from sync_if_needed() or DEFERRED_ACTIVE_TURN if flock held.
+        """
+        if not math.isfinite(timeout_sec) or timeout_sec < 0:
+            raise ValueError(f"timeout_sec must be finite and >= 0, got {timeout_sec}.")
+        if not math.isfinite(poll_interval_sec) or poll_interval_sec <= 0:
+            raise ValueError(f"poll_interval_sec must be finite and > 0, got {poll_interval_sec}.")
+        with self._acquire_deferred_lock() as acquired:
+            if not acquired:
+                return DaemonSyncResult(
+                    status=DaemonSyncStatus.DEFERRED_ACTIVE_TURN,
+                    details="Deferred daemon sync worker already holds agy_deferred_sync.lock.",
+                )
+            deadline = time.monotonic() + float(timeout_sec)
+            interval = float(poll_interval_sec)
+            while True:
+                res = self._sync_if_needed_unlocked(force=force)
+                if res.status != DaemonSyncStatus.DEFERRED_ACTIVE_TURN:
+                    return res
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return res
+                sleep_fn(min(interval, remaining))
+
+    def spawn_deferred_sync_worker(
+        self,
+        alfred_root: Path | None = None,
+        timeout_sec: float = 90.0,
+        poll_interval_sec: float = 2.0,
+        popen_fn: Callable[..., Any] | None = None,
+    ) -> bool:
+        """Spawn a detached background worker running 'sync-agy-ui --wait-idle' when deferred.
+
+        Args:
+            alfred_root: Optional ALFRED_ROOT_DIR override locating .venv/bin/alfred.
+            timeout_sec: Maximum wait timeout passed to the worker CLI.
+            poll_interval_sec: Poll interval passed to the worker CLI.
+            popen_fn: Optional subprocess.Popen replacement for deterministic unit testing.
+
+        Returns:
+            True when the detached worker was spawned, False in test sandboxes or on OSError.
+        """
+        default_host_dir = (Path.home() / ".gemini" / "antigravity-cli").resolve()
+        in_sandbox = bool(os.environ.get("PYTEST_CURRENT_TEST")) or (
+            self._agy_data_dir.resolve() != default_host_dir
+        )
+        if popen_fn is None and in_sandbox:
+            return False
+        root = (
+            alfred_root
+            or self._alfred_root
+            or Path(os.environ.get("ALFRED_ROOT_DIR", "/root/Alfred")).resolve()
+        ).resolve()
+        alfred_bin = root / ".venv" / "bin" / "alfred"
+        prefix = [str(alfred_bin)] if alfred_bin.exists() else [sys.executable, "-m", "alfred.main"]
+        cmd = [
+            *prefix, "sync-agy-ui", "--wait-idle",
+            "--timeout", str(timeout_sec), "--poll-interval", str(poll_interval_sec),
+        ]
+        env = dict(os.environ)
+        env["ALFRED_ROOT_DIR"] = str(root)
+        core_dir = str((root / "core").resolve())
+        pp_parts = [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p]
+        if core_dir not in pp_parts:
+            pp_parts.insert(0, core_dir)
+        env["PYTHONPATH"] = os.pathsep.join(pp_parts)
+        try:
+            launcher = popen_fn or subprocess.Popen
+            launcher(
+                cmd, cwd=str(root), env=env, stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+            )
+            return True
+        except OSError:
+            return False
 
     def _restart_and_clear(
         self,
         target_ids: list[str],
         runner: SystemctlRunner | None,
     ) -> DaemonSyncResult:
-        """Restart the systemd user daemon, confirm active state, and clear pending flag."""
+        """Restart the systemd user daemon, confirm active state, and clear synced IDs."""
         restart_res = self._run_systemctl(
             ["systemctl", "--user", "restart", self._service_name], runner
         )
@@ -218,21 +370,16 @@ class AgyDaemonSyncService:
             )
             return DaemonSyncResult(status=DaemonSyncStatus.RESTART_FAILED, details=err)
         stamp = utc_now_iso()
-        self._repo.update(
-            lambda cur: cur.model_copy(
-                update={
-                    "pending": False,
-                    "conversation_ids": [
-                        cid for cid in cur.conversation_ids if cid not in set(target_ids)
-                    ],
-                    "last_synced_at": stamp,
-                }
+        target_set = set(target_ids)
+
+        def _clear(cur: DaemonSyncPendingState) -> DaemonSyncPendingState:
+            """Remove synced target_ids while preserving newly interleaved dirty IDs."""
+            rem = [cid for cid in cur.conversation_ids if cid not in target_set]
+            return cur.model_copy(
+                update={"pending": bool(rem), "conversation_ids": rem, "last_synced_at": stamp}
             )
-            if set(cur.conversation_ids) != set(target_ids)
-            else cur.model_copy(
-                update={"pending": False, "conversation_ids": [], "last_synced_at": stamp}
-            )
-        )
+
+        self._update_pending_safe(_clear)
         return DaemonSyncResult(
             status=DaemonSyncStatus.SYNCED,
             synced_ids=target_ids,
@@ -259,14 +406,10 @@ class AgyDaemonSyncService:
         if not summary_db.is_file():
             return None
         try:
-            conn = sqlite3.connect(summary_db, timeout=3.0)
+            conn = sqlite3.connect(f"file:{summary_db}?mode=ro", uri=True, timeout=0.3)
             try:
-                cols = {
-                    str(row[1])
-                    for row in conn.execute(
-                        "PRAGMA table_info(conversation_summaries)"
-                    ).fetchall()
-                }
+                pragma = "PRAGMA table_info(conversation_summaries)"
+                cols = {str(row[1]) for row in conn.execute(pragma).fetchall()}
                 if "status" not in cols and "not_fully_idle" not in cols:
                     return None
                 clauses: list[str] = []
@@ -274,20 +417,47 @@ class AgyDaemonSyncService:
                     clauses.append("not_fully_idle != 0")
                 if "status" in cols:
                     clauses.append("status = 'CASCADE_RUN_STATUS_RUNNING'")
-                query = (
+                sql = (
                     "SELECT conversation_id FROM conversation_summaries "
                     f"WHERE {' OR '.join(clauses)}"
                 )
-                rows = conn.execute(query).fetchall()
+                rows = conn.execute(sql).fetchall()
             finally:
                 conn.close()
+        except sqlite3.OperationalError:
+            return "__sqlite_busy__"
         except sqlite3.Error:
             return None
         for (cid,) in rows:
             s_cid = str(cid or "").strip()
-            if s_cid and s_cid not in excluded:
+            if s_cid and s_cid not in excluded and not self._is_stale_running_conversation(s_cid):
                 return s_cid
         return None
+
+    def _is_stale_running_conversation(self, conv_id: str) -> bool:
+        """Return True only when valid artifacts exist and all mtimes predate stale grace."""
+        if self._stale_running_grace_sec <= 0 or not is_real_agy_conversation_id(conv_id):
+            return False
+        mtimes: list[float] = []
+        for cand in (
+            self._agy_data_dir / "conversations" / f"{conv_id}.db",
+            self._agy_data_dir / "conversations" / f"{conv_id}.db-wal",
+        ):
+            with contextlib.suppress(OSError):
+                if cand.exists():
+                    mtimes.append(cand.stat().st_mtime)
+        brain_dir = self._agy_data_dir / "brain" / conv_id
+        with contextlib.suppress(OSError):
+            if brain_dir.exists():
+                mtimes.append(brain_dir.stat().st_mtime)
+                if brain_dir.is_dir():
+                    for child in brain_dir.rglob("*"):
+                        with contextlib.suppress(OSError):
+                            mtimes.append(child.stat().st_mtime)
+        if not mtimes:
+            return False
+        cutoff = time.time() - float(self._stale_running_grace_sec)
+        return all(mt < cutoff for mt in mtimes)
 
     def _find_recent_foreign_wal(self, excluded: set[str]) -> str | None:
         """Return conversation ID if a non-excluded .db-wal file was modified within grace."""
@@ -318,12 +488,8 @@ class AgyDaemonSyncService:
             if runner is not None:
                 return runner(cmd)
             return subprocess.run(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=30,
+                cmd, stdin=subprocess.DEVNULL, capture_output=True,
+                text=True, check=False, timeout=30,
             )
         except (OSError, subprocess.SubprocessError):
             return None

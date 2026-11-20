@@ -350,6 +350,10 @@ class GmailService:
             body={"addLabelIds": ["STARRED"]},
         ).execute()
 
+    def get_raw_client(self) -> Any:
+        """Return the underlying Gmail v1 client, initializing it lazily when needed."""
+        return self._require_client()
+
     def _require_client(self) -> Any:
         """Return injected Gmail client or build one lazily via GoogleOAuthService."""
         if self._gmail_client is not None:

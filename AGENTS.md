@@ -31,10 +31,10 @@
    - **STOP BLOQUANT** : aucune mutation Gmail, Calendar, Tasks, Drive ou code n'est exécutée avant clic utilisateur sur **`Proceed`**.
 3. **Étape 3 — Exécution Post-Validation Asymétrique** :
    - **Workspaces opérationnels (`onboard`, `life`, `inbox`, `calendar`, `tasks`)** : exécution rapide par un sous-agent léger **`Hydrogen`** unique (**`plan-executor`**) appelant exclusivement `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`. Par défaut, tout fil e-mail traité en interactif est archivé dans Gmail (`INBOX` retiré, sauf `--keep-in-inbox`).
-   - **Workspace d'ingénierie (`alfred-evolve`)** : exécution obligatoire dans un `git worktree` isolé (`worktrees/<proposal_id>`) via la **triade TDD à contextes séparés** :
-     1. **`tdd-red`** : rédige uniquement les tests en échec sous `core/tests/` (zéro accès écriture à `core/alfred/`).
+   - **Workspace d'ingénierie (`alfred-evolve`)** : exécution obligatoire dans un `git worktree` isolé (`worktrees/<proposal_id>`) via la **triade TDD à contextes séparés** et les **3 piliers qualité obligatoires** (3 niveaux de tests : **unitaires**, **fonctionnels** et **E2E / bout en bout** ; analyse et tests de **non-régression** ; **adversarial testing** coordonné par **`swarm`**) :
+     1. **`tdd-red`** : rédige uniquement les tests en échec sous `core/tests/` couvrant les 3 niveaux (unitaires, fonctionnels, E2E) et la non-régression (zéro accès écriture à `core/alfred/`).
      2. **`tdd-green`** : implémente uniquement le code de production (interdiction absolue d'éditer, affaiblir ou ignorer `core/tests/`).
-     3. **`tdd-verifier`** : auditeur `Read-Only` indépendant validant les 5 gardiens déterministes (`check_code_architecture.py`, `check-upstream-leak.sh`, `ruff check`, `mypy --strict`, `pytest --cov=core --cov-fail-under=90`) avant ouverture de la Pull Request Mono-Repo sur `alfred-core`.
+     3. **`tdd-verifier`** : auditeur `Read-Only` indépendant validant les 5 gardiens déterministes (`check_code_architecture.py`, `check-upstream-leak.sh`, `ruff check`, `mypy --strict`, `pytest --cov=core --cov-fail-under=90`) et la couverture adversariale `swarm` avant ouverture de la Pull Request Mono-Repo sur `alfred-core`.
 
 ---
 

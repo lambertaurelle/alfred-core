@@ -11,6 +11,7 @@ from alfred.controllers.calendar_cli import print_skipped_disabled
 from alfred.domain.feature_models import FeatureFlagsConfig, IdentityConfig, McpServerConfig
 from alfred.domain.models import AlfredSettings
 from alfred.domain.security_models import DelegationMode, SignaturePlacementRect
+from alfred.services.agy_daemon_sync import DaemonSyncStatus
 from alfred.services.agy_session_manager import AgySessionManager
 from alfred.services.delegation_service import DelegationService
 from alfred.services.drive_service import DriveService
@@ -190,8 +191,12 @@ def _exec_delegate(
         source_workspace=str(args.source_workspace),
         source_email=src_email, source_message_id=src_msg_id,
     )
-    if record.status != "SKIPPED_DISABLED" and agy_manager is not None:
-        agy_manager.daemon_sync.sync_if_needed()
+    if (
+        record.status != "SKIPPED_DISABLED"
+        and agy_manager is not None
+        and agy_manager.daemon_sync.sync_if_needed().status == DaemonSyncStatus.DEFERRED_ACTIVE_TURN
+    ):
+        agy_manager.daemon_sync.spawn_deferred_sync_worker()
     return record.model_dump(mode="json")
 
 

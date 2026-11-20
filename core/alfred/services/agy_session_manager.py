@@ -77,6 +77,7 @@ class AgySessionManager:
             enabled=self._settings.agy_sync_daemon_on_changes,
             idle_wal_grace_sec=self._settings.agy_idle_wal_grace_sec,
             systemctl_runner=systemctl_runner,
+            alfred_root=self._paths.root_dir,
         )
         self._plans_dir = self._paths.state_dir / "plans"
         self._plans_dir.mkdir(parents=True, exist_ok=True)
@@ -337,18 +338,13 @@ class AgySessionManager:
         atomic_write_text(plan_file, implementation_plan_md)
         self._state_store.conversations.update(
             lambda cur: (
-                cur.model_copy(
-                    update={
-                        "sessions": {
-                            **cur.sessions,
-                            session_id: cur.sessions[session_id].model_copy(
-                                update={"plan_path": str(plan_file)}
-                            ),
-                        }
-                    }
-                )
-                if session_id in cur.sessions
-                else cur
+                cur.model_copy(update={"sessions": {
+                    **cur.sessions,
+                    session_id: cur.sessions[session_id].model_copy(
+                        update={"plan_path": str(plan_file)}
+                    ),
+                }})
+                if session_id in cur.sessions else cur
             )
         )
         return plan_file
@@ -369,14 +365,10 @@ class AgySessionManager:
         ts = utc_now_iso()
         clean_title = sanitize_annotation_title(title or f"[SILENT] {reason}")
         self._archive_store.archive_conversation(session_id, title=clean_title, archived_at_iso=ts)
-        archived = state.sessions[session_id].model_copy(
-            update={
-                "status": "ARCHIVED",
-                "title": clean_title,
-                "outcome": f"SILENT_NO_ACTION: {reason}",
-                "archived_at": ts,
-            }
-        )
+        archived = state.sessions[session_id].model_copy(update={
+            "status": "ARCHIVED", "title": clean_title,
+            "outcome": f"SILENT_NO_ACTION: {reason}", "archived_at": ts,
+        })
         self._state_store.conversations.update(
             lambda cur: cur.model_copy(update={"sessions": {**cur.sessions, session_id: archived}})
         )
@@ -393,8 +385,8 @@ class AgySessionManager:
             if rec.title
         }
         repaired = self._archive_store.repair_blank_or_boilerplate_titles(known)
-        if repaired:
-            self._daemon_sync.mark_dirty(repaired[0], reason="repair_titles")
+        for cid in repaired:
+            self._daemon_sync.mark_dirty(cid, reason="repair_titles")
         return repaired
 
     def locate_agy_binary(self) -> str | None:
@@ -489,8 +481,16 @@ class AgySessionManager:
             "--agent", "plan-synthesizer", "--mode", "plan",
             "--output-format", "json", "-p", prompt,
         ]
-        completed = self._run_agy_command(cmd, cwd=self.resolve_workspace_cwd(workspace))
-        if completed is None or completed.returncode != 0:
-            return None
-        parsed = parse_json_object(completed.stdout)
-        return extract_conversation_id(parsed) if parsed is not None else None
+        model_id, _ = self._settings.models.resolve_for_workspace(workspace)
+        timeout_sec = 600 if "orchestrator" in model_id.lower() else 180
+        before_ids = self._archive_store.snapshot_summary_conversation_ids()
+        completed = self._run_agy_command(
+            cmd, cwd=self.resolve_workspace_cwd(workspace), timeout=timeout_sec
+        )
+        live_id: str | None = None
+        if completed is not None and completed.returncode == 0:
+            parsed = parse_json_object(completed.stdout)
+            live_id = extract_conversation_id(parsed) if parsed is not None else None
+        if live_id is None and before_ids is not None:
+            self._archive_store.purge_incomplete_stubs(exclude_ids=before_ids)
+        return live_id

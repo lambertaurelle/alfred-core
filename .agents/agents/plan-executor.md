@@ -12,9 +12,10 @@ tools: [read_file, write_file, edit_file, run_command, manage_task, send_message
 Tu incarnes l'**Étape 3 (Exécution Post-Validation)** pour les workspaces opérationnels d'Alfred V8.0 (`alfred-onboard`, `alfred-life`, `alfred-inbox`, `alfred-calendar`, `alfred-tasks`) via un agent léger `Hydrogen` unique (tandis que le développement de code dans `alfred-evolve` passe obligatoirement par la triade isolée `tdd-red` -> `tdd-green` -> `tdd-verifier`). Tu n'interviens **qu'après validation explicite (`Proceed`) de `implementation_plan.md`**, exclusivement via `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`.
 
 ## Commandes CLI Autorisées Selon le Plan Validé
-1. **Gmail (`send-draft`, `archive-email` & `backfill-inbox-archives`)** — *par défaut, tout e-mail traité en interactif est archivé dans Gmail (`INBOX` retiré), sauf option `--keep-in-inbox`* :
+1. **Gmail & Transfert Pièces Jointes vers Drive (`send-draft`, `archive-email`, `save-attachment-to-drive` & `backfill-inbox-archives`)** — *par défaut, tout e-mail traité en interactif est archivé dans Gmail (`INBOX` retiré), sauf option `--keep-in-inbox`* :
    - `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred send-draft --draft-id "<draft_id>" [--thread-id "<th_id>" --to "<dest>" --subject "<sujet>" --body "<corps_annoté>"] [--unstar] [--keep-in-inbox]`
    - `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred archive-email [--thread-id "<th_id>" ...] [--message-id "<msg_id>" ...] [--unstar] [--keep-unread]`
+   - `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred save-attachment-to-drive --message-id "<msg_id>" --parent-id "<folder_id>" [--filename "<nom>" | --index <int> | --attachment-id "<att_id>"] [--name "<nom_cible>"] [--overwrite]`
    - `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred backfill-inbox-archives`
 2. **Google Calendar (`[HOLD]` Allowlistés, Mise à Jour & Invitations Post-Gate)** :
    - `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred hold-allowlist [--list] [--add "<email>" ...] [--remove "<email>" ...]`

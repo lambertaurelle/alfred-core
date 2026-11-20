@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from alfred.domain.calendar_models import CalendarSlotProposal
 from alfred.domain.models import AlfredSettings, CalendarEventItem
 from alfred.repositories.state_store import StateStore
+from alfred.services.agy_daemon_sync import DaemonSyncStatus
 from alfred.services.agy_session_manager import AgySessionManager
 from alfred.services.gmail_service import GmailService
 
@@ -371,7 +372,8 @@ def _maybe_archive_calendar_trace(
             workspace="alfred-calendar", title=title,
             trace_markdown=trace_md, source_message_id=source_id, spawn_live=True,
         )
-        agy_manager.daemon_sync.sync_if_needed()
+        if agy_manager.daemon_sync.sync_if_needed().status == DaemonSyncStatus.DEFERRED_ACTIVE_TURN:
+            agy_manager.daemon_sync.spawn_deferred_sync_worker()
 
 
 def _try_archive_source_thread(

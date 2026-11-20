@@ -11,11 +11,14 @@ from pathlib import Path
 
 PROTECTED_SECRET_TOKENS: tuple[str, ...] = (
     "signature_vault",
+    "client_secret",
     "client_secrets.json",
+    "client_secret.json",
     "token.json",
     "mcp_oauth.json",
     "oauth_pending.json",
     "leak_terms.txt",
+    "instance/secrets",
 )
 
 WRITE_EDIT_TOOLS: frozenset[str] = frozenset(
@@ -61,8 +64,14 @@ INBOX_ALLOWED_SUBCOMMANDS: frozenset[str] = frozenset(
         "backfill-inbox-archives",
         "search-gmail",
         "read-thread",
+        "list-attachments",
+        "read-attachment",
+        "save-attachment-to-drive",
         "search-drive",
+        "read-drive",
         "drive-read",
+        "scan-knowledge",
+        "load-knowledge",
         "list-knowledge",
         "get-knowledge",
         "upsert-knowledge",
@@ -75,6 +84,7 @@ INBOX_ALLOWED_SUBCOMMANDS: frozenset[str] = frozenset(
         "list-calendars",
         "delegate",
         "search-contacts",
+        "list-tasklists",
         "list-tasks",
         "create-task",
     }
@@ -117,14 +127,45 @@ def _extract_target_paths(tool_input: Mapping[str, object]) -> list[str]:
     return paths
 
 
+def _extract_command_tokens(cmd: str) -> tuple[list[str], str]:
+    """Tokenize cmd with shlex (collapsing quote-splits) and return tokens + normalized text."""
+    try:
+        tokens = shlex.split(cmd, posix=True)
+        return tokens, " ".join(tokens).lower()
+    except ValueError:
+        collapsed = cmd.replace("''", "").replace('""', "").lower()
+        return [], collapsed
+
+
+def _extract_flag_values(args: list[str], flag: str) -> list[str]:
+    """Extract all CLI values passed for --flag val or --flag=val."""
+    values: list[str] = []
+    idx = 0
+    while idx < len(args):
+        tok = args[idx]
+        if tok == flag and idx + 1 < len(args):
+            values.append(args[idx + 1])
+            idx += 2
+            continue
+        if tok.startswith(flag + "="):
+            values.append(tok[len(flag) + 1 :])
+        idx += 1
+    return values
+
+
 def _find_protected_secret_hit(tool_name: str, tool_input: Mapping[str, object]) -> str | None:
     """Return matched secret token if tool_input touches vault or OAuth secret files."""
-    if tool_name.lower() in WRITE_EDIT_TOOLS:
+    lower_tool = tool_name.lower()
+    if lower_tool in WRITE_EDIT_TOOLS:
         targets = _extract_target_paths(tool_input)
         corpus = "\n".join(targets) if targets else json.dumps(dict(tool_input))
+    elif lower_tool in COMMAND_TOOLS:
+        cmd = _extract_command_line(tool_input)
+        _, norm_cmd = _extract_command_tokens(cmd)
+        corpus = f"{json.dumps(dict(tool_input))}\n{norm_cmd}"
     else:
         corpus = json.dumps(dict(tool_input))
-    lowered = corpus.lower()
+    lowered = corpus.lower().replace("\\", "/")
     for token in PROTECTED_SECRET_TOKENS:
         if token in lowered:
             return token
@@ -132,50 +173,74 @@ def _find_protected_secret_hit(tool_name: str, tool_input: Mapping[str, object])
 
 
 def _is_allowed_artifact_path(raw_path: str) -> bool:
-    """Return True only when raw_path resolves inside an Antigravity brain artifact dir."""
-    if not raw_path:
+    """Return True only when raw_path resolves inside the Antigravity brain artifact dir."""
+    if not raw_path or "\x00" in raw_path:
         return False
     try:
-        resolved = Path(raw_path).resolve().as_posix()
-    except OSError:
+        allowed_root = (Path.home() / ".gemini" / "antigravity-cli" / "brain").resolve()
+        resolved = Path(raw_path).resolve()
+    except (OSError, ValueError):
         return False
-    return "/.gemini/" in resolved and "/brain/" in resolved
+    return str(resolved).startswith(str(allowed_root) + "/")
 
 
 def _has_forbidden_shell_syntax(cmd: str) -> bool:
-    """Detect shell chaining, command substitution, control newlines, or redirections."""
-    if any(sub in cmd for sub in ("`", "$(", "\n", "\r", "&&", "||", ";", "|")):
+    """Detect shell chaining, ANSI-C/process substitutions, newlines, or redirections."""
+    forbidden_subs = ("`", "$(", "$'", "<(", ">(", "\n", "\r", "&&", "||", ";", "|")
+    if any(sub in cmd for sub in forbidden_subs):
         return True
     in_single = False
     in_double = False
+    in_ansi = False
     escaped = False
-    for ch in cmd:
+    idx = 0
+    while idx < len(cmd):
+        ch = cmd[idx]
         if escaped:
             escaped = False
-            continue
-        if ch == "\\" and not in_single:
+        elif in_ansi:
+            if ch == "\\":
+                escaped = True
+            elif ch == "'":
+                in_ansi = False
+        elif ch == "\\" and not in_single:
             escaped = True
-            continue
-        if ch == "'" and not in_double:
+        elif not in_single and not in_double and cmd[idx : idx + 2] == "$'":
+            in_ansi = True
+            idx += 1
+        elif ch == "'" and not in_double:
             in_single = not in_single
         elif ch == '"' and not in_single:
             in_double = not in_double
         elif not in_single and not in_double and ch in {"&", ">", "<"}:
             return True
-    return in_single or in_double
+        idx += 1
+    return in_single or in_double or in_ansi
 
 
 def _is_allowed_inbox_command(cmd: str) -> bool:
-    """Validate that cmd is a single whitelisted alfred CLI subcommand without chaining."""
+    """Validate that cmd is a single whitelisted alfred CLI subcommand without policy bypass."""
     if not cmd or _has_forbidden_shell_syntax(cmd):
         return False
-    try:
-        tokens = shlex.split(cmd, posix=True)
-    except ValueError:
+    tokens, _ = _extract_command_tokens(cmd)
+    if len(tokens) < 2 or tokens[0] not in ALLOWED_ALFRED_BINARIES:
         return False
-    if len(tokens) < 2:
+    subcmd, rest = tokens[1], tokens[2:]
+    if subcmd not in INBOX_ALLOWED_SUBCOMMANDS:
         return False
-    return tokens[0] in ALLOWED_ALFRED_BINARIES and tokens[1] in INBOX_ALLOWED_SUBCOMMANDS
+    if subcmd == "delegate":
+        targets = [v.strip().lower() for v in _extract_flag_values(rest, "--to")]
+        if any(t in {"evolve", "alfred-evolve"} for t in targets):
+            ws = [v.strip().lower() for v in _extract_flag_values(rest, "--source-workspace")]
+            msg_ids = [v.strip() for v in _extract_flag_values(rest, "--source-message-id")]
+            if not ws or ws[-1] != "alfred-inbox" or not msg_ids or not msg_ids[-1]:
+                return False
+    if subcmd == "upsert-knowledge":
+        for body_file in _extract_flag_values(rest, "--body-file"):
+            norm = body_file.replace("\\", "/").lower()
+            if "settings.yaml" in norm or "instance/secrets" in norm:
+                return False
+    return True
 
 
 def evaluate_pre_tool_event(payload: Mapping[str, object]) -> dict[str, str]:
@@ -202,7 +267,9 @@ def evaluate_pre_tool_event(payload: Mapping[str, object]) -> dict[str, str]:
     lower_tool = tool_name.lower()
     if lower_tool in COMMAND_TOOLS:
         cmd = _extract_command_line(tool_input)
-        if "apply-signature" in cmd:
+        tokens, norm_cmd = _extract_command_tokens(cmd)
+        lower_tokens = [t.lower() for t in tokens]
+        if "apply-signature" in lower_tokens or "apply-signature" in norm_cmd:
             if _is_inbox_or_mcp_cwd(cwd):
                 return {
                     "decision": "deny",
@@ -211,6 +278,14 @@ def evaluate_pre_tool_event(payload: Mapping[str, object]) -> dict[str, str]:
             return {
                 "decision": "force_ask",
                 "reason": "Explicit human approval required before applying handwritten signature.",
+            }
+        if (
+            ("prepare-signature" in lower_tokens or "prepare-signature" in norm_cmd)
+            and _is_inbox_or_mcp_cwd(cwd)
+        ):
+            return {
+                "decision": "deny",
+                "reason": "prepare-signature is forbidden inside alfred-inbox and mcp.",
             }
 
     if _is_inbox_cwd(cwd):

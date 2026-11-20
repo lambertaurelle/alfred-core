@@ -13,7 +13,7 @@ Tu incarnes la **Phase 3 (Verify)** de la triade TDD isolée d'`alfred-evolve`. 
 
 ## Les 5 Gardiens Déterministes Bloquants
 Exécute systématiquement dans le `git worktree` cible :
-1. **Intégrité des Tests** : `git status --short` et `git diff --name-only` pour vérifier qu'aucun test existant n'a été supprimé, affaibli (`pytest.mark.skip`, `xfail`) ou contourné, et qu'aucun fichier privé `instance/data/` ou `instance/secrets/` n'est suivi.
+1. **Intégrité & Complétude des Tests** : `git status --short` et `git diff --name-only` pour vérifier qu'aucun test existant n'a été supprimé, affaibli (`pytest.mark.skip`, `xfail`) ou contourné, que les **3 niveaux (unitaires, fonctionnels, E2E / bout en bout)**, la **non-régression** et l'**adversarial testing `swarm`** sont bien couverts, et qu'aucun fichier privé `instance/data/` ou `instance/secrets/` n'est suivi.
 2. **Clean Architecture AST** : `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/python core/scripts/check_code_architecture.py --repo-root <worktree>` (`<= 500L/fichier`, `<= 60L/méthode`, 4 couches, docstrings Google).
 3. **Zéro Fuite Amont** : `bash core/scripts/check-upstream-leak.sh <worktree>` (aucun e-mail personnel, IP LAN privée ou terme sensible).
 4. **Qualité Statique & Typage Strict** : `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/ruff check core` et `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/mypy --strict core/alfred core/scripts core/tests`.

@@ -10,10 +10,23 @@ from email.utils import parseaddr
 from alfred.domain.models import EmailMessage
 from alfred.domain.security_models import SanitizedEmailResult
 
+_HIDDEN_TAGS = (
+    r"div|span|p|a|font|section|article|td|tr|table|"
+    r"b|strong|em|i|u|h[1-6]|li|label"
+)
+_CSS_COLON = r"(?:\s|&#0*58;|&#x0*3a;)*:\s*"
+_HIDDEN_ATTR_EXPR = (
+    rf"(?:display{_CSS_COLON}none"
+    rf"|visibility{_CSS_COLON}hidden"
+    rf"|opacity{_CSS_COLON}0(?:\.0+)?(?=\s*(?:;|\"|'|>|$))"
+    rf"|font-size{_CSS_COLON}0(?:\.0+)?(?:px|pt|em|rem|%)?(?=\s*(?:;|\"|'|>|$))"
+    r"|(?:^|[\s;])hidden(?=\s|=|>|;))"
+)
+HIDDEN_OPEN_TAG_RE = re.compile(
+    rf"(?is)<(?P<tag>{_HIDDEN_TAGS})\b[^>]*{_HIDDEN_ATTR_EXPR}[^>]*>"
+)
 HIDDEN_TAG_RE = re.compile(
-    r"(?is)<(?P<tag>div|span|p|a|font|section|article|td|tr|table)\b[^>]*"
-    r"(?:display\s*:\s*none|visibility\s*:\s*hidden|opacity\s*:\s*0(?:\D|$)|"
-    r"font-size\s*:\s*0(?:\D|$)|hidden(?:\s|=|>))[^>]*>.*?</(?P=tag)>"
+    rf"(?is)<(?P<tag>{_HIDDEN_TAGS})\b[^>]*{_HIDDEN_ATTR_EXPR}[^>]*>.*?</(?P=tag)>"
 )
 HTML_COMMENT_RE = re.compile(r"(?s)<!--.*?-->")
 SCRIPT_STYLE_RE = re.compile(r"(?is)<(script|style|head|noscript|iframe|object)\b[^>]*>.*?</\1>")
@@ -21,9 +34,15 @@ BLOCK_BREAK_RE = re.compile(r"(?i)<\s*(br|/p|/div|/li|/tr|/h[1-6])\b[^>]*>")
 ANY_TAG_RE = re.compile(r"<[^>]+>")
 INVISIBLE_UNICODE_RE = re.compile(
     "["
+    "\u00ad"
+    "\u034f"
+    "\u061c"
+    "\u180e"
     "\u200b-\u200f"
     "\u202a-\u202e"
     "\u2060-\u206f"
+    "\u3164"
+    "\ufe00-\ufe0f"
     "\ufeff"
     "\U000e0000-\U000e007f"
     "]+"
@@ -68,21 +87,50 @@ INJECTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
+def _strip_hidden_blocks(html_text: str) -> str:
+    """Remove hidden HTML elements cleanly including nested same-named child tags."""
+    out = html_text
+    while True:
+        match = HIDDEN_OPEN_TAG_RE.search(out)
+        if match is None:
+            break
+        tag = re.escape(match.group("tag"))
+        tag_re = re.compile(rf"(?is)<(?P<close>/)?{tag}\b[^>]*>")
+        depth = 1
+        end_pos = len(out)
+        for tok in tag_re.finditer(out, match.end()):
+            if tok.group("close"):
+                depth -= 1
+            elif not tok.group(0).rstrip().endswith("/>"):
+                depth += 1
+            if depth == 0:
+                end_pos = tok.end()
+                break
+        if depth > 0:
+            close_match = re.search(rf"(?is)</{tag}\s*>", out[match.end() :])
+            end_pos = match.end() + close_match.end() if close_match else match.end()
+        out = out[: match.start()] + " " + out[end_pos:]
+    return out
+
+
 class EmailSanitizer:
     """Strip hidden HTML/CSS/Unicode smuggling vectors and flag prompt-injection patterns."""
 
-    def sanitize(self, raw_html: str, plain_text: str) -> SanitizedEmailResult:
+    def sanitize(
+        self, raw_html: str, plain_text: str, max_chars: int = 12000
+    ) -> SanitizedEmailResult:
         """Produce clean visible email text and detect suspicious prompt-injection cues.
 
         Args:
             raw_html: Raw text/html MIME body when present on the incoming email.
             plain_text: Raw text/plain MIME body when present on the incoming email.
+            max_chars: Maximum length of clean_text retained in the result.
 
         Returns:
             SanitizedEmailResult containing clean_text and matched injection signals.
         """
         signals: list[str] = []
-        if raw_html and HIDDEN_TAG_RE.search(raw_html):
+        if raw_html and (HIDDEN_OPEN_TAG_RE.search(raw_html) or HIDDEN_TAG_RE.search(raw_html)):
             signals.append("hidden_css_element")
         if raw_html and HTML_COMMENT_RE.search(raw_html):
             signals.append("html_comment_stripped")
@@ -110,7 +158,7 @@ class EmailSanitizer:
             for sig in signals
         )
         return SanitizedEmailResult(
-            clean_text=cleaned[:12000],
+            clean_text=cleaned[:max_chars],
             suspicious_injection=suspicious,
             matched_signals=signals,
         )
@@ -119,11 +167,7 @@ class EmailSanitizer:
         """Remove comments, scripts, and hidden CSS nodes before extracting plain text."""
         without_comments = HTML_COMMENT_RE.sub(" ", raw_html)
         without_scripts = SCRIPT_STYLE_RE.sub(" ", without_comments)
-        prev = None
-        visible_html = without_scripts
-        while prev != visible_html:
-            prev = visible_html
-            visible_html = HIDDEN_TAG_RE.sub(" ", visible_html)
+        visible_html = _strip_hidden_blocks(without_scripts)
         spaced = BLOCK_BREAK_RE.sub("\n", visible_html)
         stripped = ANY_TAG_RE.sub(" ", spaced)
         return html.unescape(stripped).strip()
@@ -195,8 +239,24 @@ class InboxCapabilityFirewall:
             for key, val in msg.headers.items()
             if key.strip().lower() in {"authentication-results", "arc-authentication-results"}
         ]
-        auth_hdr = " ".join(auth_parts).lower()
-        return "spf=pass" in auth_hdr or "dkim=pass" in auth_hdr
+        auth_hdr = re.sub(r'"[^"]*"', " ", " ".join(auth_parts).lower())
+        fail_pat = r"\b(?:spf|dkim|dmarc)\s*=\s*(?:fail|softfail|temperror|permerror)\b"
+        if re.search(fail_pat, auth_hdr):
+            return False
+        if not re.search(r"\b(?:spf|dkim)\s*=\s*pass\b", auth_hdr):
+            return False
+        owner_domains = {
+            a.strip().lower().rsplit("@", 1)[1] for a in owner_addresses if "@" in a
+        }
+        for match in re.finditer(r"\bsmtp\.mailfrom\s*=\s*([^\s;]+)", auth_hdr):
+            dom = match.group(1).strip("<>\"'").rsplit("@", 1)[-1].lower()
+            if dom not in owner_domains:
+                return False
+        for match in re.finditer(r"\bheader\.d\s*=\s*([^\s;]+)", auth_hdr):
+            dom = match.group(1).strip("<>\"'").lower()
+            if dom not in owner_domains:
+                return False
+        return True
 
     def pin_draft_recipient(self, msg: EmailMessage) -> str:
         """Pin reply draft recipient to original Reply-To or From header to block exfiltration.
@@ -205,12 +265,16 @@ class InboxCapabilityFirewall:
             msg: Incoming EmailMessage being replied to.
 
         Returns:
-            Safe reply recipient header string.
+            Safe reply recipient header string without CR/LF header injection.
         """
         reply_to = next(
             (val.strip() for key, val in msg.headers.items() if key.strip().lower() == "reply-to"),
             "",
         )
-        if reply_to and "@" in parseaddr(reply_to)[1]:
-            return reply_to
-        return msg.sender.strip()
+        cleaned_rt = reply_to.replace("\x00", "").splitlines()[0].strip() if reply_to else ""
+        if cleaned_rt and "@" in parseaddr(cleaned_rt)[1]:
+            return cleaned_rt.replace("\r", "").replace("\n", "")
+        raw_sender = msg.sender.replace("\x00", "").strip()
+        if not raw_sender:
+            return ""
+        return raw_sender.splitlines()[0].replace("\r", "").replace("\n", "").strip()

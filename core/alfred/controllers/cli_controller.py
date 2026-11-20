@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import Any
 
 from alfred.controllers.app_factory import build_cli_controller
+from alfred.controllers.attachment_cli import (
+    ATTACHMENT_COMMANDS,
+    dispatch_attachment_command,
+    register_attachment_parsers,
+)
 from alfred.controllers.calendar_cli import (
     dispatch_calendar_command,
     print_skipped_disabled,
@@ -41,10 +46,12 @@ from alfred.controllers.tasks_cli import (
 )
 from alfred.domain.models import AlfredPaths, AlfredSettings, FrontmatterSchema
 from alfred.repositories.state_store import StateStore
+from alfred.services.agy_daemon_sync import DaemonSyncStatus
 from alfred.services.agy_session_manager import AgySessionManager
 from alfred.services.delegation_service import DelegationService
 from alfred.services.drive_service import DriveService
 from alfred.services.evolve_worktree_service import EvolveWorktreeService
+from alfred.services.gmail_drive_bridge_service import GmailDriveBridgeService
 from alfred.services.gmail_service import GmailService
 from alfred.services.google_auth import GoogleOAuthService
 from alfred.services.google_workspace_suite import GoogleWorkspaceSuiteService
@@ -99,6 +106,7 @@ class CliController:
         signature_service: SignatureVaultService | None = None,
         mcp_service: McpBridgeService | None = None,
         paths: AlfredPaths | None = None,
+        attachment_bridge: GmailDriveBridgeService | None = None,
     ) -> None:
         """Initialize the V8 CLI controller with injected domain services.
 
@@ -124,6 +132,7 @@ class CliController:
             signature_service: Optional SignatureVaultService for human-consented PDF signing.
             mcp_service: Optional McpBridgeService for OAuth 2.1 Gemini App bridge.
             paths: Optional resolved AlfredPaths layout.
+            attachment_bridge: Optional GmailDriveBridgeService for attachment CLI commands.
         """
         self._knowledge = knowledge_service
         self._drive = drive_service
@@ -146,6 +155,7 @@ class CliController:
         self._signature = signature_service
         self._mcp = mcp_service
         self._paths = paths
+        self._attachment_bridge = attachment_bridge
 
     def run(self, argv: list[str]) -> int:
         """Parse CLI arguments and execute the requested Alfred V8 workflow.
@@ -166,6 +176,13 @@ class CliController:
             return dispatch_tasks_contacts_suite(
                 cmd, self._tasks, self._contacts, self._suite, self._settings, args
             )
+        if cmd in ATTACHMENT_COMMANDS:
+            bridge = self._attachment_bridge or (
+                GmailDriveBridgeService(self._settings, self._store, self._gmail, self._drive)
+                if self._gmail is not None
+                else None
+            )
+            return dispatch_attachment_command(cmd, bridge, self._settings, args)
         if cmd in ONBOARDING_AND_BRIDGE_COMMANDS:
             return self._dispatch_onboarding_bridge(cmd, args)
         handler = self._core_handlers().get(cmd)
@@ -233,6 +250,7 @@ class CliController:
         register_tasks_contacts_suite_parsers(sub)
         register_onboarding_and_bridge_parsers(sub)
         register_routine_and_gmail_parsers(sub)
+        register_attachment_parsers(sub)
         return parser
 
     def _register_knowledge_and_drive_parsers(self, sub: Any) -> None:
@@ -289,15 +307,17 @@ class CliController:
         return 0
 
     def _maybe_spawn_gate(
-        self, workspace: str, source_id: str, plan_md: str, spawn: bool
+        self, workspace: str, source_id: str, plan_md: str, spawn: bool, title: str = ""
     ) -> None:
         """Optionally materialize a live Antigravity Web Gate session for a workspace."""
         if spawn and self._agy is not None:
             self._agy.create_session(
                 workspace=workspace, source_message_id=source_id,
-                implementation_plan_md=plan_md, spawn_live=True,
+                implementation_plan_md=plan_md, spawn_live=True, title=title,
             )
-            self._agy.daemon_sync.sync_if_needed()
+            sync_res = self._agy.daemon_sync.sync_if_needed()
+            if sync_res.status == DaemonSyncStatus.DEFERRED_ACTIVE_TURN:
+                self._agy.daemon_sync.spawn_deferred_sync_worker()
 
     def _handle_auth_google(self, args: argparse.Namespace) -> int:
         """Execute interactive, print-url, or redirect-url OAuth2 consent flow."""
@@ -412,7 +432,9 @@ class CliController:
         else:
             decisions = self._inbox.poll_new_messages()
         if decisions and self._agy is not None:
-            self._agy.daemon_sync.sync_if_needed()
+            sync_res = self._agy.daemon_sync.sync_if_needed()
+            if sync_res.status == DaemonSyncStatus.DEFERRED_ACTIVE_TURN:
+                self._agy.daemon_sync.spawn_deferred_sync_worker()
         out = [d.model_dump(mode="json") for d in decisions]
         print(json.dumps(out, indent=2, ensure_ascii=False))
         return 0
@@ -434,6 +456,12 @@ class CliController:
         _, plan_md = self._evolve.prepare_evolution_plan(
             str(args.id), str(args.title), str(args.description)
         )
-        self._maybe_spawn_gate("alfred-evolve", f"evolve:{args.id}", plan_md, bool(args.spawn_agy))
+        self._maybe_spawn_gate(
+            "alfred-evolve",
+            f"evolve:{args.id}",
+            plan_md,
+            bool(args.spawn_agy),
+            title=f"[Evolve] {args.title}",
+        )
         print(plan_md)
         return 0

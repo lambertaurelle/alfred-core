@@ -10,6 +10,7 @@ from typing import Any
 
 from alfred.controllers.calendar_cli import print_skipped_disabled
 from alfred.domain.models import AlfredSettings
+from alfred.services.agy_daemon_sync import DaemonSyncStatus
 from alfred.services.agy_session_manager import AgySessionManager
 from alfred.services.gmail_service import GmailService
 from alfred.services.inbox_triage_service import InboxTriageService
@@ -37,6 +38,9 @@ def register_routine_and_gmail_parsers(sub: Any) -> None:
 
     p_sync = sub.add_parser("sync-agy-ui")
     p_sync.add_argument("--force", action="store_true")
+    p_sync.add_argument("--wait-idle", action="store_true")
+    p_sync.add_argument("--timeout", type=float, default=90.0)
+    p_sync.add_argument("--poll-interval", type=float, default=2.0)
 
     p_arch = sub.add_parser("archive-email")
     p_arch.add_argument("--thread-id", action="append", default=[])
@@ -66,8 +70,12 @@ def handle_backfill_inbox_archives(
         POSIX exit status code (0 on success).
     """
     ids = inbox_service.backfill_silent_archives()
-    if ids and agy_manager is not None:
-        agy_manager.daemon_sync.sync_if_needed()
+    if (
+        ids
+        and agy_manager is not None
+        and agy_manager.daemon_sync.sync_if_needed().status == DaemonSyncStatus.DEFERRED_ACTIVE_TURN
+    ):
+        agy_manager.daemon_sync.spawn_deferred_sync_worker()
     payload = {"materialized_conversations": ids, "count": len(ids)}
     print(json.dumps(payload, indent=2, ensure_ascii=False))
     return 0
@@ -88,7 +96,14 @@ def handle_sync_agy_ui(
     """
     if agy_manager is None:
         raise RuntimeError("AgySessionManager is not wired on CliController.")
-    result = agy_manager.daemon_sync.sync_if_needed(force=bool(args.force))
+    if bool(getattr(args, "wait_idle", False)):
+        result = agy_manager.daemon_sync.wait_until_idle_and_sync(
+            timeout_sec=float(args.timeout),
+            poll_interval_sec=float(args.poll_interval),
+            force=bool(args.force),
+        )
+    else:
+        result = agy_manager.daemon_sync.sync_if_needed(force=bool(args.force))
     print(json.dumps(result.model_dump(mode="json"), indent=2, ensure_ascii=False))
     return 0
 

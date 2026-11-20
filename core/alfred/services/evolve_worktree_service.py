@@ -104,6 +104,13 @@ class EvolveWorktreeService:
             f"# Plan d'Évolution `alfred-evolve` (`{safe_id}`)\n\n"
             f"- **Titre** : {title}\n"
             f"- **Description** : {description}\n\n"
+            f"## Contrats TDD & Bonnes Pratiques Obligatoires\n"
+            f"1. **3 Niveaux de Tests (`tdd-red` -> `tdd-green`)** : tests **unitaires**, "
+            f"tests **fonctionnels** inter-services et tests **E2E** (bout en bout).\n"
+            f"2. **Analyse & Tests de Non-Régression** : identification explicite des impacts "
+            f"et exécution complète de la suite anti-régression.\n"
+            f"3. **Adversarial Testing (`swarm`)** : campagne adversariale multi-agents `swarm` "
+            f"sur les entrées non fiables, traversées de chemin, injections et cas limites.\n\n"
             f"## Pipeline Post-Validation (`Proceed`)\n"
             f"1. Création d'un `git worktree` isolé mono-repo sur `evolve/{safe_id}`.\n"
             f"2. Validation TDD (`check_code_architecture.py`, `ruff`, `mypy`, `pytest >= 90%`).\n"
@@ -273,6 +280,7 @@ class EvolveWorktreeService:
             return
 
         venv_bin = self._paths.root_dir / ".venv" / "bin"
+        wt_env = _sanitized_git_env(worktree)
         if (venv_bin / "ruff").exists() and (worktree / "core").exists():
             ruff_cmd = [str(venv_bin / "ruff"), "check"]
             if (worktree / "pyproject.toml").exists():
@@ -281,24 +289,25 @@ class EvolveWorktreeService:
             for sub_rel in ("extensions", "examples"):
                 if (worktree / "instance" / sub_rel).exists():
                     ruff_cmd.append(str(worktree / "instance" / sub_rel))
-            ruff_res = subprocess.run(ruff_cmd, cwd=worktree, capture_output=True, text=True)
+            ruff_res = subprocess.run(
+                ruff_cmd, cwd=worktree, env=wt_env, capture_output=True, text=True
+            )
             if ruff_res.returncode != 0:
                 raise RuntimeError(f"Ruff gate failed:\n{ruff_res.stdout}\n{ruff_res.stderr}")
         if (venv_bin / "mypy").exists() and (worktree / "core" / "alfred").exists():
+            mypy_targets = ["core/alfred", "core/scripts"]
+            if (worktree / "core" / "tests").exists():
+                mypy_targets.append("core/tests")
             mypy_res = subprocess.run(
-                [str(venv_bin / "mypy"), "--strict", "core/alfred", "core/scripts"],
-                cwd=worktree,
-                capture_output=True,
-                text=True,
+                [str(venv_bin / "mypy"), "--strict", *mypy_targets],
+                cwd=worktree, env=wt_env, capture_output=True, text=True,
             )
             if mypy_res.returncode != 0:
                 raise RuntimeError(f"Mypy gate failed:\n{mypy_res.stdout}\n{mypy_res.stderr}")
         if (venv_bin / "pytest").exists() and (worktree / "core" / "tests").exists():
             test_res = subprocess.run(
                 [str(venv_bin / "pytest"), "--cov=core", "--cov-fail-under=90"],
-                cwd=worktree,
-                capture_output=True,
-                text=True,
+                cwd=worktree, env=wt_env, capture_output=True, text=True,
             )
             if test_res.returncode != 0:
                 raise RuntimeError(f"Pytest TDD gate failed:\n{test_res.stdout}\n{test_res.stderr}")

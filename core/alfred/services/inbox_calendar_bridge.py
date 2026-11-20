@@ -365,6 +365,18 @@ def render_action_required_plan(
         if msg.thread_id
         else f"--message-id {shlex.quote(msg.message_id)}"
     )
+    fn_hint = (
+        f" --filename {shlex.quote(msg.attachment_filenames[0])}"
+        if len(msg.attachment_filenames) > 1
+        else ""
+    )
+    att_line = (
+        f"- **Sauvegarde pièce(s) jointe(s) vers Drive** : "
+        f"`alfred save-attachment-to-drive --message-id {shlex.quote(msg.message_id)}"
+        f"{fn_hint} --parent-id <FOLDER_ID>`\n"
+        if msg.attachment_filenames
+        else ""
+    )
     return (
         f"# Action Utilisateur Requise (`USER_ACTION_REQUIRED`)\n"
         f"{sec_banner}\n"
@@ -378,6 +390,7 @@ def render_action_required_plan(
         f"{orch_block}\n"
         f"## Exécution Post-Validation (`Proceed`)\n"
         f"- Fiche référentiel cible : `{target_doc_id}`\n"
+        f"{att_line}"
         f"- **Archivage Gmail par défaut en fin de traitement** : "
         f"`alfred archive-email {arch_target} --unstar` "
         f"(indiquez `--keep-in-inbox` en commentaire si nécessaire).\n"

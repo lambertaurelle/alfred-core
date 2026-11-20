@@ -324,16 +324,13 @@ class DriveService:
             target_id = str(existing[0]["id"])
             client.files().update(fileId=target_id, media_body=media).execute()
             return target_id
-        created = (
-            client.files()
-            .create(
-                body={"name": file_name, "parents": [folder_id], "mimeType": "text/markdown"},
-                media_body=media,
-                fields="id",
-            )
-            .execute()
-        )
+        body = {"name": file_name, "parents": [folder_id], "mimeType": "text/markdown"}
+        created = client.files().create(body=body, media_body=media, fields="id").execute()
         return str(created["id"])
+
+    def get_raw_client(self) -> Any:
+        """Return the underlying Google Drive v3 client, initializing it lazily when needed."""
+        return self._require_drive_client()
 
     def _require_drive_client(self) -> Any:
         """Return injected Drive client or build one lazily via GoogleOAuthService."""

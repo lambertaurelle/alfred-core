@@ -21,6 +21,7 @@ from alfred.services.agy_session_manager import AgySessionManager
 from alfred.services.calendar_service import CalendarService
 from alfred.services.drive_service import DriveService
 from alfred.services.email_security_service import EmailSanitizer, InboxCapabilityFirewall
+from alfred.services.gmail_drive_bridge_service import GmailDriveBridgeService
 from alfred.services.gmail_service import GmailHistoryExpiredError, GmailService
 from alfred.services.inbox_calendar_bridge import (
     backfill_silent_inbox_records,
@@ -72,6 +73,7 @@ class InboxTriageService:
         spawn_live_agy: bool = False,
         calendar_service: CalendarService | None = None,
         settings: AlfredSettings | None = None,
+        attachment_bridge: GmailDriveBridgeService | None = None,
     ) -> None:
         """Initialize the inbox triage service.
 
@@ -85,6 +87,7 @@ class InboxTriageService:
             spawn_live_agy: When True, spawn live Antigravity Web sessions.
             calendar_service: Optional CalendarService for [HOLD] & invitation Gates.
             settings: Optional AlfredSettings instance.
+            attachment_bridge: Optional GmailDriveBridgeService for attachment enrichment.
         """
         self._state_store = state_store
         self._gmail = gmail_service
@@ -98,6 +101,9 @@ class InboxTriageService:
         self._eligibility = InboxEligibilityPolicy(self._settings.inbox_filters)
         self._sanitizer = EmailSanitizer()
         self._firewall = InboxCapabilityFirewall()
+        self._attachment_bridge = attachment_bridge or GmailDriveBridgeService(
+            self._settings, self._state_store, self._gmail, self._drive
+        )
 
     def poll_new_messages(
         self, spawn_live_agy: bool | None = None, use_cognitive_agy: bool = False
@@ -134,9 +140,9 @@ class InboxTriageService:
             self.process_message(m, spawn_live_agy, use_cognitive_agy) for m in selected
         ]
         self._state_store.bookmarks.update(
-            lambda b: b.model_copy(
-                update={"gmail_history_id": latest_id, "gmail_last_polled_at": utc_now_iso()}
-            )
+            lambda b: b.model_copy(update={
+                "gmail_history_id": latest_id, "gmail_last_polled_at": utc_now_iso()
+            })
         )
         return decisions
 
@@ -177,11 +183,14 @@ class InboxTriageService:
 
         sanitized = self._sanitizer.sanitize(msg.raw_html, msg.body_text)
         clean_msg = msg.model_copy(update={"body_text": sanitized.clean_text})
+        clean_msg, att_brief, att_inj = self._attachment_bridge.enrich_email_with_attachments(
+            clean_msg, self._sanitizer
+        )
+        suspicious_inj = sanitized.suspicious_injection or att_inj
         relevant_docs = self._load_relevant_knowledge(clean_msg)
         cal_ctx, upcoming_events = (
             load_upcoming_calendar_snapshot(self._calendar, self._settings)
-            if use_cognitive_agy
-            else ("", [])
+            if use_cognitive_agy else ("", [])
         )
         out_t, rsn, draft, cal_act, cls_id, needs_orch = self._classify_message(
             clean_msg, relevant_docs, use_cognitive_agy,
@@ -189,8 +198,7 @@ class InboxTriageService:
         )
         allowlist = (
             self._calendar.get_effective_hold_allowlist(user_addrs)
-            if self._calendar is not None
-            else user_addrs
+            if self._calendar is not None else user_addrs
         )
         enriched_cal = enrich_calendar_action_attendees(
             cal_act, clean_msg, user_addrs, allowlist, self._settings.identity.never_invite_emails
@@ -198,14 +206,11 @@ class InboxTriageService:
         decision = self._dispatch_triage_output(
             clean_msg, out_t, is_from_self, rsn, relevant_docs, draft, enriched_cal,
             upcoming_events, allowlist, cls_id, effective_spawn, needs_orch,
-            sanitized.suspicious_injection,
+            suspicious_inj, attachment_brief=att_brief,
         )
         self._state_store.record_processed_item(
-            "gmail",
-            msg.message_id,
-            f"{msg.message_id}:{msg.subject}:{decision.output_type}",
-            str(decision.output_type),
-            decision.reason,
+            "gmail", msg.message_id, f"{msg.message_id}:{msg.subject}:{decision.output_type}",
+            str(decision.output_type), decision.reason,
         )
         return decision
 
@@ -221,13 +226,9 @@ class InboxTriageService:
             )
         else:
             decision = InboxTriageDecision(
-                message_id=msg.message_id,
-                output_type=InboxOutputType.SILENT_NO_ACTION,
-                reason=f"Pre-filtered ({skip_reason})",
-                starred=False,
-                session_id=None,
-                session_archived=True,
-                skipped_pre_filter=True,
+                message_id=msg.message_id, output_type=InboxOutputType.SILENT_NO_ACTION,
+                reason=f"Pre-filtered ({skip_reason})", starred=False,
+                session_id=None, session_archived=True, skipped_pre_filter=True,
             )
         self._state_store.record_processed_item(
             "gmail", msg.message_id, f"{msg.message_id}:{skip_reason}", skip_reason, decision.reason
@@ -249,6 +250,7 @@ class InboxTriageService:
         spawn_live: bool,
         needs_orch: bool,
         suspicious_injection: bool,
+        attachment_brief: list[str] | None = None,
     ) -> InboxTriageDecision:
         """Route classified output to silent, action-required, or draft-reply handler."""
         if output_type == InboxOutputType.SILENT_NO_ACTION:
@@ -258,7 +260,7 @@ class InboxTriageService:
         self._agy.purge_classifier_session(cls_conv_id)
         if output_type == InboxOutputType.USER_ACTION_REQUIRED or is_from_self:
             return self._handle_action_required(
-                msg, reason, docs, spawn_live, needs_orch, suspicious_injection
+                msg, reason, docs, spawn_live, needs_orch, suspicious_injection, attachment_brief
             )
         return self._handle_draft_reply(
             msg, reason, docs, custom_draft, cal_action, allowlist,
@@ -292,7 +294,11 @@ class InboxTriageService:
         if is_self_only:
             rsn = "Self-sent memo or personal reminder requiring user follow-up"
             return (InboxOutputType.USER_ACTION_REQUIRED, rsn, None, no_cal, None, needs_orch)
-        if not is_from_self and self._is_passive_or_automated(msg, combined):
+        email_body = msg.body_text.split("\n\n[Pièce jointe:", 1)[0]
+        if email_body.startswith("[Pièce jointe:"):
+            email_body = ""
+        passive_corpus = fold_accents(f"{msg.subject}\n{msg.snippet}\n{email_body}")
+        if not is_from_self and self._is_passive_or_automated(msg, passive_corpus):
             rsn = "Passive portal or automated bulk notification without action signal"
             return (InboxOutputType.SILENT_NO_ACTION, rsn, None, no_cal, None, False)
 
@@ -447,12 +453,14 @@ class InboxTriageService:
         spawn_live: bool = False,
         needs_orch: bool = False,
         suspicious_injection: bool = False,
+        attachment_brief: list[str] | None = None,
     ) -> InboxTriageDecision:
         """Execute USER_ACTION_REQUIRED: STARRED in Gmail + clean Gate session + brief."""
         if self._settings.features.gmail_drafts_and_send:
             self._gmail.star_message(msg.message_id)
         brief_items = [
-            f"Fiche de référence `{d.file_name}` : {d.frontmatter.summary}" for d in docs
+            *(attachment_brief or []),
+            *(f"Fiche de référence `{d.file_name}` : {d.frontmatter.summary}" for d in docs),
         ]
         folded_words = re.findall(r"[a-z0-9]{4,}", fold_accents(msg.subject))
         tokens = [tok for tok in folded_words if tok not in DRIVE_SEARCH_STOPWORDS][:4]

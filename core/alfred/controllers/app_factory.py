@@ -12,6 +12,7 @@ from alfred.services.contacts_service import ContactsService
 from alfred.services.delegation_service import DelegationService
 from alfred.services.drive_service import DriveService
 from alfred.services.evolve_worktree_service import EvolveWorktreeService
+from alfred.services.gmail_drive_bridge_service import GmailDriveBridgeService
 from alfred.services.gmail_service import GmailService
 from alfred.services.google_auth import GoogleOAuthService
 from alfred.services.google_workspace_suite import GoogleWorkspaceSuiteService
@@ -110,8 +111,12 @@ def _assemble_controller(
         paths=paths, settings=settings, agy_manager=agy
     )
     cal_for_inbox = calendar if isinstance(calendar, CalendarService) else None
+    attachment_bridge: GmailDriveBridgeService = overrides.get(
+        "attachment_bridge"
+    ) or GmailDriveBridgeService(settings, store, gmail, drive)
     inbox: InboxTriageService = overrides.get("inbox_service") or InboxTriageService(
-        store, gmail, knowledge, drive, agy, calendar_service=cal_for_inbox, settings=settings
+        store, gmail, knowledge, drive, agy, calendar_service=cal_for_inbox,
+        settings=settings, attachment_bridge=attachment_bridge,
     )
     routines: RoutineService = overrides.get("routine_service") or RoutineService(
         paths=paths, settings=settings, state_store=store,
@@ -141,4 +146,5 @@ def _assemble_controller(
         tasks_service=tasks, contacts_service=contacts, suite_service=suite,
         delegation_service=delegation, onboarding_service=onboarding,
         signature_service=signature, mcp_service=mcp, paths=paths,
+        attachment_bridge=overrides.get("attachment_bridge"),
     )
