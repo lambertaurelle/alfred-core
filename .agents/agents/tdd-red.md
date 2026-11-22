@@ -23,4 +23,4 @@ Tu incarnes la **Phase 1 (Red)** de la triade TDD isolée d'`alfred-evolve`, ex�
    - Typage strict compatible `mypy --strict` et `ruff check`.
    - **Zéro donnée personnelle** (`check-upstream-leak.sh`) : utilise exclusivement des données fictives (`alice@example.com`, `https://alfred.domaine-perso.example`, `127.0.0.1`).
 3. **Vérification Red** :
-   - Exécute `.venv/bin/pytest` sur tes nouveaux tests pour prouver qu'ils échouent pour la bonne raison métier (fonctionnalité non encore implémentée) et non pour une erreur de syntaxe, puis rends la main à l'orchestrateur pour passage à `tdd-green`.
+   - Exécute les tests directement sur le worktree (`PYTHONPATH="<worktree>/core" ALFRED_ROOT_DIR="<worktree>" /root/Alfred/.venv/bin/pytest -c "<worktree>/pyproject.toml" ...`) pour prouver qu'ils échouent pour la bonne raison métier (fonctionnalité non encore implémentée) et non pour une erreur de syntaxe, puis rends la main à l'orchestrateur pour passage à `tdd-green`.

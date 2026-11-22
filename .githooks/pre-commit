@@ -42,4 +42,10 @@ if [[ -x "${VENV_DIR}/bin/pytest" ]]; then
     "${VENV_DIR}/bin/pytest" --cov=core --cov-fail-under=90
 fi
 
+if [[ -f "${REPO_ROOT}/docs/SPEC.md" ]]; then
+    echo "[Alfred Gate 6/6] Checking Living Spec Sync (docs/SPEC.md)..."
+    PYTHONPATH="${REPO_ROOT}/core" ALFRED_ROOT_DIR="${REPO_ROOT}" \
+        "${PYTHON_BIN}" -m alfred.main sync-spec --check --repo-root "${REPO_ROOT}"
+fi
+
 echo "[Alfred Pre-Commit] All deterministic gates passed."

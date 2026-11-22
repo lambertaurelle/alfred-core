@@ -12,6 +12,7 @@ from alfred.domain.feature_models import FeatureFlagsConfig, IdentityConfig, Mcp
 from alfred.domain.models import AlfredPaths, AlfredSettings
 from alfred.repositories.json_repository import atomic_write_text
 from alfred.repositories.state_store import StateStore
+from alfred.services.gcp_bootstrap_service import GcpBootstrapService
 
 
 class OnboardingService:
@@ -71,6 +72,7 @@ class OnboardingService:
                 bool(knowledge_files),
             )
         )
+        gcloud_status = GcpBootstrapService(self._paths, self._settings).inspect_gcloud()
         return {
             "mode": "LIVE_RERUN" if is_live else "FIRST_RUN",
             "settings_exists": settings_exists,
@@ -84,6 +86,9 @@ class OnboardingService:
             "knowledge_files": knowledge_files,
             "drive_indexed": drive_indexed,
             "mcp_configured": mcp_configured,
+            "gcloud_installed": gcloud_status.installed,
+            "gcloud_account": gcloud_status.active_account,
+            "gcp_project_id": gcloud_status.current_project,
         }
 
     def render_oauth_guide(self, features: FeatureFlagsConfig | None = None) -> str:

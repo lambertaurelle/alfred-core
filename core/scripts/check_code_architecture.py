@@ -213,8 +213,41 @@ def _inspect_ast_nodes(
     return violations
 
 
+def _is_inside_core(resolved: Path, root: Path) -> bool:
+    """Return True when resolved resides inside repo_root/core/."""
+    try:
+        rel = resolved.relative_to(root)
+    except ValueError:
+        return False
+    return bool(rel.parts and rel.parts[0] == "core")
+
+
+def _check_instance_coupling(tree: ast.Module, resolved: Path) -> list[str]:
+    """Reject any top-level or deferred import from instance/ inside core/."""
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "instance" or alias.name.startswith("instance."):
+                    violations.append(
+                        f"ERROR [Instance Coupling]: {resolved}:{node.lineno} "
+                        f"core/ module cannot import '{alias.name}'."
+                    )
+        elif (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module
+            and (node.module == "instance" or node.module.startswith("instance."))
+        ):
+            violations.append(
+                f"ERROR [Instance Coupling]: {resolved}:{node.lineno} "
+                f"core/ module cannot import from '{node.module}'."
+            )
+    return violations
+
+
 def inspect_python_file(file_path: Path, repo_root: Path | None = None) -> list[str]:
-    """Inspect a single Python file against all V7.1 Lean architecture invariants.
+    """Inspect a single Python file against all V8.0 Clean Architecture invariants.
 
     Args:
         file_path: Path to the Python file to inspect.
@@ -246,6 +279,8 @@ def inspect_python_file(file_path: Path, repo_root: Path | None = None) -> list[
 
     is_test = "tests" in resolved.parts or resolved.name.startswith("test_")
     violations.extend(_inspect_ast_nodes(tree, resolved, is_test_file=is_test))
+    if _is_inside_core(resolved, root):
+        violations.extend(_check_instance_coupling(tree, resolved))
 
     rel_parts = _alfred_rel_parts(resolved, root)
     layer = _detect_layer(resolved, root)

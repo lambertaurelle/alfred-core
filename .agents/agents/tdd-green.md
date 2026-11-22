@@ -19,5 +19,6 @@ Tu incarnes la **Phase 2 (Green)** de la triade TDD isolée d'`alfred-evolve`. T
    - Respect strict des 4 couches `core/alfred` : `domain` <- `repositories` <- `services` <- `controllers` <- `main` (`main.py <= 79` lignes, tout autre fichier `<= 500` lignes, toute méthode `<= 60` lignes hors docstring).
    - Docstrings Google obligatoires sur 100 % des modules, classes et fonctions (avec section `Args:` sur toute fonction publique paramétrée hors `@property`).
    - **Zéro donnée personnelle** (`@example.com`, `@domaine-perso.example`, `203.0.113.10` / `127.0.0.1`).
-3. **Vérification Green Locale** :
-   - Exécute `.venv/bin/pytest`, `.venv/bin/ruff check`, `.venv/bin/mypy --strict` et `check_code_architecture.py` sur le périmètre touché avant de rendre la main à `tdd-verifier`.
+3. **Vérification Green Locale & Living Spec** :
+   - Si tu modifies l'architecture `core/alfred/`, des feature flags ou la CLI, synchronise `docs/SPEC.md` (`PYTHONPATH="<worktree>/core" ALFRED_ROOT_DIR="<worktree>" /root/Alfred/.venv/bin/python -m alfred.main sync-spec --repo-root "<worktree>"`).
+   - Exécute `pytest`, `ruff check`, `mypy --strict` et `check_code_architecture.py` dans le worktree cible (`PYTHONPATH="<worktree>/core" ALFRED_ROOT_DIR="<worktree>"`) avant de rendre la main à `tdd-verifier`.

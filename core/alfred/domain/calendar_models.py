@@ -113,6 +113,8 @@ class EvolutionProposalRecord(BaseModel):
     title: str
     description: str
     status: str = "PENDING_GATE"
+    mode: str = "upstream-pr"
+    is_breaking: bool = False
     worktree_path: str = ""
     pull_requests: list[PullRequestArtifact] = Field(default_factory=list)
     created_at: str = Field(default_factory=_utc_now_iso)

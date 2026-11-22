@@ -6,6 +6,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALFRED_ROOT="${ALFRED_ROOT_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 export ALFRED_ROOT_DIR="${ALFRED_ROOT}"
 
+SKIP_PIP=false
+DO_UPGRADE=false
+DO_ONBOARD=false
+
+for arg in "$@"; do
+    case "${arg}" in
+        --skip-pip)
+            SKIP_PIP=true
+            ;;
+        --upgrade)
+            DO_UPGRADE=true
+            ;;
+        --onboard)
+            DO_ONBOARD=true
+            ;;
+        *)
+            echo "Option inconnue : ${arg} (supportées : --skip-pip, --upgrade, --onboard)" >&2
+            exit 2
+            ;;
+    esac
+done
+
 echo "[1/4] Préparation de l'arborescence privée gitignorée instance/..."
 mkdir -p \
     "${ALFRED_ROOT}/instance/config" \
@@ -27,8 +49,8 @@ echo "[2/4] Vérification de l'environnement Python (.venv)..."
 if [[ ! -x "${ALFRED_ROOT}/.venv/bin/python" ]]; then
     python3 -m venv "${ALFRED_ROOT}/.venv"
 fi
-if [[ "${1:-}" != "--skip-pip" ]]; then
-    if [[ ! -x "${ALFRED_ROOT}/.venv/bin/alfred" || "${1:-}" == "--upgrade" ]]; then
+if [[ "${SKIP_PIP}" != true ]]; then
+    if [[ ! -x "${ALFRED_ROOT}/.venv/bin/alfred" || "${DO_UPGRADE}" == true ]]; then
         "${ALFRED_ROOT}/.venv/bin/pip" install --quiet -e "${ALFRED_ROOT}[dev]"
     fi
 fi
@@ -44,9 +66,14 @@ for ws_dir in "${ALFRED_ROOT}"/core/workspaces/alfred-*; do
     fi
 done
 
-echo "[4/4] Bootstrap Alfred V8.0 terminé."
-echo "Prochaines étapes :"
-echo "  1. ${ALFRED_ROOT}/.venv/bin/alfred status-onboarding --json"
-echo "  2. ${ALFRED_ROOT}/.venv/bin/alfred oauth-guide"
-echo "  3. ${ALFRED_ROOT}/.venv/bin/alfred init-workspaces --prune-legacy"
-echo "  4. Ouvrir le workspace 'alfred-onboard' dans Antigravity Web."
+if [[ "${DO_ONBOARD}" == true ]]; then
+    echo "[4/4] Lancement de l'assistant GCP & OAuth2 (alfred bootstrap-gcp --finish-setup)..."
+    "${ALFRED_ROOT}/.venv/bin/alfred" bootstrap-gcp --finish-setup
+else
+    echo "[4/4] Bootstrap Alfred V8.0 terminé."
+    echo "Prochaines étapes :"
+    echo "  1. ${ALFRED_ROOT}/.venv/bin/alfred bootstrap-gcp   (ou ./scripts/bootstrap.sh --onboard)"
+    echo "  2. ${ALFRED_ROOT}/.venv/bin/alfred status-onboarding --json"
+    echo "  3. ${ALFRED_ROOT}/.venv/bin/alfred init-workspaces --prune-legacy"
+    echo "  4. Ouvrir le workspace 'alfred-onboard' dans Antigravity Web."
+fi

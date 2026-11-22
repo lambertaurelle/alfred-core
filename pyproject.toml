@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "alfred-core"
-version = "7.1.0"
-description = "Alfred V7.1 Lean — Personal Chief of Staff (100% Antigravity Web, 3-Tier YAML Knowledge & Google Workspace)"
+version = "8.0.0"
+description = "Alfred V8.0 — Personal Family Office Chief of Staff (Antigravity Web, 3-Tier YAML Knowledge, Google Workspace & MCP OAuth 2.1 Bridge)"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
