@@ -5,7 +5,8 @@
 > **Pipeline Obligatoire** : **1. Diagnostic `Read-Only` $\rightarrow$ 2. Gate `implementation_plan.md` $\rightarrow$ 3. Exécuteur Léger `Hydrogen` (`plan-executor`)**
 
 ## 1. Étape 1 — Diagnostic d'Installation & Cartographie Modulaire (`Read-Only`)
-- Inspecte l'état courant via `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred status-onboarding --json` et `oauth-guide`.
+- Inspecte l'état courant via `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred status-onboarding --json` (incluant `gcloud_installed`, `gcloud_account`, `gcp_project_id`) et `oauth-guide`.
+- Pour un onboarding GCP guidé de bout en bout (installation SDK `gcloud`, auth `--no-launch-browser`, création projet, activation APIs selon `features.*`, ingestion JSON OAuth Desktop et `token.json`), propose `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred bootstrap-gcp` (ou `./scripts/bootstrap.sh --onboard`).
 - Identifie avec l'utilisateur les briques fonctionnelles souhaitées dans `instance/config/settings.yaml` (`drive_knowledge_sync`, `inbox_auto_triage`, `gmail_drafts_and_send`, `calendar_management`, `tasks_management`, `contacts_lookup`, `google_docs_suite`, `signature_delegation`, `mcp_gemini_bridge`), ses alias `identity.default_send_as_email` / `never_invite_emails` (ex. `contact@domaine-perso.example`) et les APIs GCP + scopes OAuth2 strictement nécessaires.
 - Une fois le jeton OAuth2 initialisé (`auth-google`), explore l'arborescence Google Drive en lecture seule via `discover-drive --json` et `init-drive`.
 

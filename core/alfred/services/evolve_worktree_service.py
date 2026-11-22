@@ -1,8 +1,7 @@
-"""alfred-evolve isolated git worktree TDD runner and Mono-Repo Pull Request generator."""
+"""alfred-evolve isolated git worktree TDD runner, governance gate, and Mono-Repo PR builder."""
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import subprocess
@@ -10,6 +9,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from alfred.domain.evolve_models import EvolutionMode
 from alfred.domain.models import (
     AlfredPaths,
     AlfredSettings,
@@ -18,23 +18,15 @@ from alfred.domain.models import (
 )
 from alfred.repositories.json_repository import atomic_write_text
 from alfred.repositories.state_store import StateStore
+from alfred.services.core_spec_service import CoreSpecService
+from alfred.services.evolve_gate_runner import run_leak_and_ext_checks, run_tdd_and_leak_gates
+from alfred.services.evolve_governance_service import (
+    EvolveGovernanceService,
+    _sanitized_git_env,
+)
+from alfred.services.gh_pr_publisher import publish_github_pr
 
 SAFE_PROPOSAL_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
-
-
-def _sanitized_git_env(alfred_root: Path | None = None) -> dict[str, str]:
-    """Return environment dict stripped of inherited GIT_* hook variables."""
-    blocked = {
-        "GIT_DIR",
-        "GIT_WORK_TREE",
-        "GIT_INDEX_FILE",
-        "GIT_COMMON_DIR",
-        "GIT_OBJECT_DIRECTORY",
-    }
-    env = {k: v for k, v in os.environ.items() if k not in blocked}
-    if alfred_root is not None:
-        env["ALFRED_ROOT_DIR"] = str(alfred_root)
-    return env
 
 
 def _validate_proposal_id(proposal_id: str) -> str:
@@ -46,8 +38,23 @@ def _validate_proposal_id(proposal_id: str) -> str:
     return proposal_id
 
 
+def _parse_porcelain_paths(status_output: str) -> list[str]:
+    """Extract relative paths from 'git status --porcelain' preserving column offsets."""
+    paths: list[str] = []
+    for raw_line in status_output.splitlines():
+        if len(raw_line) < 4:
+            continue
+        path_part = raw_line[3:].strip()
+        if " -> " in path_part:
+            path_part = path_part.split(" -> ", 1)[1].strip()
+        cleaned = path_part.strip('"')
+        if cleaned:
+            paths.append(cleaned)
+    return paths
+
+
 class EvolveWorktreeService:
-    """Manage isolated git worktrees, 5 TDD/Leak gates, and Mono-Repo Pull Requests."""
+    """Manage isolated git worktrees, V8 governance modes, TDD/Leak gates, and Mono-Repo PRs."""
 
     def __init__(
         self,
@@ -79,6 +86,10 @@ class EvolveWorktreeService:
         proposal_id: str,
         title: str,
         description: str,
+        mode: str = "upstream-pr",
+        is_breaking: bool = False,
+        is_hybrid: bool = False,
+        core_complete: bool = False,
     ) -> tuple[EvolutionProposalRecord, str]:
         """Register an evolution proposal and render its Stage-2 Gate implementation_plan.md.
 
@@ -86,36 +97,52 @@ class EvolveWorktreeService:
             proposal_id: Short slug identifier for the evolution.
             title: Concise evolution title.
             description: Detailed functional & technical specification.
+            mode: Target evolution mode ('instance', 'upstream-pr', or 'local-fork').
+            is_breaking: Whether breaking core changes are anticipated.
+            is_hybrid: Whether the evolution spans both core/ and private instance/.
+            core_complete: Whether the core/ slice is standalone-complete without instance/.
 
         Returns:
             Tuple of (persisted EvolutionProposalRecord, implementation_plan.md content).
         """
         safe_id = _validate_proposal_id(proposal_id)
+        norm_mode = EvolutionMode(mode).value
+        if is_hybrid and norm_mode != EvolutionMode.INSTANCE.value:
+            EvolveGovernanceService().validate_hybrid_completeness(is_hybrid, core_complete)
         record = EvolutionProposalRecord(
             proposal_id=safe_id,
             title=title,
             description=description,
             status="PENDING_GATE",
+            mode=norm_mode,
+            is_breaking=is_breaking,
         )
-        self._state_store.evolution_ledger.update(
-            lambda led: led.model_copy(update={"proposals": {**led.proposals, safe_id: record}})
-        )
+        self._save_proposal_record(safe_id, record)
+        brk = "\n- **Breaking Core Change** : `[BREAKING]` requis." if is_breaking else ""
         plan_md = (
             f"# Plan d'Évolution `alfred-evolve` (`{safe_id}`)\n\n"
-            f"- **Titre** : {title}\n"
+            f"- **Titre** : {title}\n- **Mode** : `{norm_mode}`{brk}\n"
             f"- **Description** : {description}\n\n"
-            f"## Contrats TDD & Bonnes Pratiques Obligatoires\n"
-            f"1. **3 Niveaux de Tests (`tdd-red` -> `tdd-green`)** : tests **unitaires**, "
-            f"tests **fonctionnels** inter-services et tests **E2E** (bout en bout).\n"
-            f"2. **Analyse & Tests de Non-Régression** : identification explicite des impacts "
-            f"et exécution complète de la suite anti-régression.\n"
-            f"3. **Adversarial Testing (`swarm`)** : campagne adversariale multi-agents `swarm` "
-            f"sur les entrées non fiables, traversées de chemin, injections et cas limites.\n\n"
-            f"## Pipeline Post-Validation (`Proceed`)\n"
+            "## Qualification `evolve-qualifier`\n"
+            "- **Par défaut (`instance/`)** : isoler le personnel sous `instance/` "
+            "(`--mode instance`).\n"
+            "- **En faire profiter la communauté `alfred-core`** *(optionnel)* : exemple anonyme "
+            "sous `instance/examples/*.example.py` et PR `--mode upstream-pr`.\n"
+            "- **Zéro demi-morceau dans `core/`** : si `--hybrid`, la brique `core/` doit être "
+            "100 % autonome sans `instance/` (`--core-complete`), sinon `--mode instance` seul.\n\n"
+            "## Contrats TDD & Bonnes Pratiques Obligatoires\n"
+            "1. **3 Niveaux de Tests (`tdd-red` -> `tdd-green`)** : tests **unitaires**, "
+            "tests **fonctionnels** inter-services et tests **E2E** (bout en bout).\n"
+            "2. **Analyse & Tests de Non-Régression** : identification explicite des impacts "
+            "et exécution complète de la suite anti-régression.\n"
+            "3. **Adversarial Testing (`swarm`)** : campagne adversariale multi-agents `swarm` "
+            "sur les entrées non fiables, traversées de chemin, injections et cas limites.\n\n"
+            "## Pipeline Post-Validation (`Proceed`)\n"
             f"1. Création d'un `git worktree` isolé mono-repo sur `evolve/{safe_id}`.\n"
-            f"2. Validation TDD (`check_code_architecture.py`, `ruff`, `mypy`, `pytest >= 90%`).\n"
-            f"3. Vérification `check-upstream-leak.sh` (0 donnée personnelle).\n"
-            f"4. Pull Request unique sur **`alfred-core`**.\n"
+            "2. Synchronisation `docs/SPEC.md` (`sync-spec`) et validation TDD "
+            "(`check_code_architecture.py`, `ruff`, `mypy`, `pytest >= 90%`).\n"
+            "3. Vérification `check-upstream-leak.sh` (0 donnée personnelle).\n"
+            "4. Pull Request unique sur **`alfred-core`**.\n"
         )
         return record, plan_md
 
@@ -133,7 +160,6 @@ class EvolveWorktreeService:
         wt_dir = self._paths.worktrees_dir / safe_id
         if wt_dir.exists():
             self.cleanup_worktree(safe_id)
-
         self._paths.worktrees_dir.mkdir(parents=True, exist_ok=True)
         subprocess.run(
             ["git", "worktree", "add", "-B", branch, str(wt_dir), self._settings.core_base_branch],
@@ -161,55 +187,143 @@ class EvolveWorktreeService:
         )
         return wt_dir
 
+    def execute_instance_only(
+        self,
+        proposal_id: str,
+        title: str,
+        description: str,
+        repo_root: Path | None = None,
+    ) -> EvolutionProposalRecord:
+        """Apply a private instance/ evolution locally with 0 PR and strict path enforcement.
+
+        Args:
+            proposal_id: Evolution proposal slug.
+            title: Concise evolution title.
+            description: Summary of local instance/ changes.
+            repo_root: Optional repository root override for git status checks.
+
+        Returns:
+            Persisted EvolutionProposalRecord marked APPLIED_INSTANCE.
+
+        Raises:
+            PermissionError: If any modified or untracked path touches core/, docs/, or manifests.
+        """
+        safe_id = _validate_proposal_id(proposal_id)
+        root = (repo_root or self._paths.root_dir).resolve()
+        status_res = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=root,
+            env=_sanitized_git_env(root),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if status_res.returncode == 0 and status_res.stdout.strip():
+            changed = _parse_porcelain_paths(status_res.stdout)
+            EvolveGovernanceService().verify_instance_only_paths(root, changed)
+
+        record = EvolutionProposalRecord(
+            proposal_id=safe_id,
+            title=title,
+            description=description,
+            status="APPLIED_INSTANCE",
+            mode=EvolutionMode.INSTANCE.value,
+            pull_requests=[],
+        )
+        self._save_proposal_record(safe_id, record)
+        return record
+
+    def execute_local_fork(
+        self,
+        proposal_id: str,
+        title: str,
+        worktree: Path,
+        body: str = "",
+    ) -> EvolutionProposalRecord:
+        """Commit custom core changes locally on evolve/<id> without opening any upstream PR.
+
+        Args:
+            proposal_id: Evolution proposal slug.
+            title: Git commit message for the local fork branch.
+            worktree: Isolated mono-repo worktree path.
+            body: Optional proposal description stored in the ledger.
+
+        Returns:
+            Persisted EvolutionProposalRecord marked LOCAL_FORK_COMMITTED.
+        """
+        safe_id = _validate_proposal_id(proposal_id)
+        self._sync_spec_if_present(worktree)
+        self._run_tdd_and_leak_gates(worktree)
+        branch = f"evolve/{safe_id}"
+        self._stage_and_commit_worktree(worktree, branch, self._settings.core_base_branch, title)
+        record = EvolutionProposalRecord(
+            proposal_id=safe_id,
+            title=title,
+            description=body,
+            status="LOCAL_FORK_COMMITTED",
+            mode=EvolutionMode.LOCAL_FORK.value,
+            worktree_path=str(worktree),
+            pull_requests=[],
+        )
+        self._save_proposal_record(safe_id, record)
+        return record
+
     def execute_and_open_pr(
         self,
         proposal_id: str,
         title: str,
         body: str,
         worktree: Path,
+        *,
+        is_hybrid: bool = False,
+        core_complete: bool = True,
+        is_breaking: bool = False,
+        draft: bool = False,
     ) -> PullRequestArtifact:
-        """Run TDD + Zero-Leak gates, commit worktree, and open the Mono-Repo Pull Request.
+        """Sync SPEC.md, run TDD + Zero-Leak gates, commit, and open the Mono-Repo PR.
 
         Args:
             proposal_id: Evolution proposal slug.
             title: Commit and Pull Request title.
             body: Pull Request summary body.
             worktree: Isolated mono-repo worktree path.
+            is_hybrid: True when combining core/ changes with private instance/ pieces.
+            core_complete: True when the core/ feature is standalone-complete.
+            is_breaking: Explicit --breaking flag augmenting automated breaking detection.
+            draft: When True, open remote GitHub PR as a Draft PR.
 
         Returns:
             Generated PullRequestArtifact descriptor.
 
         Raises:
-            RuntimeError: If TDD gates or check-upstream-leak.sh detect any violation.
+            ValueError: If is_hybrid is True while core_complete is False.
+            RuntimeError: If TDD gates, isolation checks, or leak checks fail.
         """
         safe_id = _validate_proposal_id(proposal_id)
+        gov = EvolveGovernanceService()
+        gov.validate_hybrid_completeness(
+            is_hybrid=is_hybrid, core_is_standalone_complete=core_complete
+        )
+        breaking_report = gov.detect_breaking_core_changes(
+            worktree, base_branch=self._settings.core_base_branch
+        )
+        effective_breaking = is_breaking or breaking_report.is_breaking
+        self._sync_spec_if_present(worktree)
         self._run_tdd_and_leak_gates(worktree)
-        branch = f"evolve/{safe_id}"
+        pr_title, pr_body = gov.format_pr_metadata(
+            title, body, breaking_report, force_breaking=effective_breaking
+        )
         artifact = self._commit_and_open_pr(
             repo_name="alfred-core",
             worktree=worktree,
-            branch=branch,
+            branch=f"evolve/{safe_id}",
             base_branch=self._settings.core_base_branch,
             proposal_id=safe_id,
-            title=title,
-            body=body,
+            title=pr_title,
+            body=pr_body,
+            draft=draft,
         )
-        self._state_store.evolution_ledger.update(
-            lambda led: (
-                led.model_copy(
-                    update={
-                        "proposals": {
-                            **led.proposals,
-                            safe_id: led.proposals[safe_id].model_copy(
-                                update={"status": "PR_OPENED", "pull_requests": [artifact]}
-                            ),
-                        }
-                    }
-                )
-                if safe_id in led.proposals
-                else led
-            )
-        )
+        self._record_pr_opened(safe_id, pr_title, body, worktree, effective_breaking, artifact)
         return artifact
 
     def cleanup_worktree(self, proposal_id: str) -> None:
@@ -231,93 +345,75 @@ class EvolveWorktreeService:
         if wt_dir.exists():
             shutil.rmtree(wt_dir, ignore_errors=True)
 
+    def _save_proposal_record(self, safe_id: str, record: EvolutionProposalRecord) -> None:
+        """Persist or overwrite an EvolutionProposalRecord in the atomic ledger."""
+        self._state_store.evolution_ledger.update(
+            lambda led: led.model_copy(update={"proposals": {**led.proposals, safe_id: record}})
+        )
+
+    def _record_pr_opened(
+        self,
+        safe_id: str,
+        pr_title: str,
+        body: str,
+        worktree: Path,
+        effective_breaking: bool,
+        artifact: PullRequestArtifact,
+    ) -> None:
+        """Update or create the ledger entry after PR generation."""
+        self._state_store.evolution_ledger.update(
+            lambda led: led.model_copy(
+                update={
+                    "proposals": {
+                        **led.proposals,
+                        safe_id: (
+                            led.proposals[safe_id].model_copy(
+                                update={
+                                    "status": "PR_OPENED",
+                                    "mode": EvolutionMode.UPSTREAM_PR.value,
+                                    "is_breaking": effective_breaking,
+                                    "pull_requests": [artifact],
+                                }
+                            )
+                            if safe_id in led.proposals
+                            else EvolutionProposalRecord(
+                                proposal_id=safe_id,
+                                title=pr_title,
+                                description=body,
+                                status="PR_OPENED",
+                                mode=EvolutionMode.UPSTREAM_PR.value,
+                                is_breaking=effective_breaking,
+                                worktree_path=str(worktree),
+                                pull_requests=[artifact],
+                            )
+                        ),
+                    }
+                }
+            )
+        )
+
+    def _sync_spec_if_present(self, worktree: Path) -> None:
+        """Regenerate docs/SPEC.md when the worktree represents a full core/ or SPEC checkout."""
+        if (worktree / "core" / "alfred" / "main.py").is_file() or (
+            worktree / "docs" / "SPEC.md"
+        ).is_file():
+            CoreSpecService(self._paths).sync_spec_file(worktree)
+
     def _resolve_python_bin(self) -> Path:
         """Locate the active .venv Python binary or fallback to sys.executable."""
         venv_py = self._paths.root_dir / ".venv" / "bin" / "python"
         return venv_py if venv_py.exists() else Path(sys.executable)
 
     def _run_leak_and_ext_checks(self, worktree: Path) -> None:
-        """Enforce leak guard on the mono-repo worktree and AST checks on instance examples."""
-        leak_script = worktree / "core" / "scripts" / "check-upstream-leak.sh"
-        git_env = _sanitized_git_env(self._paths.root_dir)
-        if leak_script.exists():
-            res = subprocess.run(
-                ["bash", str(leak_script), str(worktree)],
-                env=git_env,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if res.returncode != 0:
-                raise RuntimeError(
-                    f"Zero Upstream Leak check failed:\n{res.stderr}\n{res.stdout}"
-                )
-
-        arch_script = worktree / "core" / "scripts" / "check_code_architecture.py"
-        if arch_script.exists():
-            py_str = str(self._resolve_python_bin())
-            arch_cmd = [py_str, str(arch_script), "--repo-root", str(worktree)]
-            examples_dir = worktree / "instance" / "examples"
-            if examples_dir.exists():
-                arch_cmd.extend(["--extra-dir", str(examples_dir)])
-            arch_res = subprocess.run(
-                arch_cmd,
-                cwd=worktree,
-                env=git_env,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if arch_res.returncode != 0:
-                msg = f"Architecture gate failed:\n{arch_res.stderr}\n{arch_res.stdout}"
-                raise RuntimeError(msg)
+        """Enforce leak guard, AST limits, and pure-Python SPEC & isolation checks."""
+        run_leak_and_ext_checks(worktree, self._paths, self._resolve_python_bin())
 
     def _run_tdd_and_leak_gates(self, worktree: Path) -> None:
         """Run leak checks and the full 5-gate TDD suite on the mono-repo worktree."""
-        self._run_leak_and_ext_checks(worktree)
-        if self._tdd_gate_fn is not None:
-            self._tdd_gate_fn(worktree)
-            return
-
-        venv_bin = self._paths.root_dir / ".venv" / "bin"
-        wt_env = _sanitized_git_env(worktree)
-        if (venv_bin / "ruff").exists() and (worktree / "core").exists():
-            ruff_cmd = [str(venv_bin / "ruff"), "check"]
-            if (worktree / "pyproject.toml").exists():
-                ruff_cmd.extend(["--config", str(worktree / "pyproject.toml")])
-            ruff_cmd.append(str(worktree / "core"))
-            for sub_rel in ("extensions", "examples"):
-                if (worktree / "instance" / sub_rel).exists():
-                    ruff_cmd.append(str(worktree / "instance" / sub_rel))
-            ruff_res = subprocess.run(
-                ruff_cmd, cwd=worktree, env=wt_env, capture_output=True, text=True
-            )
-            if ruff_res.returncode != 0:
-                raise RuntimeError(f"Ruff gate failed:\n{ruff_res.stdout}\n{ruff_res.stderr}")
-        if (venv_bin / "mypy").exists() and (worktree / "core" / "alfred").exists():
-            mypy_targets = ["core/alfred", "core/scripts"]
-            if (worktree / "core" / "tests").exists():
-                mypy_targets.append("core/tests")
-            mypy_res = subprocess.run(
-                [str(venv_bin / "mypy"), "--strict", *mypy_targets],
-                cwd=worktree, env=wt_env, capture_output=True, text=True,
-            )
-            if mypy_res.returncode != 0:
-                raise RuntimeError(f"Mypy gate failed:\n{mypy_res.stdout}\n{mypy_res.stderr}")
-        if (venv_bin / "pytest").exists() and (worktree / "core" / "tests").exists():
-            test_res = subprocess.run(
-                [str(venv_bin / "pytest"), "--cov=core", "--cov-fail-under=90"],
-                cwd=worktree, env=wt_env, capture_output=True, text=True,
-            )
-            if test_res.returncode != 0:
-                raise RuntimeError(f"Pytest TDD gate failed:\n{test_res.stdout}\n{test_res.stderr}")
+        run_tdd_and_leak_gates(worktree, self._paths, self._resolve_python_bin(), self._tdd_gate_fn)
 
     def _stage_and_commit_worktree(
-        self,
-        worktree: Path,
-        branch: str,
-        base_branch: str,
-        title: str,
+        self, worktree: Path, branch: str, base_branch: str, title: str
     ) -> list[str]:
         """Stage respected files, create commit when dirty, and return changed file list."""
         git_env = _sanitized_git_env(self._paths.root_dir)
@@ -326,28 +422,16 @@ class EvolveWorktreeService:
         )
         status_out = subprocess.run(
             ["git", "status", "--porcelain"],
-            cwd=worktree,
-            env=git_env,
-            check=True,
-            capture_output=True,
-            text=True,
+            cwd=worktree, env=git_env, check=True, capture_output=True, text=True,
         ).stdout.strip()
         if status_out:
             subprocess.run(
                 ["git", "commit", "-m", title],
-                cwd=worktree,
-                env=git_env,
-                check=True,
-                capture_output=True,
-                text=True,
+                cwd=worktree, env=git_env, check=True, capture_output=True, text=True,
             )
         diff_out = subprocess.run(
             ["git", "diff", "--name-only", f"{base_branch}..{branch}"],
-            cwd=worktree,
-            env=git_env,
-            check=True,
-            capture_output=True,
-            text=True,
+            cwd=worktree, env=git_env, check=True, capture_output=True, text=True,
         ).stdout.splitlines()
         return [line.strip() for line in diff_out if line.strip()]
 
@@ -358,92 +442,41 @@ class EvolveWorktreeService:
         base_branch: str,
         title: str,
         body: str,
+        draft: bool = False,
     ) -> str | None:
-        """Push branch and open a GitHub PR via gh CLI when remote 'origin' is configured."""
-        git_env = _sanitized_git_env(self._paths.root_dir)
-        remote_chk = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            cwd=worktree,
-            env=git_env,
-            capture_output=True,
-            text=True,
-            check=False,
+        """Push branch and open a GitHub PR via gh CLI (with fork fallback)."""
+        return publish_github_pr(
+            worktree, branch, base_branch, title, body,
+            git_env=_sanitized_git_env(self._paths.root_dir), draft=draft,
         )
-        gh_bin = shutil.which("gh")
-        if remote_chk.returncode != 0 or not gh_bin:
-            return None
-        subprocess.run(
-            ["git", "push", "-u", "origin", branch],
-            cwd=worktree,
-            env=git_env,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        pr_res = subprocess.run(
-            [
-                gh_bin,
-                "pr",
-                "create",
-                "--base",
-                base_branch,
-                "--head",
-                branch,
-                "--title",
-                title,
-                "--body",
-                body,
-            ],
-            cwd=worktree,
-            env=git_env,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return pr_res.stdout.strip()
 
     def _commit_and_open_pr(
-        self,
-        repo_name: str,
-        worktree: Path,
-        branch: str,
-        base_branch: str,
-        proposal_id: str,
-        title: str,
-        body: str,
+        self, repo_name: str, worktree: Path, branch: str, base_branch: str,
+        proposal_id: str, title: str, body: str, draft: bool = False,
     ) -> PullRequestArtifact:
         """Commit worktree changes and publish or materialize the Pull Request artifact."""
-        changed_files = self._stage_and_commit_worktree(worktree, branch, base_branch, title)
+        changed = self._stage_and_commit_worktree(worktree, branch, base_branch, title)
         if self._pr_publisher_fn is not None:
             pr_ref = self._pr_publisher_fn(worktree, branch, base_branch, title, body)
             status = "OPEN_REMOTE"
         else:
             remote_url = (
-                self._try_open_remote_gh_pr(worktree, branch, base_branch, title, body)
-                if changed_files
+                self._try_open_remote_gh_pr(worktree, branch, base_branch, title, body, draft=draft)
+                if changed
                 else None
             )
             if remote_url:
-                pr_ref = remote_url
-                status = "OPEN_REMOTE"
+                pr_ref, status = remote_url, "OPEN_REMOTE"
             else:
                 pr_file = self._pr_dir / f"{proposal_id}_{repo_name}.md"
+                files_md = "\n".join(f"- `{f}`" for f in changed) or "- `(No file delta)`"
                 pr_md = (
                     f"# Pull Request — `{repo_name}` (`{branch}` -> `{base_branch}`)\n\n"
-                    f"## {title}\n\n{body}\n\n"
-                    f"### Changed Files\n"
-                    + ("\n".join(f"- `{f}`" for f in changed_files) or "- `(No file delta)`")
-                    + "\n"
+                    f"## {title}\n\n{body}\n\n### Changed Files\n{files_md}\n"
                 )
                 atomic_write_text(pr_file, pr_md)
-                pr_ref = str(pr_file)
-                status = "READY_FOR_REVIEW"
-
+                pr_ref, status = str(pr_file), "READY_FOR_REVIEW"
         return PullRequestArtifact(
-            repo_name=repo_name,
-            branch_name=branch,
-            base_branch=base_branch,
-            pr_url_or_ref=pr_ref,
-            status=status,
-            changed_files=changed_files,
+            repo_name=repo_name, branch_name=branch, base_branch=base_branch,
+            pr_url_or_ref=pr_ref, status=status, changed_files=changed,
         )

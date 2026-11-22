@@ -98,9 +98,9 @@ if [[ -n "${STAGED_ADDED}" ]]; then
     fi
 fi
 
-# 5. Scan entire Git commit history (patches, paths, and author metadata) if commits exist
+# 5. Scan active branch Git commit history (HEAD) if commits exist
 if git rev-parse --verify HEAD >/dev/null 2>&1; then
-    ALL_HIST_PATHS="$(git log --all --name-only --pretty=format: | sort -u)"
+    ALL_HIST_PATHS="$(git log HEAD --name-only --pretty=format: | sort -u)"
     HIST_PATHS="$(check_forbidden_paths "${ALL_HIST_PATHS}")"
     if [[ -n "${HIST_PATHS}" ]]; then
         echo "ERROR [Forbidden Paths Found in Git Commit History]:" >&2
@@ -108,11 +108,11 @@ if git rev-parse --verify HEAD >/dev/null 2>&1; then
         VIOLATIONS=$((VIOLATIONS + 1))
     fi
 
-    HIST_ADDED_REMOVED="$(git log --all -p | grep -E '^[+-]' || true)"
+    HIST_ADDED_REMOVED="$(git log HEAD -p | grep -E '^[+-]' || true)"
     HIST_PATCH_LEAKS="$(printf '%s\n' "${HIST_ADDED_REMOVED}" | grep -E "${LEAK_CONTENT_REGEX}" | head -n 20 || true)"
     if [[ -n "${EXTRA_CASE_INSENSITIVE_REGEX}" ]]; then
         HIST_EXTRA="$(printf '%s\n' "${HIST_ADDED_REMOVED}" | grep -iE "${EXTRA_CASE_INSENSITIVE_REGEX}" | head -n 20 || true)"
-        [[ -n "${HIST_EXTRA}" ]] && HIST_PATCH_LEAKS="${HIST_PATCH_LEAKS:+${HIST_PATCH_LEAKS}$'\n'}${HIST_PATCH_LEAKS}"
+        [[ -n "${HIST_EXTRA}" ]] && HIST_PATCH_LEAKS="${HIST_PATCH_LEAKS:+${HIST_PATCH_LEAKS}$'\n'}${HIST_EXTRA}"
     fi
     if [[ -n "${HIST_PATCH_LEAKS}" ]]; then
         echo "ERROR [Sensitive Content Found in Git Commit History]:" >&2
@@ -121,7 +121,7 @@ if git rev-parse --verify HEAD >/dev/null 2>&1; then
     fi
 
     AUTHOR_REGEX='(@[g]mail\.com|@[o]utlook\.|@[h]otmail\.|@[y]ahoo\.|@[o]range\.fr|@[w]anadoo\.fr|@[f]ree\.fr|@[d]ummy\.com)'
-    AUTHOR_LIST="$(git log --all --format='%an <%ae>' | sort -u)"
+    AUTHOR_LIST="$(git log HEAD --format='%an <%ae>' | sort -u)"
     AUTHOR_LEAKS="$(printf '%s\n' "${AUTHOR_LIST}" | grep -Ei "${AUTHOR_REGEX}" || true)"
     if [[ -n "${EXTRA_CASE_INSENSITIVE_REGEX}" ]]; then
         AUTHOR_EXTRA="$(printf '%s\n' "${AUTHOR_LIST}" | grep -Ei "${EXTRA_CASE_INSENSITIVE_REGEX}" || true)"

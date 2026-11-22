@@ -20,6 +20,16 @@ from alfred.controllers.calendar_cli import (
     print_skipped_disabled,
     register_calendar_parsers,
 )
+from alfred.controllers.evolve_cli import (
+    EVOLVE_COMMANDS,
+    dispatch_evolve_command,
+    register_evolve_parsers,
+)
+from alfred.controllers.gcp_cli import (
+    GCP_COMMANDS,
+    dispatch_gcp_command,
+    register_gcp_parsers,
+)
 from alfred.controllers.onboarding_cli import (
     ONBOARDING_AND_BRIDGE_COMMANDS,
     dispatch_onboarding_and_bridges,
@@ -65,18 +75,10 @@ from alfred.services.workspace_service import WorkspaceService
 
 __all__ = ["CliController", "build_cli_controller"]
 
-CALENDAR_COMMANDS = frozenset(
-    {
-        "list-calendars",
-        "query-freebusy",
-        "list-events",
-        "hold-allowlist",
-        "create-event",
-        "update-event",
-        "confirm-event",
-        "delete-event",
-    }
-)
+CALENDAR_COMMANDS = frozenset({
+    "list-calendars", "query-freebusy", "list-events", "hold-allowlist",
+    "create-event", "update-event", "confirm-event", "delete-event",
+})
 ALL_TASKS_SUITE_COMMANDS = TASK_COMMANDS | CONTACT_COMMANDS | SUITE_COMMANDS
 
 
@@ -165,7 +167,11 @@ class CliController:
         """
         args = self._build_parser().parse_args(argv)
         cmd = str(args.command)
-        if cmd not in {"status-onboarding", "oauth-guide", "apply-onboarding", "auth-google"}:
+        skip_tpl_cmds = {
+            "status-onboarding", "oauth-guide", "apply-onboarding",
+            "auth-google", "bootstrap-gcp", "sync-spec",
+        }
+        if cmd not in skip_tpl_cmds:
             self._knowledge.bootstrap_templates_if_empty()
         if cmd in CALENDAR_COMMANDS:
             return dispatch_calendar_command(
@@ -185,6 +191,15 @@ class CliController:
             return dispatch_attachment_command(cmd, bridge, self._settings, args)
         if cmd in ONBOARDING_AND_BRIDGE_COMMANDS:
             return self._dispatch_onboarding_bridge(cmd, args)
+        if cmd in EVOLVE_COMMANDS:
+            return dispatch_evolve_command(
+                cmd, self._evolve, self._paths, args, self._maybe_spawn_gate
+            )
+        if cmd in GCP_COMMANDS:
+            return dispatch_gcp_command(
+                self._paths, self._settings, self._oauth,
+                self._workspaces, self._routines, args,
+            )
         handler = self._core_handlers().get(cmd)
         return handler(args) if handler is not None else 1
 
@@ -222,7 +237,6 @@ class CliController:
                 self._inbox, self._agy
             ),
             "sync-agy-ui": lambda a: handle_sync_agy_ui(self._agy, a),
-            "evolve": self._handle_evolve,
             "run-routines": lambda a: handle_run_routines(self._routines, a),
             "install-routines": lambda a: handle_install_routines(self._routines, a),
             "status-routines": lambda a: handle_status_routines(self._routines, a),
@@ -245,7 +259,9 @@ class CliController:
         p_ws.add_argument("--prune-legacy", action="store_true")
 
         self._register_knowledge_and_drive_parsers(sub)
-        self._register_inbox_and_evolve_parsers(sub)
+        self._register_inbox_parsers(sub)
+        register_evolve_parsers(sub)
+        register_gcp_parsers(sub)
         register_calendar_parsers(sub)
         register_tasks_contacts_suite_parsers(sub)
         register_onboarding_and_bridge_parsers(sub)
@@ -278,8 +294,8 @@ class CliController:
         p_rdrv = sub.add_parser("read-drive")
         p_rdrv.add_argument("--file-id", required=True)
 
-    def _register_inbox_and_evolve_parsers(self, sub: Any) -> None:
-        """Register Gmail inbox triage, draft sending, and Mono-Repo evolve subcommands."""
+    def _register_inbox_parsers(self, sub: Any) -> None:
+        """Register Gmail inbox triage and draft sending subcommands."""
         p_poll = sub.add_parser("poll-inbox")
         p_poll.add_argument("--spawn-agy", action="store_true")
         p_poll.add_argument("--cognitive-agy", action="store_true")
@@ -290,13 +306,6 @@ class CliController:
             p_dr.add_argument(flag, default="")
         p_dr.add_argument("--keep-in-inbox", action="store_true")
         p_dr.add_argument("--unstar", action="store_true")
-
-        p_ev = sub.add_parser("evolve")
-        for flag in ("--id", "--title", "--description"):
-            p_ev.add_argument(flag, required=True)
-        p_ev.add_argument("--execute", action="store_true")
-        p_ev.add_argument("--spawn-agy", action="store_true")
-        p_ev.add_argument("--worktree", default="")
 
     def _handle_init_workspaces(self, prune_legacy: bool) -> int:
         """Provision the 6 specialist Antigravity projects and print JSON status."""
@@ -352,8 +361,7 @@ class CliController:
         """Print Tier-1 YAML frontmatters matching query or all frontmatters."""
         items = (
             self._knowledge.select_relevant_frontmatters(query)
-            if query
-            else self._knowledge.scan_frontmatters()
+            if query else self._knowledge.scan_frontmatters()
         )
         payload = [{"file": fn, **fm.model_dump(mode="json")} for fn, fm in items]
         print(json.dumps(payload, indent=2, ensure_ascii=False))
@@ -373,8 +381,7 @@ class CliController:
             drive_source_ids=[str(d) for d in args.drive_source_id],
         )
         body = (
-            sys.stdin.read()
-            if str(args.body_file) == "-"
+            sys.stdin.read() if str(args.body_file) == "-"
             else Path(str(args.body_file)).read_text(encoding="utf-8")
         )
         doc = self._knowledge.upsert_document(str(args.file), fm, body)
@@ -437,31 +444,4 @@ class CliController:
                 self._agy.daemon_sync.spawn_deferred_sync_worker()
         out = [d.model_dump(mode="json") for d in decisions]
         print(json.dumps(out, indent=2, ensure_ascii=False))
-        return 0
-
-    def _handle_evolve(self, args: argparse.Namespace) -> int:
-        """Generate Stage-2 evolution Gate plan or execute Stage-3 Mono-Repo PR creation."""
-        if args.execute:
-            wt = (
-                Path(str(args.worktree))
-                if args.worktree
-                else self._evolve.create_isolated_worktree(str(args.id))
-            )
-            pr = self._evolve.execute_and_open_pr(
-                proposal_id=str(args.id), title=str(args.title),
-                body=str(args.description), worktree=wt,
-            )
-            print(json.dumps(pr.model_dump(mode="json"), indent=2, ensure_ascii=False))
-            return 0
-        _, plan_md = self._evolve.prepare_evolution_plan(
-            str(args.id), str(args.title), str(args.description)
-        )
-        self._maybe_spawn_gate(
-            "alfred-evolve",
-            f"evolve:{args.id}",
-            plan_md,
-            bool(args.spawn_agy),
-            title=f"[Evolve] {args.title}",
-        )
-        print(plan_md)
         return 0
