@@ -278,7 +278,12 @@ class AgyArchiveStore:
         Args:
             conv_id: Transient classifier conversation UUID.
         """
-        if not conv_id or Path(conv_id).name != conv_id or conv_id in {".", ".."}:
+        if (
+            not conv_id
+            or any(bad in conv_id for bad in ("/", "\\", ".."))
+            or Path(conv_id).name != conv_id
+            or conv_id in {".", ".."}
+        ):
             return
         for suffix in (".db", ".db-wal", ".db-shm"):
             (self._agy_data_dir / "conversations" / f"{conv_id}{suffix}").unlink(missing_ok=True)
@@ -331,6 +336,7 @@ class AgyArchiveStore:
         return (
             bool(conv_id)
             and not conv_id.startswith("agy_")
+            and not any(bad in conv_id for bad in ("/", "\\", ".."))
             and Path(conv_id).name == conv_id
             and conv_id not in {".", ".."}
         )

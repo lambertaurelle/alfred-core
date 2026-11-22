@@ -66,6 +66,7 @@ def is_real_agy_conversation_id(conv_id: str) -> bool:
     return (
         bool(cleaned)
         and not cleaned.startswith("agy_")
+        and not any(bad in cleaned for bad in ("/", "\\", ".."))
         and Path(cleaned).name == cleaned
         and cleaned not in {".", ".."}
     )

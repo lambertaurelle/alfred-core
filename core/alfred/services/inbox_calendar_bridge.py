@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import functools
 import shlex
-from datetime import datetime, timedelta
-from email.utils import getaddresses
+from datetime import datetime
+from email.utils import getaddresses, parseaddr
 from zoneinfo import ZoneInfo
 
 from alfred.domain.calendar_models import (
@@ -21,8 +21,10 @@ from alfred.domain.models import (
 )
 from alfred.repositories.state_store import StateStore
 from alfred.services.agy_session_manager import AgySessionManager
+from alfred.services.calendar_helpers import format_unlimited_calendar_snapshot
 from alfred.services.calendar_service import CalendarService
 from alfred.services.gmail_service import GmailService
+from alfred.services.inbox_booking_detector import is_automated_correspondent_address
 
 
 def _extract_email_set(raw_header: str) -> set[str]:
@@ -41,8 +43,9 @@ def resolve_self_email_context(
         raw_owner_addrs: Owner address collection returned by GmailService.
     """
     user_addrs = raw_owner_addrs if isinstance(raw_owner_addrs, frozenset) else frozenset()
+    lower_hdrs = {k.strip().lower(): v for k, v in msg.headers.items()}
     sender_addrs = _extract_email_set(msg.sender)
-    rcpt_addrs = _extract_email_set(f"{msg.recipient}, {msg.headers.get('cc', '')}")
+    rcpt_addrs = _extract_email_set(f"{msg.recipient}, {lower_hdrs.get('cc', '')}")
     if user_addrs:
         is_from_self = bool(sender_addrs & user_addrs)
         is_self_only = is_from_self and (not rcpt_addrs or rcpt_addrs.issubset(user_addrs))
@@ -63,17 +66,15 @@ def extract_correspondent_emails(
         owner_addresses: Lowercase email addresses owned by the mailbox owner.
         allowlist: Lowercase emails allowlisted for immediate [HOLD] blocks.
     """
+    lower_hdrs = {k.strip().lower(): v for k, v in msg.headers.items()}
     raw_headers = [
-        msg.headers.get("reply-to", ""),
-        msg.sender,
-        msg.recipient,
-        msg.headers.get("cc", ""),
+        lower_hdrs.get("reply-to", ""), msg.sender, msg.recipient, lower_hdrs.get("cc", ""),
     ]
     seen: set[str] = set()
     participants: list[str] = []
     for _, addr in getaddresses(raw_headers):
         norm = addr.strip().lower()
-        if "@" not in norm or norm in seen:
+        if "@" not in norm or norm in seen or is_automated_correspondent_address(norm):
             continue
         if norm in owner_addresses and norm not in (allowlist - owner_addresses):
             continue
@@ -88,8 +89,9 @@ def enrich_calendar_action_attendees(
     owner_addresses: frozenset[str],
     allowlist: frozenset[str],
     never_invite_emails: list[str] | None = None,
+    is_dated_booking: bool = False,
 ) -> CalendarTriageAction:
-    """Populate default external participant emails on slots while stripping self-aliases.
+    """Populate external participant emails when invites are enabled, stripping self/automated.
 
     Args:
         action: Parsed CalendarTriageAction from cognitive triage.
@@ -97,17 +99,28 @@ def enrich_calendar_action_attendees(
         owner_addresses: Authenticated owner email addresses.
         allowlist: Effective [HOLD] allowlist email addresses.
         never_invite_emails: Optional list of user aliases never invited on Calendar.
+        is_dated_booking: When True and slot attendees are empty, force send_invites=False.
     """
     if action.intent == CalendarActionIntent.NONE or not action.slots:
         return action
     blocked = {e.strip().lower() for e in (never_invite_emails or []) if "@" in e}
+    blocked.update(e.strip().lower() for e in owner_addresses if "@" in e)
     fallback_guests = extract_correspondent_emails(msg, owner_addresses, allowlist)
     updated_slots: list[CalendarSlotProposal] = []
     for slot in action.slots:
+        if is_dated_booking and not slot.attendees:
+            updated_slots.append(slot.model_copy(update={"attendees": [], "send_invites": False}))
+            continue
+        candidates = (
+            [*slot.attendees, *fallback_guests] if slot.send_invites else list(slot.attendees)
+        )
         merged: list[str] = []
-        for email in [*slot.attendees, *fallback_guests]:
+        for email in candidates:
             norm = email.strip().lower()
-            if "@" in norm and norm not in merged and norm not in blocked:
+            if (
+                "@" in norm and norm not in merged and norm not in blocked
+                and not is_automated_correspondent_address(norm)
+            ):
                 merged.append(norm)
         updated_slots.append(slot.model_copy(update={"attendees": merged}))
     return action.model_copy(update={"slots": updated_slots})
@@ -116,33 +129,57 @@ def enrich_calendar_action_attendees(
 def load_upcoming_calendar_snapshot(
     calendar_service: CalendarService | None,
     settings: AlfredSettings,
-    lookahead_days: int = 14,
 ) -> tuple[str, list[CalendarEventItem]]:
-    """Read upcoming primary calendar events over lookahead_days without mutating state.
+    """Read all future primary calendar events and recurrences without horizon truncation.
 
     Args:
         calendar_service: Optional wired CalendarService.
         settings: Runtime settings providing timezone and primary_calendar_id.
-        lookahead_days: Number of future days to inspect.
     """
     if calendar_service is None or not settings.features.calendar_management:
         return ("", [])
     tz = ZoneInfo(settings.timezone)
     now_local = datetime.now(tz).replace(microsecond=0)
-    end_local = now_local + timedelta(days=lookahead_days)
     try:
-        events = calendar_service.list_events(
-            settings.primary_calendar_id,
-            now_local.isoformat(),
-            end_local.isoformat(),
-        )
+        if hasattr(calendar_service, "list_future_events"):
+            events = calendar_service.list_future_events(
+                settings.primary_calendar_id, now_local.isoformat()
+            )
+        else:
+            far_future = now_local.replace(year=now_local.year + 50).isoformat()
+            events = calendar_service.list_events(
+                settings.primary_calendar_id, now_local.isoformat(), far_future
+            )
     except Exception:
         return (f"Maintenant ({settings.timezone}) : {now_local.isoformat()}", [])
-    lines = [f"Maintenant ({settings.timezone}) : {now_local.isoformat()}"]
-    for ev in events[:40]:
-        tag = f"[HOLD thread={ev.thread_id or '-'} id={ev.event_id}] " if ev.is_hold else ""
-        lines.append(f"- {ev.start_iso} -> {ev.end_iso} : {tag}{ev.summary}")
-    return ("\n".join(lines), events)
+    return (
+        format_unlimited_calendar_snapshot(now_local.isoformat(), settings.timezone, events),
+        events,
+    )
+
+
+def _slot_meta_flags(slot: CalendarSlotProposal) -> str:
+    """Build shlex-quoted --location and --description CLI flags for a slot."""
+    parts: list[str] = []
+    if slot.location:
+        parts.append(f"--location {shlex.quote(slot.location)}")
+    if slot.description:
+        parts.append(f"--description {shlex.quote(slot.description)}")
+    return " ".join(parts)
+
+
+def _build_confirm_cmd(slot: CalendarSlotProposal, thread_id: str) -> str:
+    """Build a shlex-quoted 'alfred confirm-event' CLI command with --archive-trace."""
+    att_flags = " ".join(f"--attendee {shlex.quote(a)}" for a in slot.attendees)
+    meta_flags = _slot_meta_flags(slot)
+    inv_flag = "--send-invites" if slot.send_invites and slot.attendees else "--no-send-invites"
+    parts = [
+        f"alfred confirm-event --calendar primary --summary {shlex.quote(slot.summary)}",
+        f"--from {shlex.quote(slot.start_iso)} --to {shlex.quote(slot.end_iso)}",
+        f"--thread-id {shlex.quote(thread_id)}",
+        *(p for p in (meta_flags, att_flags, inv_flag, "--archive-trace") if p),
+    ]
+    return " ".join(parts)
 
 
 def render_draft_calendar_section(
@@ -151,10 +188,10 @@ def render_draft_calendar_section(
     message_id: str,
     allowlist: frozenset[str],
 ) -> str:
-    """Render the [HOLD] or confirmation CLI execution block inside a DRAFT_REPLY Gate plan.
+    """Render the [HOLD] or confirmation CLI execution block inside a Gate plan.
 
     Args:
-        action: Enriched CalendarTriageAction attached to the draft reply.
+        action: Enriched CalendarTriageAction attached to the draft reply or action plan.
         thread_id: Gmail threadId for [HOLD] correlation.
         message_id: Gmail messageId for [HOLD] correlation.
         allowlist: Effective [HOLD] allowlist emails.
@@ -166,43 +203,30 @@ def render_draft_calendar_section(
     for slot in action.slots:
         allowed = [a for a in slot.attendees if a in allowlist]
         deferred = [a for a in slot.attendees if a not in allowlist]
-        att_flags = " ".join(f"--attendee {shlex.quote(a)}" for a in slot.attendees)
         if action.intent == CalendarActionIntent.CREATE_HOLD:
             ext_str = ", ".join(deferred) or "aucun"
-            lines.extend(
-                [
-                    f"- **`[HOLD] {slot.summary}`** : `{slot.start_iso}` -> `{slot.end_iso}`",
-                    f"  - Invités immédiats (allowlist) : `{', '.join(allowed) or 'aucun'}`",
-                    f"  - Externes différés jusqu'à confirmation : `{ext_str}`",
-                ]
-            )
-            cli_cmds.append(
-                (
-                    f"alfred create-event --calendar primary --hold "
-                    f"--summary {shlex.quote(slot.summary)} "
-                    f"--from {shlex.quote(slot.start_iso)} --to {shlex.quote(slot.end_iso)} "
-                    f"--thread-id {shlex.quote(thread_id)} --message-id {shlex.quote(message_id)} "
-                    f"{att_flags} --archive-trace"
-                ).strip()
-            )
+            lines.extend([
+                f"- **`[HOLD] {slot.summary}`** : `{slot.start_iso}` -> `{slot.end_iso}`",
+                f"  - Invités immédiats (allowlist) : `{', '.join(allowed) or 'aucun'}`",
+                f"  - Externes différés jusqu'à confirmation : `{ext_str}`",
+            ])
+            att_flags = " ".join(f"--attendee {shlex.quote(a)}" for a in slot.attendees)
+            meta_flags = _slot_meta_flags(slot)
+            parts = [
+                "alfred create-event --calendar primary --hold",
+                f"--summary {shlex.quote(slot.summary)}",
+                f"--from {shlex.quote(slot.start_iso)} --to {shlex.quote(slot.end_iso)}",
+                f"--thread-id {shlex.quote(thread_id)} --message-id {shlex.quote(message_id)}",
+                *(p for p in (meta_flags, att_flags, "--archive-trace") if p),
+            ]
+            cli_cmds.append(" ".join(parts))
         else:
-            inv = "--send-invites" if slot.send_invites and slot.attendees else "--no-send-invites"
             att_str = ", ".join(slot.attendees) or "aucun"
-            lines.extend(
-                [
-                    f"- **Événement validé `{slot.summary}`** : "
-                    f"`{slot.start_iso}` -> `{slot.end_iso}`",
-                    f"  - **Invitation Google Calendar après `Proceed`** : `{att_str}`",
-                ]
-            )
-            cli_cmds.append(
-                (
-                    f"alfred confirm-event --calendar primary "
-                    f"--summary {shlex.quote(slot.summary)} "
-                    f"--from {shlex.quote(slot.start_iso)} --to {shlex.quote(slot.end_iso)} "
-                    f"--thread-id {shlex.quote(thread_id)} {att_flags} {inv} --archive-trace"
-                ).strip()
-            )
+            lines.extend([
+                f"- **Événement validé `{slot.summary}`** : `{slot.start_iso}` -> `{slot.end_iso}`",
+                f"  - **Invitation Google Calendar après `Proceed`** : `{att_str}`",
+            ])
+            cli_cmds.append(_build_confirm_cmd(slot, thread_id))
     lines.append("\n### Commandes Agenda Post-Validation (`Proceed`)\n")
     lines.extend(f"- `{cmd}`" for cmd in cli_cmds)
     return "\n".join(lines) + "\n"
@@ -223,38 +247,36 @@ def render_calendar_confirm_gate_plan(
         upcoming_events: Upcoming primary CalendarEventItem list to surface matching [HOLD]s.
     """
     thread_holds = [
-        ev
-        for ev in upcoming_events
+        ev for ev in upcoming_events
         if ev.is_hold and ev.thread_id and ev.thread_id == msg.thread_id
     ]
+    has_invites = any(s.send_invites and s.attendees for s in action.slots)
+    fallback_sender = parseaddr(msg.sender)[0].strip() or "(expéditeur sans invitation)"
+    sender_display = msg.sender if has_invites else fallback_sender
     lines = [
         "# Validation d'Événement & Envoi d'Invitation Google Calendar (`alfred-calendar`)\n",
         "> [!IMPORTANT]",
         "> **Gate Bloquante Obligatoire** : Aucune invitation Google Calendar n'a été envoyée.",
         "> Vérifiez l'horaire et les destinataires ci-dessous puis cliquez sur **`Proceed`**.\n",
         f"- **E-mail source** : `{msg.message_id}` (Fil `{msg.thread_id}`)",
-        f"- **De** : `{msg.sender}` — **Objet** : {msg.subject}",
+        f"- **De** : `{sender_display}` — **Objet** : {msg.subject}",
         f"- **Motif détecté** : {reason}\n",
         "## Créneau(x) Validé(s) & Destinataires de l'Invitation\n",
     ]
     cmds: list[str] = []
     for slot in action.slots:
         guests = ", ".join(slot.attendees) if slot.attendees else "aucun invité externe"
-        lines.extend(
-            [
-                f"- **Titre final** : `{slot.summary}`",
-                f"- **Horaire** : `{slot.start_iso}` -> `{slot.end_iso}`",
-                *([f"- **Lieu / Visio** : {slot.location}"] if slot.location else []),
-                f'- **Personnes invitées (`sendUpdates="all"`)** : `{guests}`',
-            ]
+        inv_lbl = (
+            'Personnes invitées (`sendUpdates="all"`)'
+            if slot.send_invites and slot.attendees else "Invités externes (aucune notification)"
         )
-        att_flags = " ".join(f"--attendee {shlex.quote(a)}" for a in slot.attendees)
-        inv_flag = "--send-invites" if slot.send_invites and slot.attendees else "--no-send-invites"
-        cmds.append(
-            f"alfred confirm-event --calendar primary --summary {shlex.quote(slot.summary)} "
-            f"--from {shlex.quote(slot.start_iso)} --to {shlex.quote(slot.end_iso)} "
-            f"--thread-id {shlex.quote(msg.thread_id)} {att_flags} {inv_flag}"
-        )
+        lines.extend([
+            f"- **Titre final** : `{slot.summary}`",
+            f"- **Horaire** : `{slot.start_iso}` -> `{slot.end_iso}`",
+            *([f"- **Lieu / Visio** : {slot.location}"] if slot.location else []),
+            f"- **{inv_lbl}** : `{guests}`",
+        ])
+        cmds.append(_build_confirm_cmd(slot, msg.thread_id))
     if thread_holds:
         lines.append("\n## `[HOLD]` Existants sur ce Fil (Conversion & Libération Automatique)\n")
         for hold in thread_holds:
@@ -345,6 +367,7 @@ def render_action_required_plan(
     target_doc_id: str,
     needs_orchestrator_study: bool = False,
     suspicious_injection: bool = False,
+    cal_section: str = "",
 ) -> str:
     """Render the Blocking Gate implementation_plan.md for USER_ACTION_REQUIRED.
 
@@ -355,27 +378,25 @@ def render_action_required_plan(
         target_doc_id: Suggested Tier-2 reference document ID for post-action update.
         needs_orchestrator_study: Whether post-Proceed triggers Orchestrator Carbon study.
         suspicious_injection: Whether EmailSanitizer flagged prompt-injection cues.
+        cal_section: Optional rendered alfred-calendar [HOLD]/confirmation section.
     """
     sec_banner, orch_block = _security_and_orchestrator_banners(
         needs_orchestrator_study, suspicious_injection
     )
     bullets = "\n".join(f"- {item}" for item in brief_items)
     arch_target = (
-        f"--thread-id {shlex.quote(msg.thread_id)}"
-        if msg.thread_id
+        f"--thread-id {shlex.quote(msg.thread_id)}" if msg.thread_id
         else f"--message-id {shlex.quote(msg.message_id)}"
     )
     fn_hint = (
         f" --filename {shlex.quote(msg.attachment_filenames[0])}"
-        if len(msg.attachment_filenames) > 1
-        else ""
+        if len(msg.attachment_filenames) > 1 else ""
     )
     att_line = (
         f"- **Sauvegarde pièce(s) jointe(s) vers Drive** : "
         f"`alfred save-attachment-to-drive --message-id {shlex.quote(msg.message_id)}"
         f"{fn_hint} --parent-id <FOLDER_ID>`\n"
-        if msg.attachment_filenames
-        else ""
+        if msg.attachment_filenames else ""
     )
     return (
         f"# Action Utilisateur Requise (`USER_ACTION_REQUIRED`)\n"
@@ -387,6 +408,7 @@ def render_action_required_plan(
         f"- **Motif** : {reason}\n\n"
         f"## Défrichage Complet & Contexte Rassemblé\n"
         f"{bullets}\n"
+        f"{cal_section}"
         f"{orch_block}\n"
         f"## Exécution Post-Validation (`Proceed`)\n"
         f"- Fiche référentiel cible : `{target_doc_id}`\n"
@@ -435,12 +457,9 @@ def backfill_silent_inbox_records(
     """
     current = state_store.conversations.load()
     pending = [
-        rec
-        for rec in current.sessions.values()
-        if rec.workspace == "alfred-inbox"
-        and rec.status == "ARCHIVED"
-        and rec.session_id.startswith("agy_")
-        and rec.outcome.startswith("SILENT_NO_ACTION")
+        rec for rec in current.sessions.values()
+        if rec.workspace == "alfred-inbox" and rec.status == "ARCHIVED"
+        and rec.session_id.startswith("agy_") and rec.outcome.startswith("SILENT_NO_ACTION")
     ]
     migrated: list[str] = []
     for rec in pending:

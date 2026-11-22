@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict
 
 from alfred.domain.feature_models import InboxFilterConfig
 from alfred.domain.models import EmailMessage
+from alfred.services.inbox_booking_detector import has_dated_booking_signal
 
 CALENDAR_SUBJECT_RE = re.compile(
     r"^\s*(?:(?:re|fwd|tr)\s*:\s*)*"
@@ -76,10 +77,15 @@ class InboxEligibilityPolicy:
             self._config.skip_promotions_social_forums
             and not is_owner
             and not SKIPPED_GMAIL_CATEGORIES.isdisjoint(labels)
+            and not has_dated_booking_signal(msg)
         ):
             return EligibilityDecision(eligible=False, reason="SKIP_GMAIL_CATEGORY")
 
-        if not is_owner and self._is_automated_bulk_message(msg):
+        if (
+            not is_owner
+            and self._is_automated_bulk_message(msg)
+            and not has_dated_booking_signal(msg)
+        ):
             return EligibilityDecision(eligible=False, reason="SKIP_BULK_AUTOMATED")
 
         return EligibilityDecision(eligible=True, reason="ELIGIBLE")

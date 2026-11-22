@@ -16,9 +16,10 @@ from alfred.services.calendar_helpers import (
     build_hold_payload,
     build_time_bounds,
     compute_confirmation_window,
+    fetch_paginated_events,
     match_existing_hold,
     normalize_emails,
-    parse_event_item,
+    sort_events_chronologically,
     strip_hold_prefix,
 )
 from alfred.services.google_auth import GoogleOAuthService
@@ -240,25 +241,24 @@ class CalendarService:
             time_max_iso: Inclusive upper bound ISO-8601 timestamp.
         """
         resolved_cal = self.resolve_calendar_selector(calendar_id)
-        client = self._require_client()
-        events: list[CalendarEventItem] = []
-        page_token: str | None = None
-        while True:
-            kwargs: dict[str, Any] = {
-                "calendarId": resolved_cal,
-                "timeMin": time_min_iso,
-                "timeMax": time_max_iso,
-                "singleEvents": True,
-                "orderBy": "startTime",
-                "maxResults": 2500,
-                **({"pageToken": page_token} if page_token else {}),
-            }
-            resp = client.events().list(**kwargs).execute()
-            events.extend(parse_event_item(raw) for raw in resp.get("items", []))
-            page_token = resp.get("nextPageToken")
-            if not page_token:
-                break
-        return events
+        return fetch_paginated_events(
+            self._require_client(), resolved_cal, time_min_iso,
+            single_events=True, time_max_iso=time_max_iso,
+        )
+
+    def list_future_events(self, calendar_id: str, time_min_iso: str) -> list[CalendarEventItem]:
+        """List all future non-cancelled events and master recurrences without timeMax horizon.
+
+        Args:
+            calendar_id: Target Google Calendar identifier or summary.
+            time_min_iso: Inclusive lower bound ISO-8601 timestamp.
+        """
+        resolved_cal = self.resolve_calendar_selector(calendar_id)
+        events = fetch_paginated_events(
+            self._require_client(), resolved_cal, time_min_iso,
+            single_events=False, time_max_iso=None,
+        )
+        return sort_events_chronologically(events)
 
     def insert_event(
         self,
@@ -338,17 +338,9 @@ class CalendarService:
             patch_body["attendees"] = [{"email": addr} for addr in guests]
             if guests and send_invites:
                 send_mode = "all"
-        updated = (
-            self._require_client()
-            .events()
-            .patch(
-                calendarId=resolved_cal,
-                eventId=event_id,
-                body=patch_body,
-                sendUpdates=send_mode,
-            )
-            .execute()
-        )
+        updated = self._require_client().events().patch(
+            calendarId=resolved_cal, eventId=event_id, body=patch_body, sendUpdates=send_mode,
+        ).execute()
         return str(updated.get("id") or event_id)
 
     def create_hold_event(
@@ -456,10 +448,8 @@ class CalendarService:
         events_api = self._require_client().events()
         if existing_hold_id:
             saved = events_api.update(
-                calendarId=calendar_id,
-                eventId=existing_hold_id,
-                body=body,
-                sendUpdates=send_updates,
+                calendarId=calendar_id, eventId=existing_hold_id,
+                body=body, sendUpdates=send_updates,
             ).execute()
             return str(saved.get("id") or existing_hold_id)
         inserted = events_api.insert(

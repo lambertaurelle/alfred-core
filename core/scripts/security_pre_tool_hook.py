@@ -84,9 +84,13 @@ INBOX_ALLOWED_SUBCOMMANDS: frozenset[str] = frozenset(
         "list-calendars",
         "delegate",
         "search-contacts",
+        "create-contact",
         "list-tasklists",
         "list-tasks",
         "create-task",
+        "complete-task",
+        "update-task",
+        "delete-task",
     }
 )
 
@@ -185,37 +189,42 @@ def _is_allowed_artifact_path(raw_path: str) -> bool:
 
 
 def _has_forbidden_shell_syntax(cmd: str) -> bool:
-    """Detect shell chaining, ANSI-C/process substitutions, newlines, or redirections."""
-    forbidden_subs = ("`", "$(", "$'", "<(", ">(", "\n", "\r", "&&", "||", ";", "|")
-    if any(sub in cmd for sub in forbidden_subs):
-        return True
+    """Detect unsafe shell chaining, substitutions, newlines, or redirections outside '...'."""
     in_single = False
     in_double = False
-    in_ansi = False
     escaped = False
     idx = 0
     while idx < len(cmd):
         ch = cmd[idx]
-        if escaped:
-            escaped = False
-        elif in_ansi:
-            if ch == "\\":
-                escaped = True
-            elif ch == "'":
-                in_ansi = False
-        elif ch == "\\" and not in_single:
-            escaped = True
-        elif not in_single and not in_double and cmd[idx : idx + 2] == "$'":
-            in_ansi = True
+        if in_single:
+            if ch == "'":
+                in_single = False
             idx += 1
-        elif ch == "'" and not in_double:
-            in_single = not in_single
-        elif ch == '"' and not in_single:
+            continue
+        if escaped:
+            if ch in {"\n", "\r"}:
+                return True
+            escaped = False
+            idx += 1
+            continue
+        if ch == "\\":
+            escaped = True
+            idx += 1
+            continue
+        if not in_double and ch == "'":
+            in_single = True
+            idx += 1
+            continue
+        if ch == '"':
             in_double = not in_double
-        elif not in_single and not in_double and ch in {"&", ">", "<"}:
+            idx += 1
+            continue
+        if ch in {"`", "\n", "\r", ";", "|", "&", ">", "<"}:
+            return True
+        if cmd[idx : idx + 2] in {"$(", "$'", "<(", ">("}:
             return True
         idx += 1
-    return in_single or in_double or in_ansi
+    return in_single or in_double or escaped
 
 
 def _is_allowed_inbox_command(cmd: str) -> bool:

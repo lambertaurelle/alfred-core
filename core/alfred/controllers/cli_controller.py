@@ -180,7 +180,7 @@ class CliController:
             )
         if cmd in ALL_TASKS_SUITE_COMMANDS:
             return dispatch_tasks_contacts_suite(
-                cmd, self._tasks, self._contacts, self._suite, self._settings, args
+                cmd, self._tasks, self._contacts, self._suite, self._settings, args, self._agy
             )
         if cmd in ATTACHMENT_COMMANDS:
             bridge = self._attachment_bridge or (
