@@ -12,8 +12,9 @@ Adapte immédiatement l'ampleur de l'investigation à la demande :
 
 ## 2. Étape 2 — Synthèse & Gate Systématique (`implementation_plan.md`)
 - `plan-synthesizer` génère **`implementation_plan.md`** (`UserFacing: true`, `RequestFeedback: true`).
-- Toute écriture Gmail, Google Calendar, Google Tasks, délégation inter-workspaces (`alfred delegate --to <role>`), préparation de dossier à signer (`prepare-signature` — signature humaine hors-bande exclusivement, zéro signature autonome) ou mise à jour du référentiel est bloquée jusqu'au **`Proceed`** utilisateur.
+- Toute écriture Gmail, Google Calendar, Google Tasks, Contacts, délégation inter-workspaces (`alfred delegate --to <role>`), préparation de dossier à signer (`prepare-signature` — signature humaine hors-bande exclusivement, zéro signature autonome) ou mise à jour du référentiel est bloquée jusqu'au **`Proceed`** utilisateur.
 
 ## 3. Étape 3 — Exécution Post-Validation (`plan-executor` — Modèle Léger `Hydrogen`)
 - Un agent unique léger `Hydrogen` (`plan-executor`) exécute les commandes CLI validées et sauvegarde automatiquement les fiches `.md` modifiées sur Google Drive (`_ALFRED_REFERENTIEL_`).
+- **Surfaçage Automatique Inter-Workspaces** : toute mutation Calendar (`create-event`, `update-event`, `confirm-event`, `delete-event`, `hold-allowlist --add/--remove`) ou Tasks/Contacts/Suite (`create-task`, `complete-task`, `update-task`, `delete-task`, `create-contact`, `create-doc`, `append-sheet`) lancée depuis `alfred-life` surface automatiquement une trace visible (`EXECUTED`) dans `alfred-calendar` ou `alfred-tasks` (désactivable via `--no-archive-trace`).
 - **Règle Inbox-Zero par défaut** : tout e-mail traité de manière interactive est archivé dans Gmail à la fin (`send-draft` ou `archive-email --thread-id ...`), sauf option explicite `--keep-in-inbox`.

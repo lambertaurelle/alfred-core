@@ -71,13 +71,11 @@ class AgySessionManager:
         self._agy_data_dir = antigravity_data_dir or (Path.home() / ".gemini" / "antigravity-cli")
         self._archive_store = AgyArchiveStore(self._agy_data_dir)
         self._daemon_sync = AgyDaemonSyncService(
-            state_dir=self._paths.state_dir,
-            agy_data_dir=self._agy_data_dir,
+            state_dir=self._paths.state_dir, agy_data_dir=self._agy_data_dir,
             service_name=self._settings.agy_remote_control_service,
             enabled=self._settings.agy_sync_daemon_on_changes,
             idle_wal_grace_sec=self._settings.agy_idle_wal_grace_sec,
-            systemctl_runner=systemctl_runner,
-            alfred_root=self._paths.root_dir,
+            systemctl_runner=systemctl_runner, alfred_root=self._paths.root_dir,
         )
         self._plans_dir = self._paths.state_dir / "plans"
         self._plans_dir.mkdir(parents=True, exist_ok=True)
@@ -94,6 +92,21 @@ class AgySessionManager:
         return self._daemon_sync
 
     @property
+    def state_store(self) -> StateStore:
+        """Return the StateStore instance associated with this session manager."""
+        return self._state_store
+
+    @property
+    def agy_data_dir(self) -> Path:
+        """Return the configured Antigravity CLI data directory path."""
+        return self._agy_data_dir
+
+    @property
+    def has_live_overrides(self) -> bool:
+        """Return True when runner_fn or agy_locator_fn test overrides are installed."""
+        return self._runner_fn is not None or self._agy_locator_fn is not None
+
+    @property
     def last_needs_orchestrator_study(self) -> bool:
         """Return whether the most recent cognitive triage requested Orchestrator study."""
         return self._last_needs_orchestrator_study
@@ -108,10 +121,9 @@ class AgySessionManager:
         Returns:
             CLI argument list (omits --effort whenever model is an orchestrator).
         """
+        models = self._settings.models
         model_id, effort = (
-            self._settings.models.resolve_trace()
-            if trace
-            else self._settings.models.resolve_for_workspace(workspace)
+            models.resolve_trace() if trace else models.resolve_for_workspace(workspace)
         )
         flags = ["--model", model_id]
         if effort is not None:
@@ -153,16 +165,13 @@ class AgySessionManager:
             title: Optional explicit human-readable conversation title.
             parent_session_id: Optional originating parent conversation UUID.
         """
-        clean_title = sanitize_annotation_title(
-            title or f"[{workspace}] {source_message_id or 'Validation Gate'}"
-        )
+        raw_title = title or f"[{workspace}] {source_message_id or 'Validation Gate'}"
+        clean_title = sanitize_annotation_title(raw_title)
         live_id: str | None = None
         if spawn_live and implementation_plan_md is not None:
             live_id = self._spawn_live_plan_session(
-                workspace=workspace,
-                source_message_id=source_message_id,
-                implementation_plan_md=implementation_plan_md,
-                title=clean_title,
+                workspace=workspace, source_message_id=source_message_id,
+                implementation_plan_md=implementation_plan_md, title=clean_title,
             )
 
         session_id = live_id or f"agy_{workspace.replace('-', '_')}_{uuid.uuid4().hex[:10]}"
@@ -178,12 +187,8 @@ class AgySessionManager:
             plan_path_str = str(plan_file)
 
         record = ActiveSessionRecord(
-            session_id=session_id,
-            workspace=workspace,
-            status="ACTIVE",
-            title=clean_title,
-            source_message_id=source_message_id,
-            parent_session_id=parent_session_id,
+            session_id=session_id, workspace=workspace, status="ACTIVE", title=clean_title,
+            source_message_id=source_message_id, parent_session_id=parent_session_id,
             plan_path=plan_path_str,
         )
         self._state_store.conversations.update(
@@ -223,14 +228,9 @@ class AgySessionManager:
         clean_title = sanitize_annotation_title(title)
         self._archive_store.archive_conversation(session_id, title=clean_title, archived_at_iso=ts)
         record = ActiveSessionRecord(
-            session_id=session_id,
-            workspace=workspace,
-            status="ARCHIVED",
-            title=clean_title,
-            outcome=outcome or clean_title,
-            source_message_id=source_message_id,
-            created_at=ts,
-            archived_at=ts,
+            session_id=session_id, workspace=workspace, status="ARCHIVED", title=clean_title,
+            outcome=outcome or clean_title, source_message_id=source_message_id,
+            created_at=ts, archived_at=ts,
         )
         self._state_store.conversations.update(
             lambda cur: cur.model_copy(update={"sessions": {**cur.sessions, session_id: record}})
@@ -301,9 +301,7 @@ class AgySessionManager:
         except ValueError:
             self.purge_classifier_session(conv_id)
             return self._fallback_triage("unknown agy output_type")
-        self._last_needs_orchestrator_study = bool(
-            unwrapped.get("needs_orchestrator_study", False)
-        )
+        self._last_needs_orchestrator_study = bool(unwrapped.get("needs_orchestrator_study", False))
         reason = str(unwrapped.get("reason") or "Classified via agy cognitive triage")
         raw_draft = unwrapped.get("draft_body")
         draft_body = raw_draft.strip() if isinstance(raw_draft, str) and raw_draft.strip() else None
@@ -379,11 +377,8 @@ class AgySessionManager:
 
     def repair_session_titles(self) -> list[str]:
         """Repair blank or boilerplate conversation titles in SQLite using StateStore titles."""
-        known = {
-            sid: rec.title
-            for sid, rec in self._state_store.conversations.load().sessions.items()
-            if rec.title
-        }
+        sessions = self._state_store.conversations.load().sessions
+        known = {sid: rec.title for sid, rec in sessions.items() if rec.title}
         repaired = self._archive_store.repair_blank_or_boilerplate_titles(known)
         for cid in repaired:
             self._daemon_sync.mark_dirty(cid, reason="repair_titles")

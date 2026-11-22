@@ -178,33 +178,38 @@ def parse_event_item(raw: dict[str, Any]) -> CalendarEventItem:
     Returns:
         Normalized CalendarEventItem value object.
     """
-    start_obj, end_obj = raw.get("start", {}), raw.get("end", {})
+    start_raw, end_raw = raw.get("start"), raw.get("end")
+    start_obj = start_raw if isinstance(start_raw, dict) else {}
+    end_obj = end_raw if isinstance(end_raw, dict) else {}
     start_iso = str(start_obj.get("dateTime") or start_obj.get("date") or "")
     end_iso = str(end_obj.get("dateTime") or end_obj.get("date") or "")
-    summary = str(raw.get("summary", ""))
-    priv = raw.get("extendedProperties", {}).get("private", {})
-    priv = priv if isinstance(priv, dict) else {}
-    is_hold = str(priv.get("alfred_hold", "")).lower() == "true" or bool(
+    summary = str(raw.get("summary") or "")
+    ext_props = raw.get("extendedProperties")
+    priv_raw = ext_props.get("private") if isinstance(ext_props, dict) else None
+    priv = priv_raw if isinstance(priv_raw, dict) else {}
+    is_hold = str(priv.get("alfred_hold") or "").lower() == "true" or bool(
         HOLD_PREFIX_RE.match(summary)
     )
-    cand_raw = str(priv.get("alfred_candidate_attendees", ""))
+    cand_raw = str(priv.get("alfred_candidate_attendees") or "")
     candidates = normalize_emails(cand_raw.split(",")) if cand_raw else []
+    raw_att = raw.get("attendees")
+    att_items = raw_att if isinstance(raw_att, list) else []
     att_list = normalize_emails(
-        [str(a.get("email", "")) for a in raw.get("attendees", []) if isinstance(a, dict)]
+        [str(a.get("email") or "") for a in att_items if isinstance(a, dict)]
     )
-    raw_rec = raw.get("recurrence", [])
-    rec = [str(r) for r in raw_rec] if isinstance(raw_rec, list) else []
+    raw_rec = raw.get("recurrence")
+    rec = [str(r) for r in raw_rec if r is not None] if isinstance(raw_rec, list) else []
     return CalendarEventItem(
-        event_id=str(raw.get("id", "")),
+        event_id=str(raw.get("id") or ""),
         summary=summary,
         start_iso=start_iso,
         end_iso=end_iso,
-        description=str(raw.get("description", "")),
-        location=str(raw.get("location", "")),
+        description=str(raw.get("description") or ""),
+        location=str(raw.get("location") or ""),
         attendees=att_list,
         recurrence=rec,
         is_hold=is_hold,
-        thread_id=str(priv.get("alfred_thread_id", "")),
+        thread_id=str(priv.get("alfred_thread_id") or ""),
         candidate_attendees=candidates,
     )
 
@@ -261,3 +266,89 @@ def match_existing_hold(
         if ev.start_iso == slot.start_iso and ev.end_iso == slot.end_iso:
             return ev
     return None
+
+
+def fetch_paginated_events(
+    client: Any,
+    calendar_id: str,
+    time_min_iso: str,
+    single_events: bool = True,
+    time_max_iso: str | None = None,
+) -> list[CalendarEventItem]:
+    """Fetch paginated Google Calendar events while filtering out cancelled entries.
+
+    Args:
+        client: Google Calendar v3 API client resource.
+        calendar_id: Resolved Google Calendar identifier.
+        time_min_iso: Inclusive lower bound ISO-8601 timestamp.
+        single_events: When True, expand recurrences and pass orderBy='startTime'.
+        time_max_iso: Optional inclusive upper bound ISO-8601 timestamp.
+    """
+    events: list[CalendarEventItem] = []
+    page_token: str | None = None
+    seen_tokens: set[str] = set()
+    while True:
+        kwargs: dict[str, Any] = {
+            "calendarId": calendar_id,
+            "timeMin": time_min_iso,
+            "singleEvents": single_events,
+            "maxResults": 2500,
+        }
+        if time_max_iso is not None:
+            kwargs["timeMax"] = time_max_iso
+        if single_events:
+            kwargs["orderBy"] = "startTime"
+        if page_token:
+            kwargs["pageToken"] = page_token
+        resp = client.events().list(**kwargs).execute()
+        raw_items = resp.get("items")
+        for raw in raw_items if isinstance(raw_items, list) else []:
+            if not isinstance(raw, dict) or str(raw.get("status") or "").lower() == "cancelled":
+                continue
+            events.append(parse_event_item(raw))
+        next_token = resp.get("nextPageToken")
+        if not next_token or str(next_token) in seen_tokens:
+            break
+        seen_tokens.add(str(next_token))
+        page_token = str(next_token)
+    return events
+
+
+def sort_events_chronologically(events: list[CalendarEventItem]) -> list[CalendarEventItem]:
+    """Sort CalendarEventItem records chronologically using parsed start timestamps.
+
+    Args:
+        events: List of normalized CalendarEventItem records.
+    """
+    max_dt = datetime.max.replace(tzinfo=UTC)
+    return sorted(
+        events,
+        key=lambda ev: (parse_iso_dt(ev.start_iso) or max_dt, ev.end_iso, ev.summary),
+    )
+
+
+def format_unlimited_calendar_snapshot(
+    now_iso: str,
+    timezone: str,
+    events: list[CalendarEventItem],
+) -> str:
+    """Render all future calendar events and compact recurring series without horizon caps.
+
+    Args:
+        now_iso: Current local ISO-8601 timestamp string.
+        timezone: Configured IANA timezone name.
+        events: Unlimited future CalendarEventItem list.
+    """
+    lines = [f"Maintenant ({timezone}) : {now_iso}"]
+    single = sort_events_chronologically([ev for ev in events if not ev.recurrence])
+    recurring = sort_events_chronologically([ev for ev in events if ev.recurrence])
+    for ev in single:
+        tag = f"[HOLD thread={ev.thread_id or '-'} id={ev.event_id}] " if ev.is_hold else ""
+        lines.append(f"- {ev.start_iso} -> {ev.end_iso} : {tag}{ev.summary}")
+    for ev in recurring:
+        tag = f"[HOLD thread={ev.thread_id or '-'} id={ev.event_id}] " if ev.is_hold else ""
+        rrule_txt = "; ".join(ev.recurrence)
+        lines.append(
+            f"- [RÉCURRENT {rrule_txt}] {ev.start_iso} -> {ev.end_iso} : {tag}{ev.summary}"
+        )
+    return "\n".join(lines)

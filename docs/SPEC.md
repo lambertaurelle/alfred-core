@@ -49,9 +49,9 @@ domain  <--  repositories  <--  services  <--  controllers  <--  main.py
 ### Workspaces Spécialisés (`core/workspaces/`)
 | Workspace | Description |
 | :--- | :--- |
-| `alfred-calendar` | - Inspecte les agendas et créneaux occupés via `list-calendars`, `query-freebusy --from "<ISO>" --to "<ISO>"`, `list-events` et `hold-allowlist --list`. |
+| `alfred-calendar` | - Inspecte les agendas et créneaux occupés sans limite d'horizon via `list-calendars`, `query-freebusy --from "<ISO>" --to "<ISO>"`, `list-events` et `hold-allowlist --list` (couvrant événements futurs lointains et séries récurrentes `RRULE`). |
 | `alfred-evolve` | - **`evolve-qualifier`** inspecte `docs/SPEC.md`, `core/` et `instance/` pour trancher entre les 3 modes : |
-| `alfred-inbox` | - Pré-filtrage à 0 token des invitations agenda automatiques, promotions/forums et expéditeurs denylistés avant tout appel cognitif. |
+| `alfred-inbox` | - Pré-filtrage à 0 token des invitations `.ics` automatiques, promotions/forums et expéditeurs denylistés avant tout appel cognitif — tout en laissant passer les **confirmations datées de billets, réservations, hôtels, transports ou rendez-vous** (`has_dated_booking_signal`) pour inscription sous Gate à l'agenda (sans limite d'horizon). |
 | `alfred-life` | Adapte immédiatement l'ampleur de l'investigation à la demande : |
 | `alfred-onboard` | - Inspecte l'état courant via `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred status-onboarding --json` (incluant `gcloud_installed`, `gcloud_account`, `gcp_project_id`) et `oauth-guide`. |
 | `alfred-tasks` | - Consulte les listes et tâches actives via `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred list-tasklists` et `list-tasks [--tasklist "<id>"]`. |
@@ -108,6 +108,7 @@ domain  <--  repositories  <--  services  <--  controllers  <--  main.py
 | `services` | `core/alfred/services/gmail_service.py` | Gmail API v1 connector for incremental history polling, drafts, and STARRED labels. |
 | `services` | `core/alfred/services/google_auth.py` | Google Workspace OAuth2 credential loader, auto-refresher, and interactive bootstrap. |
 | `services` | `core/alfred/services/google_workspace_suite.py` | Opt-in Google Workspace Suite connectors (Docs v1, Sheets v4, Slides v1, Forms v1). |
+| `services` | `core/alfred/services/inbox_booking_detector.py` | Generic FR/EN dated booking confirmation and automated correspondent detectors. |
 | `services` | `core/alfred/services/inbox_calendar_bridge.py` | Bridge between alfred-inbox email triage, 2-speed Gate plans, and alfred-calendar. |
 | `services` | `core/alfred/services/inbox_eligibility.py` | Deterministic 0-token pre-filtering and thread coalescence for alfred-inbox. |
 | `services` | `core/alfred/services/inbox_triage_service.py` | alfred-inbox 2-speed routine with 0-token pre-filters, sanitizer, and calendar bridge. |
@@ -118,6 +119,7 @@ domain  <--  repositories  <--  services  <--  controllers  <--  main.py
 | `services` | `core/alfred/services/prompt_loader.py` | Markdown prompt template loader with instance override and safe placeholder rendering. |
 | `services` | `core/alfred/services/routine_service.py` | Unified V8 periodic routine runner and systemd --user timer installer (0-token idle). |
 | `services` | `core/alfred/services/signature_vault_service.py` | Handwritten signature vault with SHA-256 pinning, one-shot tickets, and human consent. |
+| `services` | `core/alfred/services/specialist_trace_service.py` | Cross-workspace specialist trace surfacing, sandbox guard, and deduplication. |
 | `services` | `core/alfred/services/tasks_service.py` | Google Tasks v1 connector supporting tasklists, subtasks, due dates, and feature flags. |
 | `services` | `core/alfred/services/workspace_service.py` | Provision and verify the 6 distinct Antigravity specialist projects for Alfred V8.0. |
 | `controllers` | `core/alfred/controllers/app_factory.py` | Dependency injection factory wiring Alfred V8.0 repositories, services, and CLI controller. |
@@ -134,26 +136,26 @@ domain  <--  repositories  <--  services  <--  controllers  <--  main.py
 ### Commandes CLI (`alfred <subcommand>`)
 | Commande | Options | Source |
 | :--- | :--- | :--- |
-| `append-sheet` | `--spreadsheet-id`, `--range`, `--value` | `core/alfred/controllers/tasks_cli.py` |
+| `append-sheet` | `--spreadsheet-id`, `--range`, `--value`, `--archive-trace`, `--no-archive-trace` | `core/alfred/controllers/tasks_cli.py` |
 | `apply-onboarding` | `--enable-all`, `--enable`, `--disable`, `--default-send-as`, `--send-as-name`, `--calendar-organizer`, `--never-invite`, `--mcp-host`, `--mcp-port`, `--mcp-public-url` | `core/alfred/controllers/onboarding_cli.py` |
 | `apply-signature` | `--request-id`, `--workspace`, `--transcript` | `core/alfred/controllers/onboarding_cli.py` |
 | `archive-email` | `--thread-id`, `--message-id`, `--unstar`, `--keep-unread` | `core/alfred/controllers/routine_cli.py` |
 | `auth-google` | `--port`, `--no-browser`, `--print-url`, `--redirect-url` | `core/alfred/controllers/cli_controller.py` |
 | `backfill-inbox-archives` | — | `core/alfred/controllers/routine_cli.py` |
 | `bootstrap-gcp` | `--project-id`, `--project-name`, `--non-interactive`, `--no-install-gcloud`, `--skip-oauth-token`, `--finish-setup`, `--open-browser` | `core/alfred/controllers/gcp_cli.py` |
-| `complete-task` | `--task-id`, `--tasklist` | `core/alfred/controllers/tasks_cli.py` |
-| `confirm-event` | `--calendar`, `--summary`, `--from`, `--to`, `--attendee`, `--send-invites`, `--no-send-invites`, `--hold-event-id`, `--thread-id`, `--no-release-holds`, `--location`, `--description`, `--archive-trace`, `--keep-in-inbox` | `core/alfred/controllers/calendar_cli.py` |
-| `create-contact` | `--given-name`, `--family-name`, `--email`, `--phone`, `--organization` | `core/alfred/controllers/tasks_cli.py` |
-| `create-doc` | `--title`, `--text` | `core/alfred/controllers/tasks_cli.py` |
-| `create-event` | `--calendar`, `--summary`, `--from`, `--to`, `--hold`, `--attendee`, `--rrule`, `--no-send-invites`, `--location`, `--description`, `--thread-id`, `--message-id`, `--archive-trace` | `core/alfred/controllers/calendar_cli.py` |
-| `create-task` | `--title`, `--notes`, `--due`, `--tasklist`, `--parent` | `core/alfred/controllers/tasks_cli.py` |
+| `complete-task` | `--task-id`, `--tasklist`, `--archive-trace`, `--no-archive-trace` | `core/alfred/controllers/tasks_cli.py` |
+| `confirm-event` | `--calendar`, `--summary`, `--from`, `--to`, `--attendee`, `--send-invites`, `--no-send-invites`, `--hold-event-id`, `--thread-id`, `--no-release-holds`, `--location`, `--description`, `--archive-trace`, `--no-archive-trace`, `--keep-in-inbox` | `core/alfred/controllers/calendar_cli.py` |
+| `create-contact` | `--given-name`, `--family-name`, `--email`, `--phone`, `--organization`, `--archive-trace`, `--no-archive-trace` | `core/alfred/controllers/tasks_cli.py` |
+| `create-doc` | `--title`, `--text`, `--archive-trace`, `--no-archive-trace` | `core/alfred/controllers/tasks_cli.py` |
+| `create-event` | `--calendar`, `--summary`, `--from`, `--to`, `--hold`, `--attendee`, `--rrule`, `--no-send-invites`, `--location`, `--description`, `--thread-id`, `--message-id`, `--archive-trace`, `--no-archive-trace` | `core/alfred/controllers/calendar_cli.py` |
+| `create-task` | `--title`, `--notes`, `--due`, `--tasklist`, `--parent`, `--archive-trace`, `--no-archive-trace` | `core/alfred/controllers/tasks_cli.py` |
 | `delegate` | `--to`, `--title`, `--brief`, `--mode`, `--parent-session`, `--source-workspace`, `--source-message-id` | `core/alfred/controllers/onboarding_cli.py` |
-| `delete-event` | `--calendar`, `--event-id`, `--notify` | `core/alfred/controllers/calendar_cli.py` |
-| `delete-task` | `--task-id`, `--tasklist` | `core/alfred/controllers/tasks_cli.py` |
+| `delete-event` | `--calendar`, `--event-id`, `--notify`, `--archive-trace`, `--no-archive-trace` | `core/alfred/controllers/calendar_cli.py` |
+| `delete-task` | `--task-id`, `--tasklist`, `--archive-trace`, `--no-archive-trace` | `core/alfred/controllers/tasks_cli.py` |
 | `discover-drive` | `--json` | `core/alfred/controllers/onboarding_cli.py` |
 | `evolve` | `--id`, `--title`, `--description`, `--execute`, `--spawn-agy`, `--worktree`, `--mode`, `--breaking`, `--draft`, `--hybrid`, `--core-complete` | `core/alfred/controllers/evolve_cli.py` |
 | `get-contact` | `--resource-name` | `core/alfred/controllers/tasks_cli.py` |
-| `hold-allowlist` | `--list`, `--add`, `--remove` | `core/alfred/controllers/calendar_cli.py` |
+| `hold-allowlist` | `--list`, `--add`, `--remove`, `--archive-trace`, `--no-archive-trace` | `core/alfred/controllers/calendar_cli.py` |
 | `init-drive` | `--execute` | `core/alfred/controllers/cli_controller.py` |
 | `init-workspaces` | `--prune-legacy` | `core/alfred/controllers/cli_controller.py` |
 | `install-routines` | `--systemd-dir`, `--no-enable` | `core/alfred/controllers/routine_cli.py` |
@@ -187,7 +189,7 @@ domain  <--  repositories  <--  services  <--  controllers  <--  main.py
 | `sync-agy-ui` | `--force`, `--wait-idle`, `--timeout`, `--poll-interval` | `core/alfred/controllers/routine_cli.py` |
 | `sync-drive` | — | `core/alfred/controllers/cli_controller.py` |
 | `sync-spec` | `--check`, `--repo-root` | `core/alfred/controllers/evolve_cli.py` |
-| `update-event` | `--calendar`, `--event-id`, `--summary`, `--from`, `--to`, `--location`, `--description`, `--attendee`, `--rrule`, `--no-send-invites` | `core/alfred/controllers/calendar_cli.py` |
-| `update-task` | `--task-id`, `--title`, `--notes`, `--due`, `--status`, `--tasklist` | `core/alfred/controllers/tasks_cli.py` |
+| `update-event` | `--calendar`, `--event-id`, `--summary`, `--from`, `--to`, `--location`, `--description`, `--attendee`, `--rrule`, `--no-send-invites`, `--archive-trace`, `--no-archive-trace` | `core/alfred/controllers/calendar_cli.py` |
+| `update-task` | `--task-id`, `--title`, `--notes`, `--due`, `--status`, `--tasklist`, `--archive-trace`, `--no-archive-trace` | `core/alfred/controllers/tasks_cli.py` |
 | `upsert-knowledge` | `--file`, `--id`, `--title`, `--domain`, `--summary`, `--body-file`, `--keyword`, `--drive-source-id` | `core/alfred/controllers/cli_controller.py` |
 <!-- END ALFRED_CORE_GENERATED_SPEC -->

@@ -23,6 +23,10 @@ from alfred.services.drive_service import DriveService
 from alfred.services.email_security_service import EmailSanitizer, InboxCapabilityFirewall
 from alfred.services.gmail_drive_bridge_service import GmailDriveBridgeService
 from alfred.services.gmail_service import GmailHistoryExpiredError, GmailService
+from alfred.services.inbox_booking_detector import (
+    has_dated_booking_signal,
+    is_passive_or_automated_email,
+)
 from alfred.services.inbox_calendar_bridge import (
     backfill_silent_inbox_records,
     enrich_calendar_action_attendees,
@@ -37,10 +41,6 @@ from alfred.services.inbox_calendar_bridge import (
 from alfred.services.inbox_eligibility import InboxEligibilityPolicy
 from alfred.services.knowledge_service import KnowledgeService
 
-PASSIVE_PORTAL_PATTERNS = (
-    r"nouveaux?\s+documents?.*espace", r"document\s+reglementaire.*disponible",
-    r"facture.*abonnement.*disponible", r"espace\s+generali", r"newsletter", r"se\s+desabonner",
-)
 ACTION_REQUIRED_PATTERNS = (
     r"action\s+requise", r"a\s+valider\s+avant", r"declaration\s+mensuelle",
     r"rejet\s+de\s+prelevement", r"impaye", r"document\s+a\s+signer",
@@ -130,19 +130,21 @@ class InboxTriageService:
         selected, coalesced = self._eligibility.coalesce_by_thread(unseen)
         for older in coalesced:
             self._state_store.record_processed_item(
-                "gmail",
-                older.message_id,
-                f"{older.message_id}:coalesced:{older.thread_id}",
-                "SKIPPED_COALESCED_THREAD",
-                f"Superseded in thread {older.thread_id}",
+                "gmail", older.message_id, f"{older.message_id}:coalesced:{older.thread_id}",
+                "SKIPPED_COALESCED_THREAD", f"Superseded in thread {older.thread_id}",
             )
+        cal_snapshot = (
+            load_upcoming_calendar_snapshot(self._calendar, self._settings)
+            if use_cognitive_agy and selected else None
+        )
         decisions = [
-            self.process_message(m, spawn_live_agy, use_cognitive_agy) for m in selected
+            self.process_message(m, spawn_live_agy, use_cognitive_agy, cal_snapshot)
+            for m in selected
         ]
         self._state_store.bookmarks.update(
-            lambda b: b.model_copy(update={
-                "gmail_history_id": latest_id, "gmail_last_polled_at": utc_now_iso()
-            })
+            lambda b: b.model_copy(
+                update={"gmail_history_id": latest_id, "gmail_last_polled_at": utc_now_iso()}
+            )
         )
         return decisions
 
@@ -165,6 +167,7 @@ class InboxTriageService:
         msg: EmailMessage,
         spawn_live_agy: bool | None = None,
         use_cognitive_agy: bool = False,
+        calendar_snapshot: tuple[str, list[CalendarEventItem]] | None = None,
     ) -> InboxTriageDecision:
         """Apply 0-token pre-filters, sanitize HTML/Unicode, and route to 3 inbox outputs.
 
@@ -172,6 +175,7 @@ class InboxTriageService:
             msg: Normalized incoming Gmail message.
             spawn_live_agy: Optional override to spawn live Antigravity Web Gate sessions.
             use_cognitive_agy: When True, invoke agy CLI cognitive triage on human emails.
+            calendar_snapshot: Optional preloaded calendar snapshot shared across a batch.
         """
         effective_spawn = self._spawn_live_agy if spawn_live_agy is None else spawn_live_agy
         is_from_self, is_self_only, user_addrs = resolve_self_email_context(
@@ -189,7 +193,7 @@ class InboxTriageService:
         suspicious_inj = sanitized.suspicious_injection or att_inj
         relevant_docs = self._load_relevant_knowledge(clean_msg)
         cal_ctx, upcoming_events = (
-            load_upcoming_calendar_snapshot(self._calendar, self._settings)
+            (calendar_snapshot or load_upcoming_calendar_snapshot(self._calendar, self._settings))
             if use_cognitive_agy else ("", [])
         )
         out_t, rsn, draft, cal_act, cls_id, needs_orch = self._classify_message(
@@ -200,8 +204,10 @@ class InboxTriageService:
             self._calendar.get_effective_hold_allowlist(user_addrs)
             if self._calendar is not None else user_addrs
         )
+        blocked_addrs = self._settings.identity.blocked_calendar_attendees(user_addrs)
         enriched_cal = enrich_calendar_action_attendees(
-            cal_act, clean_msg, user_addrs, allowlist, self._settings.identity.never_invite_emails
+            cal_act, clean_msg, user_addrs, allowlist, sorted(blocked_addrs),
+            is_dated_booking=has_dated_booking_signal(clean_msg),
         )
         decision = self._dispatch_triage_output(
             clean_msg, out_t, is_from_self, rsn, relevant_docs, draft, enriched_cal,
@@ -220,8 +226,7 @@ class InboxTriageService:
         """Handle deterministic 0-token pre-filtered emails without waking any LLM."""
         if skip_reason == "SKIP_BULK_AUTOMATED":
             decision = self._handle_silent(
-                msg,
-                "Pre-filtered automated bulk/newsletter message (0 tokens)",
+                msg, "Pre-filtered automated bulk/newsletter message (0 tokens)",
                 spawn_live=spawn_live,
             )
         else:
@@ -260,7 +265,8 @@ class InboxTriageService:
         self._agy.purge_classifier_session(cls_conv_id)
         if output_type == InboxOutputType.USER_ACTION_REQUIRED or is_from_self:
             return self._handle_action_required(
-                msg, reason, docs, spawn_live, needs_orch, suspicious_injection, attachment_brief
+                msg, reason, docs, spawn_live, needs_orch, suspicious_injection,
+                attachment_brief, cal_action=cal_action, allowlist=allowlist,
             )
         return self._handle_draft_reply(
             msg, reason, docs, custom_draft, cal_action, allowlist,
@@ -313,14 +319,8 @@ class InboxTriageService:
         return (out_type, reason, draft, cal_action, conv_id, needs_orch)
 
     def _is_passive_or_automated(self, msg: EmailMessage, combined_folded: str) -> bool:
-        """Return True for passive portal notices, newsletters, or no-reply bulk headers."""
-        if any(re.search(pat, combined_folded) for pat in PASSIVE_PORTAL_PATTERNS):
-            return True
-        has_unsub = "list-unsubscribe" in {k.lower() for k in msg.headers}
-        auto_sub = msg.headers.get("auto-submitted", "no").lower() != "no"
-        sender_lower = msg.sender.lower()
-        is_noreply = any(tok in sender_lower for tok in ("no-reply", "ne-pas-repondre", "noreply"))
-        return has_unsub or auto_sub or is_noreply
+        """Return True for passive portal notices, newsletters, or non-booking bulk mails."""
+        return is_passive_or_automated_email(msg, combined_folded)
 
     def _run_cognitive_or_default(
         self,
@@ -356,40 +356,29 @@ class InboxTriageService:
             self._agy.purge_classifier_session(classifier_conv_id)
             classifier_conv_id = None
         session = self._agy.create_and_archive_trace(
-            workspace="alfred-inbox",
-            title=f"[SILENT] {msg.subject}",
+            workspace="alfred-inbox", title=f"[SILENT] {msg.subject}",
             trace_markdown=render_silent_trace_markdown(msg, reason),
-            source_message_id=msg.message_id,
-            outcome=f"SILENT_NO_ACTION: {reason}",
-            existing_conv_id=classifier_conv_id,
-            spawn_live=allow_live_silent,
+            source_message_id=msg.message_id, outcome=f"SILENT_NO_ACTION: {reason}",
+            existing_conv_id=classifier_conv_id, spawn_live=allow_live_silent,
         )
         cal_session_id: str | None = None
         eff_action = cal_action or CalendarTriageAction()
         if (
             eff_action.intent == CalendarActionIntent.CONFIRM_EVENT
-            and eff_action.slots
-            and self._settings.features.calendar_management
+            and eff_action.slots and self._settings.features.calendar_management
         ):
             ev_list = upcoming_events or []
             gate_md = render_calendar_confirm_gate_plan(msg, reason, eff_action, ev_list)
             cal_session = self._agy.create_session(
-                workspace="alfred-calendar",
-                source_message_id=msg.message_id,
-                implementation_plan_md=gate_md,
-                spawn_live=spawn_live,
+                workspace="alfred-calendar", source_message_id=msg.message_id,
+                implementation_plan_md=gate_md, spawn_live=spawn_live,
                 title=f"[Agenda] {eff_action.slots[0].summary}",
             )
             cal_session_id = cal_session.session_id
         return InboxTriageDecision(
-            message_id=msg.message_id,
-            output_type=InboxOutputType.SILENT_NO_ACTION,
-            reason=reason,
-            starred=False,
-            session_id=session.session_id,
-            session_archived=True,
-            calendar_session_id=cal_session_id,
-            calendar_action_intent=eff_action.intent.value,
+            message_id=msg.message_id, output_type=InboxOutputType.SILENT_NO_ACTION,
+            reason=reason, starred=False, session_id=session.session_id, session_archived=True,
+            calendar_session_id=cal_session_id, calendar_action_intent=eff_action.intent.value,
         )
 
     def _handle_draft_reply(
@@ -431,18 +420,12 @@ class InboxTriageService:
             "alfred-inbox", msg.message_id, plan_md, spawn_live, title=f"[Brouillon] {msg.subject}"
         )
         return InboxTriageDecision(
-            message_id=msg.message_id,
-            output_type=InboxOutputType.DRAFT_REPLY,
-            reason=reason,
-            draft_id=draft_id,
-            draft_body=draft_body,
-            starred=False,
-            session_id=session.session_id,
-            session_archived=False,
+            message_id=msg.message_id, output_type=InboxOutputType.DRAFT_REPLY,
+            reason=reason, draft_id=draft_id, draft_body=draft_body, starred=False,
+            session_id=session.session_id, session_archived=False,
             implementation_plan_markdown=plan_md,
             calendar_action_intent=eff_action.intent.value,
-            needs_orchestrator_study=needs_orch,
-            suspicious_injection=suspicious_injection,
+            needs_orchestrator_study=needs_orch, suspicious_injection=suspicious_injection,
         )
 
     def _handle_action_required(
@@ -454,6 +437,8 @@ class InboxTriageService:
         needs_orch: bool = False,
         suspicious_injection: bool = False,
         attachment_brief: list[str] | None = None,
+        cal_action: CalendarTriageAction | None = None,
+        allowlist: frozenset[str] = frozenset(),
     ) -> InboxTriageDecision:
         """Execute USER_ACTION_REQUIRED: STARRED in Gmail + clean Gate session + brief."""
         if self._settings.features.gmail_drafts_and_send:
@@ -473,8 +458,13 @@ class InboxTriageService:
         if not brief_items:
             brief_items.append("Vérification `01_profil_et_contacts_cles.md` recommandée.")
         target_doc_id = docs[0].frontmatter.id if docs else "profil_et_contacts_cles"
+        eff_action = cal_action or CalendarTriageAction()
+        cal_sec = (
+            render_draft_calendar_section(eff_action, msg.thread_id, msg.message_id, allowlist)
+            if self._settings.features.calendar_management else ""
+        )
         plan_md = render_action_required_plan(
-            msg, reason, brief_items, target_doc_id, needs_orch, suspicious_injection
+            msg, reason, brief_items, target_doc_id, needs_orch, suspicious_injection, cal_sec
         )
         prefix = "[Action · Étude Carbon]" if needs_orch else "[Action]"
         session = self._agy.create_session(
@@ -486,6 +476,7 @@ class InboxTriageService:
             session_id=session.session_id, session_archived=False,
             implementation_plan_markdown=plan_md, research_brief=brief_items,
             suggested_knowledge_update_id=target_doc_id,
+            calendar_action_intent=eff_action.intent.value,
             needs_orchestrator_study=needs_orch, suspicious_injection=suspicious_injection,
         )
 

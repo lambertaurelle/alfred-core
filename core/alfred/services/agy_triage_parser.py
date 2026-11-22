@@ -83,7 +83,7 @@ def build_cognitive_triage_prompt(
         msg: Sanitized incoming Gmail message.
         docs: Loaded Tier-2 reference KnowledgeDocument list.
         user_addresses: Optional authenticated owner email addresses.
-        calendar_context: Optional 14-day primary calendar and [HOLD] snapshot.
+        calendar_context: Optional full-horizon primary calendar and [HOLD] snapshot.
         paths: Optional AlfredPaths enabling Markdown prompt template & custom rule loading.
     """
     doc_blocks = [
@@ -112,17 +112,23 @@ def build_cognitive_triage_prompt(
             {
                 "knowledge_frontmatters": ref_context,
                 "custom_inbox_rules": custom_rules,
-                "calendar_snapshot": calendar_context or "(Aucun événement à proximité)",
+                "calendar_snapshot": calendar_context or "(Aucun événement futur)",
                 "spotlighted_email": f"{identity_line}{spotlighted}",
             },
         )
     cal_block = (
-        f"\nContexte Agenda Principal (14j) :\n{calendar_context}\n" if calendar_context else ""
+        f"\nAgenda Principal (Tous les Événements Futurs — Sans Horizon) :\n{calendar_context}\n"
+        if calendar_context
+        else ""
     )
     return (
         "Mode classifieur JSON (pas d'artefact implementation_plan.md, zéro appel d'outil). "
         "Classe cet e-mail entrant dans l'une des 3 sorties exclusives d'Alfred V8.0 "
-        "(SILENT_NO_ACTION, DRAFT_REPLY, USER_ACTION_REQUIRED).\n\n"
+        "(SILENT_NO_ACTION, DRAFT_REPLY, USER_ACTION_REQUIRED). "
+        "Si c'est une confirmation datée d'achat de billet, réservation, hôtel, transport, "
+        "spectacle ou RDV absent de l'agenda, renseigne calendar_action.intent='CONFIRM_EVENT' "
+        "avec attendees=[] et send_invites=false pour les marchands/billetteries (durée +1h par "
+        "défaut si l'heure de fin manque).\n\n"
         f"{identity_line}{spotlighted}\n{cal_block}\nFiches de référence Tier-2:\n{ref_context}"
     )
 
@@ -195,7 +201,12 @@ def extract_conversation_id(payload: dict[str, object]) -> str | None:
             val = obj.get(key)
             if isinstance(val, str):
                 cleaned = val.strip()
-                if cleaned and Path(cleaned).name == cleaned and cleaned not in {".", ".."}:
+                if (
+                    cleaned
+                    and not any(bad in cleaned for bad in ("/", "\\", "..", "\x00"))
+                    and Path(cleaned).name == cleaned
+                    and cleaned not in {".", ".."}
+                ):
                     return cleaned
     return None
 

@@ -11,9 +11,9 @@ from zoneinfo import ZoneInfo
 from alfred.domain.calendar_models import CalendarSlotProposal
 from alfred.domain.models import AlfredSettings, CalendarEventItem
 from alfred.repositories.state_store import StateStore
-from alfred.services.agy_daemon_sync import DaemonSyncStatus
 from alfred.services.agy_session_manager import AgySessionManager
 from alfred.services.gmail_service import GmailService
+from alfred.services.specialist_trace_service import SpecialistTraceService
 
 
 def print_skipped_disabled(feature_name: str, command: str = "") -> int:
@@ -57,6 +57,8 @@ def register_calendar_parsers(sub: Any) -> None:
     p_allow.add_argument("--list", action="store_true")
     p_allow.add_argument("--add", action="append", default=[])
     p_allow.add_argument("--remove", action="append", default=[])
+    p_allow.add_argument("--archive-trace", dest="archive_trace", action="store_true", default=None)
+    p_allow.add_argument("--no-archive-trace", dest="archive_trace", action="store_false")
 
     _register_event_mutation_parsers(sub)
 
@@ -76,7 +78,10 @@ def _register_event_mutation_parsers(sub: Any) -> None:
     p_create.add_argument("--description", default="")
     p_create.add_argument("--thread-id", default="")
     p_create.add_argument("--message-id", default="")
-    p_create.add_argument("--archive-trace", action="store_true")
+    p_create.add_argument(
+        "--archive-trace", dest="archive_trace", action="store_true", default=None
+    )
+    p_create.add_argument("--no-archive-trace", dest="archive_trace", action="store_false")
 
     p_upd = sub.add_parser("update-event")
     p_upd.add_argument("--calendar", default="primary")
@@ -89,6 +94,8 @@ def _register_event_mutation_parsers(sub: Any) -> None:
     p_upd.add_argument("--attendee", action="append", default=None)
     p_upd.add_argument("--rrule", action="append", default=None)
     p_upd.add_argument("--no-send-invites", action="store_true")
+    p_upd.add_argument("--archive-trace", dest="archive_trace", action="store_true", default=None)
+    p_upd.add_argument("--no-archive-trace", dest="archive_trace", action="store_false")
 
     p_conf = sub.add_parser("confirm-event")
     p_conf.add_argument("--calendar", default="primary")
@@ -103,13 +110,16 @@ def _register_event_mutation_parsers(sub: Any) -> None:
     p_conf.add_argument("--no-release-holds", action="store_true")
     p_conf.add_argument("--location", default="")
     p_conf.add_argument("--description", default="")
-    p_conf.add_argument("--archive-trace", action="store_true")
+    p_conf.add_argument("--archive-trace", dest="archive_trace", action="store_true", default=None)
+    p_conf.add_argument("--no-archive-trace", dest="archive_trace", action="store_false")
     p_conf.add_argument("--keep-in-inbox", action="store_true")
 
     p_del = sub.add_parser("delete-event")
     p_del.add_argument("--calendar", default="primary")
     p_del.add_argument("--event-id", required=True)
     p_del.add_argument("--notify", action="store_true")
+    p_del.add_argument("--archive-trace", dest="archive_trace", action="store_true", default=None)
+    p_del.add_argument("--no-archive-trace", dest="archive_trace", action="store_false")
 
 
 def resolve_calendar_id(cal_spec: str, calendar_service: Any, settings: AlfredSettings) -> str:
@@ -216,13 +226,17 @@ def dispatch_calendar_command(
         events = calendar_service.list_events(cal_id, t_min, t_max)
         payload = [e.model_dump(mode="json") for e in events]
     elif cmd == "hold-allowlist":
-        payload = _exec_hold_allowlist(calendar_service, store, gmail_service, args)
+        payload = _exec_hold_allowlist(
+            calendar_service, store, gmail_service, agy_manager, settings, args
+        )
     elif cmd == "create-event":
         payload = _exec_create_event(
             calendar_service, settings, gmail_service, agy_manager, timezone, args
         )
     elif cmd == "update-event":
-        payload = _exec_update_event(calendar_service, settings, gmail_service, timezone, args)
+        payload = _exec_update_event(
+            calendar_service, settings, gmail_service, agy_manager, timezone, args
+        )
     elif cmd == "confirm-event":
         payload = _exec_confirm_event(
             calendar_service, settings, gmail_service, agy_manager, timezone, args
@@ -231,6 +245,10 @@ def dispatch_calendar_command(
         cal_id = resolve_calendar_id(str(args.calendar), calendar_service, settings)
         ev_id = str(args.event_id)
         calendar_service.delete_event(cal_id, ev_id, send_updates="all" if args.notify else "")
+        _surface_calendar_trace(
+            agy_manager, settings, f"[DELETE] {ev_id}",
+            f"- **Deleted Event ID** : `{ev_id}` (`{cal_id}`)\n", ev_id, args,
+        )
         payload = {"deleted_event_id": ev_id, "calendar_id": cal_id}
     print(json.dumps(payload, indent=2, ensure_ascii=False))
     return 0
@@ -240,6 +258,8 @@ def _exec_hold_allowlist(
     calendar_service: Any,
     store: StateStore,
     gmail_service: GmailService | None,
+    agy_manager: AgySessionManager | None,
+    settings: AlfredSettings,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
     """Apply --add / --remove mutations and return current [HOLD] allowlist dictionary."""
@@ -247,6 +267,13 @@ def _exec_hold_allowlist(
         calendar_service.set_hold_allowlist_entry(str(addr), remove=False)
     for addr in args.remove:
         calendar_service.set_hold_allowlist_entry(str(addr), remove=True)
+    mutated = [*(str(a) for a in args.add), *(str(r) for r in args.remove)]
+    if mutated:
+        _surface_calendar_trace(
+            agy_manager, settings, f"[ALLOWLIST] {', '.join(mutated)}",
+            f"- **Added** : `{args.add}`\n- **Removed** : `{args.remove}`\n",
+            mutated[0], args,
+        )
     owners = _safe_owner_addresses(gmail_service)
     return {
         "emails": sorted(store.hold_allowlist.load().emails),
@@ -262,7 +289,7 @@ def _exec_create_event(
     timezone: str,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
-    """Create a [HOLD] block or firm Google Calendar event and optionally archive trace."""
+    """Create a [HOLD] block or firm Google Calendar event and surface trace if needed."""
     cal_id = resolve_calendar_id(str(args.calendar), calendar_service, settings)
     start_iso = _normalize_event_iso(str(args.from_iso), timezone, is_end=False)
     end_iso = _normalize_event_iso(str(args.to_iso), timezone, is_end=True)
@@ -289,10 +316,9 @@ def _exec_create_event(
         ev_id = calendar_service.insert_event(
             cal_id, item, send_invites=not bool(args.no_send_invites), owner_addresses=owners
         )
-    _maybe_archive_calendar_trace(
-        agy_manager, bool(args.archive_trace),
-        f"{'[HOLD]' if args.hold else '[EVENT]'} {summary}",
-        f"- **Event ID** : `{ev_id}` (`{start_iso}` -> `{end_iso}`)\n", str(ev_id),
+    _surface_calendar_trace(
+        agy_manager, settings, f"{'[HOLD]' if args.hold else '[EVENT]'} {summary}",
+        f"- **Event ID** : `{ev_id}` (`{start_iso}` -> `{end_iso}`)\n", str(ev_id), args,
     )
     return {"event_id": str(ev_id), "calendar_id": cal_id, "hold": bool(args.hold)}
 
@@ -301,6 +327,7 @@ def _exec_update_event(
     calendar_service: Any,
     settings: AlfredSettings,
     gmail_service: GmailService | None,
+    agy_manager: AgySessionManager | None,
     timezone: str,
     args: argparse.Namespace,
 ) -> dict[str, Any]:
@@ -312,11 +339,16 @@ def _exec_update_event(
     e_iso = _normalize_event_iso(str(args.to_iso), timezone, True) if args.to_iso else None
     attendees = [str(a) for a in args.attendee] if args.attendee is not None else None
     recurrence = [str(r) for r in args.rrule] if args.rrule is not None else None
+    ev_id = str(args.event_id)
     updated = calendar_service.update_event(
-        cal_id, str(args.event_id), summary=args.summary, start_iso=s_iso, end_iso=e_iso,
+        cal_id, ev_id, summary=args.summary, start_iso=s_iso, end_iso=e_iso,
         description=args.description, location=args.location, attendees=attendees,
         recurrence=recurrence, send_invites=not bool(args.no_send_invites),
         owner_addresses=_safe_owner_addresses(gmail_service),
+    )
+    _surface_calendar_trace(
+        agy_manager, settings, f"[UPDATE] {args.summary or ev_id}",
+        f"- **Updated Event ID** : `{ev_id}` (`{cal_id}`)\n", ev_id, args,
     )
     if isinstance(updated, CalendarEventItem):
         return updated.model_dump(mode="json")
@@ -349,9 +381,9 @@ def _exec_confirm_event(
     email_archived = _try_archive_source_thread(
         gmail_service, settings, thread_id, bool(getattr(args, "keep_in_inbox", False))
     )
-    _maybe_archive_calendar_trace(
-        agy_manager, bool(args.archive_trace), f"[CONFIRMED] {summary}",
-        f"- **Confirmed** : `{conf_id}` (`{start_iso}` -> `{end_iso}`)\n", str(conf_id),
+    _surface_calendar_trace(
+        agy_manager, settings, f"[CONFIRMED] {summary}",
+        f"- **Confirmed** : `{conf_id}` (`{start_iso}` -> `{end_iso}`)\n", str(conf_id), args,
     )
     return {
         "confirmed_event_id": conf_id, "released_hold_ids": released,
@@ -359,21 +391,24 @@ def _exec_confirm_event(
     }
 
 
-def _maybe_archive_calendar_trace(
+def _surface_calendar_trace(
     agy_manager: AgySessionManager | None,
-    enabled: bool,
+    settings: AlfredSettings,
     title: str,
     trace_md: str,
     source_id: str,
+    args: argparse.Namespace,
 ) -> None:
-    """Materialize an archived Antigravity trace session when --archive-trace is requested."""
-    if enabled and agy_manager is not None:
-        agy_manager.create_and_archive_trace(
-            workspace="alfred-calendar", title=title,
-            trace_markdown=trace_md, source_message_id=source_id, spawn_live=True,
-        )
-        if agy_manager.daemon_sync.sync_if_needed().status == DaemonSyncStatus.DEFERRED_ACTIVE_TURN:
-            agy_manager.daemon_sync.spawn_deferred_sync_worker()
+    """Surface a visible EXECUTED trace in alfred-calendar unless suppressed/deduplicated."""
+    SpecialistTraceService().surface_mutation_trace(
+        agy_manager=agy_manager,
+        settings=settings,
+        target_role="calendar",
+        title=title,
+        trace_markdown=trace_md,
+        source_id=source_id,
+        archive_trace_flag=getattr(args, "archive_trace", None),
+    )
 
 
 def _try_archive_source_thread(
