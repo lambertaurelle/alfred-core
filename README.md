@@ -2,6 +2,8 @@
 
 Outil personnel **gratuit et open-source** combinant **Antigravity Web**, des commandes Python locales sur Google Workspace et un **pont MCP OAuth 2.1 pour Gemini App**.
 
+![Alfred V8.0 — End-to-End Workflow & Out-of-the-Box Use Cases](docs/assets/alfred-workflow.jpg)
+
 ---
 
 ## Pourquoi Alfred (face à Gemini App seul) ?
