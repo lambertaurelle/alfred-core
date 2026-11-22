@@ -71,9 +71,9 @@ fi
 while IFS= read -r rel_file; do
     [[ -z "${rel_file}" ]] && continue
     [[ ! -f "${rel_file}" ]] && continue
-    MATCHES="$(grep -nE "${LEAK_CONTENT_REGEX}" "${rel_file}" || true)"
+    MATCHES="$(grep -InE "${LEAK_CONTENT_REGEX}" "${rel_file}" || true)"
     if [[ -n "${EXTRA_CASE_INSENSITIVE_REGEX}" ]]; then
-        EXTRA_MATCHES="$(grep -niE "${EXTRA_CASE_INSENSITIVE_REGEX}" "${rel_file}" || true)"
+        EXTRA_MATCHES="$(grep -IniE "${EXTRA_CASE_INSENSITIVE_REGEX}" "${rel_file}" || true)"
         [[ -n "${EXTRA_MATCHES}" ]] && MATCHES="${MATCHES:+${MATCHES}$'\n'}${EXTRA_MATCHES}"
     fi
     if [[ -n "${MATCHES}" ]]; then
