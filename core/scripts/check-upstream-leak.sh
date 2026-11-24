@@ -124,8 +124,28 @@ if git rev-parse --verify HEAD >/dev/null 2>&1; then
     AUTHOR_LIST="$(git log HEAD --format='%an <%ae>' | sort -u)"
     AUTHOR_LEAKS="$(printf '%s\n' "${AUTHOR_LIST}" | grep -Ei "${AUTHOR_REGEX}" || true)"
     if [[ -n "${EXTRA_CASE_INSENSITIVE_REGEX}" ]]; then
-        AUTHOR_EXTRA="$(printf '%s\n' "${AUTHOR_LIST}" | grep -Ei "${EXTRA_CASE_INSENSITIVE_REGEX}" || true)"
-        [[ -n "${AUTHOR_EXTRA}" ]] && AUTHOR_LEAKS="${AUTHOR_LEAKS:+${AUTHOR_LEAKS}$'\n'}${AUTHOR_EXTRA}"
+        # Scope instance-private author checks to commits ahead of upstream base when present,
+        # so already-merged GitHub squash-merge commits on origin/main do not block new PRs.
+        UPSTREAM_BASE=""
+        for candidate_ref in \
+            refs/remotes/origin/main \
+            refs/remotes/origin/master \
+            refs/remotes/upstream/main \
+            refs/remotes/upstream/master; do
+            if git rev-parse --verify --quiet "${candidate_ref}" >/dev/null 2>&1; then
+                UPSTREAM_BASE="${candidate_ref}"
+                break
+            fi
+        done
+        if [[ -n "${UPSTREAM_BASE}" ]]; then
+            PRIVATE_AUTHOR_LIST="$(git log "${UPSTREAM_BASE}..HEAD" --format='%an <%ae>' | sort -u)"
+        else
+            PRIVATE_AUTHOR_LIST="${AUTHOR_LIST}"
+        fi
+        if [[ -n "${PRIVATE_AUTHOR_LIST}" ]]; then
+            AUTHOR_EXTRA="$(printf '%s\n' "${PRIVATE_AUTHOR_LIST}" | grep -Ei "${EXTRA_CASE_INSENSITIVE_REGEX}" || true)"
+            [[ -n "${AUTHOR_EXTRA}" ]] && AUTHOR_LEAKS="${AUTHOR_LEAKS:+${AUTHOR_LEAKS}$'\n'}${AUTHOR_EXTRA}"
+        fi
     fi
     if [[ -n "${AUTHOR_LEAKS}" ]]; then
         echo "ERROR [Personal Identity Found in Git Commit Metadata]:" >&2

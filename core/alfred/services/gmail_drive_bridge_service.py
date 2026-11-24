@@ -154,13 +154,13 @@ class GmailDriveBridgeService:
             if san.suspicious_injection:
                 any_suspicious = True
             if san.clean_text:
-                body_sections.append(f"[Pièce jointe: {meta.filename}]\n{san.clean_text}")
+                body_sections.append(f"[Attachment: {meta.filename}]\n{san.clean_text}")
                 preview = " ".join(san.clean_text.split())[:160]
                 brief_bullets.append(
-                    f"Pièce jointe `{meta.filename}` ({meta.mime_type}, {method}) : {preview}"
+                    f"Attachment `{meta.filename}` ({meta.mime_type}, {method}): {preview}"
                 )
             else:
-                brief_bullets.append(f"Pièce jointe `{meta.filename}` ({meta.mime_type}, {method})")
+                brief_bullets.append(f"Attachment `{meta.filename}` ({meta.mime_type}, {method})")
 
         if not body_sections:
             return (msg, brief_bullets, any_suspicious)

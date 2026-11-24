@@ -254,17 +254,17 @@ class DelegationService:
             agent_flags = ["--agent", "plan-synthesizer", "--mode", "plan"]
             prompt = (
                 f"# {clean_title}\n\n"
-                f"Délégation depuis `{source_workspace}`{origin}. Produis directement l'artefact "
-                "Gate bloquant `implementation_plan.md` (`UserFacing: true`, "
-                "`RequestFeedback: true`) sans boucle d'exploration redondante pour :\n\n"
+                f"Delegation from `{source_workspace}`{origin}. Directly produce the blocking "
+                "Gate artifact `implementation_plan.md` (`UserFacing: true`, "
+                "`RequestFeedback: true`) without redundant exploration loops for:\n\n"
                 f"{brief}"
             )
         else:
             agent_flags = ["--agent", "plan-executor"]
             prompt = (
                 f"# {clean_title}\n\n"
-                f"Exécution Single-Gate approuvée depuis `{source_workspace}`{origin}. "
-                f"Exécute directement les actions validées sans ouvrir de second plan :\n\n{brief}"
+                f"Approved Single-Gate execution from `{source_workspace}`{origin}. "
+                f"Directly execute the approved actions without opening a second plan:\n\n{brief}"
             )
         cmd = [
             agy_bin,

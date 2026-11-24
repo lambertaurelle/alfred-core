@@ -22,6 +22,7 @@ MAX_ARCHIVE_BYTES = 25 * 1024 * 1024
 MAX_ZIP_MEMBERS = 250
 MAX_SINGLE_XML_BYTES = 10 * 1024 * 1024
 MAX_TOTAL_XML_BYTES = 25 * 1024 * 1024
+ATTACHMENT_BODY_MARKERS: tuple[str, ...] = ("[Attachment:", "[Pièce jointe:")
 
 DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -51,6 +52,28 @@ _TEXT_MIMES = frozenset(
 )
 _B64URL_RE = re.compile(r"^[A-Za-z0-9_-]*={0,2}$")
 _UNICODE_SLASH_RE = re.compile(r"[\uff0f\u2215\\]")
+
+
+def split_attachment_body(body_text: str) -> tuple[str, str, str]:
+    """Split email body from appended attachment section on EN or legacy FR markers.
+
+    Args:
+        body_text: Combined email body and optional attachment text string.
+
+    Returns:
+        Tuple of (email_body, matched_marker, attachment_remainder).
+    """
+    if not body_text:
+        return ("", "", "")
+    earliest: tuple[int, str, int] | None = None
+    for marker in ATTACHMENT_BODY_MARKERS:
+        match = re.search(rf"(?:^|\n+){re.escape(marker)}", body_text)
+        if match is not None and (earliest is None or match.start() < earliest[0]):
+            earliest = (match.start(), marker, match.end())
+    if earliest is None:
+        return (body_text, "", "")
+    split_idx, found_marker, att_start = earliest
+    return (body_text[:split_idx], found_marker, body_text[att_start:])
 
 
 def _safe_int(value: object) -> int:

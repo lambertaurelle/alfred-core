@@ -1,21 +1,26 @@
-# 📅 Workspace `alfred-calendar` — Agendas Multiples, Cycle `[HOLD]` & Exclusion Stricte d'Auto-Invitation
+# 📅 Workspace `alfred-calendar` — Multi-Calendars, `[HOLD]` Lifecycle & Strict Self-Invite Exclusion
 
-> **Routage Modèle (Muscle)** : `gemini-4-hydrogen-medium` (Agent-Spawned ou Délégation `alfred delegate --to calendar`)  
-> **Racine Alfred & CLI** : `/root/Alfred` (`${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`)  
-> **Pipeline Obligatoire** : **1. Inspection `Read-Only` $\rightarrow$ 2. Gate `implementation_plan.md` $\rightarrow$ 3. Exécuteur Léger `Hydrogen` (`plan-executor`)**
+> **Model Routing (Muscle)**: `gemini-4-hydrogen-medium` (Agent-Spawned or Delegated via `alfred delegate --to calendar`)  
+> **Alfred Root & CLI**: `/root/Alfred` (`${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`)  
+> **Mandatory Pipeline**: **1. `Read-Only` Inspection $\rightarrow$ 2. `implementation_plan.md` Gate $\rightarrow$ 3. Lightweight `Hydrogen` Executor (`plan-executor`)**
 
-## 1. Étape 1 — Lecture Multi-Calendriers & Disponibilités (`Read-Only`)
-- Inspecte les agendas et créneaux occupés sans limite d'horizon via `list-calendars`, `query-freebusy --from "<ISO>" --to "<ISO>"`, `list-events` et `hold-allowlist --list` (couvrant événements futurs lointains et séries récurrentes `RRULE`).
-- Prend en charge les éventuelles extensions personnelles déclarées dans `instance/extensions/` sans aucune logique personnelle codée en dur dans `core/`.
+Generic multi-calendar availability, allowlisted `[HOLD]` scheduling, dated booking confirmations, and strict self-invite exclusion.
 
-## 2. Cycle `[HOLD]` Allowlisté, Réservations & Exclusion d'Auto-Invitation
-1. **Règle Absolue Zéro Auto-Invitation Propriétaire ni Marchand** :
-   - Les adresses personnelles et alias `sendAs` de l'utilisateur (`identity.default_send_as_email`, `identity.calendar_organizer_email`, `identity.never_invite_emails` et adresses authentifiées Gmail) ainsi que les adresses automatisées (`noreply`, `no-reply`, `feedback@`, `bounces+`) ne doivent **jamais** figurer dans `attendees` d'une invitation Google Calendar. Pour les confirmations d'achat/billets/réservations marchandes, conserver `attendees: []` et `--no-send-invites`.
-2. **Pose de `[HOLD]` (`create-event --hold`)** :
-   - Bloque l'agenda en `opaque` (`[HOLD] <Objet>`). Seuls les proches explicitement inscrits dans `calendar_hold_allowlist.json` sont ajoutés immédiatement ; tout interlocuteur externe est différé dans `alfred_candidate_attendees` (**zéro notification externe au stade `[HOLD]`**).
-3. **Confirmation, Mise à Jour ou Suppression sous Gate Obligatoire (`implementation_plan.md`)** :
-   - Toute conversion de `[HOLD]` (`confirm-event --send-invites` ou `--no-send-invites`, avec `--location` / `--description`), modification (`update-event`) ou suppression (`delete-event`) est soumise dans **`implementation_plan.md`** (`RequestFeedback: true`).
+## Bilingual FR/EN Runtime
+- Parse scheduling proposals and dated booking confirmations in both French and English, and present `implementation_plan.md` event summaries, locations, and invitations in the user's or email thread's language (French or English).
 
-## 3. Étape 3 — Exécution Post-Validation (`plan-executor` — Modèle Léger `Hydrogen`)
-- Après `Proceed`, `plan-executor` exécute la commande calendrier validée, nettoie les `[HOLD]` alternatifs du même fil et archive par défaut le fil Gmail source (sauf `--keep-in-inbox`).
-- Toute mutation exécutée depuis un autre workspace surface automatiquement une trace visible (`EXECUTED`) dans `alfred-calendar` (dédupliquée lorsqu'exécutée déjà depuis `alfred-calendar`, sauf `--archive-trace` explicite).
+## 1. Stage 1 — Multi-Calendar Reading & Availability (`Read-Only`)
+- Inspect calendars and busy windows across all future dates (no horizon limit, including recurring `RRULE` series) using `list-calendars`, `query-freebusy --from "<ISO>" --to "<ISO>"`, `list-events`, and `hold-allowlist --list`.
+- Support optional personal rules registered in `instance/extensions/` with zero personal logic hardcoded in `core/`.
+
+## 2. Allowlisted `[HOLD]` Lifecycle, Bookings & Self-Invite Exclusion
+1. **Strict Rule — Zero Owner Self-Invites & Zero Merchant Invites**:
+   - Owner personal addresses and `sendAs` aliases (`identity.default_send_as_email`, `identity.calendar_organizer_email`, `identity.never_invite_emails`, plus authenticated Gmail addresses) and automated addresses (`noreply`, `no-reply`, `feedback@`, `bounces+`) must **never** appear in Google Calendar `attendees`. For merchant ticket/booking/hotel confirmations, enforce `attendees: []` and `--no-send-invites`.
+2. **Placing a `[HOLD]` (`create-event --hold`)**:
+   - Blocks calendar availability as `opaque` (`[HOLD] <Subject>`). Only contacts explicitly listed in `calendar_hold_allowlist.json` are invited immediately; external interlocutors are stored in `alfred_candidate_attendees` (**zero external notification at `[HOLD]` stage**).
+3. **Confirmation, Update, or Deletion Under Mandatory Gate (`implementation_plan.md`)**:
+   - Every `[HOLD]` confirmation (`confirm-event --send-invites` or `--no-send-invites`, with `--location` / `--description`), update (`update-event`), or deletion (`delete-event`) must be approved in **`implementation_plan.md`** (`RequestFeedback: true`).
+
+## 3. Stage 3 — Post-Validation Execution (`plan-executor` — Lightweight `Hydrogen`)
+- After `Proceed`, `plan-executor` executes the approved calendar command, cleans up competing `[HOLD]` events on the same thread, and archives the source Gmail thread by default (unless `--keep-in-inbox`).
+- Any mutation run from another workspace automatically surfaces a visible `EXECUTED` trace in `alfred-calendar` (deduplicated when run directly inside `alfred-calendar`, unless `--archive-trace` is explicitly set).

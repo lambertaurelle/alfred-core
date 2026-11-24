@@ -1,6 +1,6 @@
 project_name: "Alfred Family Office Chief of Staff"
 timezone: "Europe/Paris"
-language: "fr-FR"
+language: "en-US"  # Supported runtime locales: "en-US", "fr-FR"
 
 features:
   drive_knowledge_sync: true
@@ -87,6 +87,7 @@ drive_watcher:
     - "/Backups"
     - "/Photos"
     - "/Archives_Froides"
+    - "/Cold_Archives"
     - "/node_modules"
     - "/.git"
   excluded_mime_prefixes:

@@ -28,7 +28,8 @@ def _make_paths(tmp_path: Path) -> AlfredPaths:
     """Create isolated AlfredPaths in tmp_path populated with clean knowledge templates."""
     paths = AlfredPaths.from_env(tmp_path)
     paths.templates_knowledge_dir.mkdir(parents=True, exist_ok=True)
-    for tpl in Path("/root/Alfred/core/templates/knowledge").glob("*.md"):
+    tpl_dir = Path(__file__).resolve().parents[2] / "core" / "templates" / "knowledge"
+    for tpl in tpl_dir.glob("*.md"):
         (paths.templates_knowledge_dir / tpl.name).write_text(
             tpl.read_text(encoding="utf-8"),
             encoding="utf-8",
@@ -109,9 +110,11 @@ def test_knowledge_service_progressive_tiers_and_backup(tmp_path: Path) -> None:
     ranked = svc.select_relevant_frontmatters("bail immobilier echeances")
     assert ranked[0][1].id == "patrimoine_immobilier"
 
-    # Accent-insensitive French matching ("regles" <-> "Règles", "preavis" <-> "préavis")
-    accent_hits = svc.select_relevant_frontmatters("regles classement")
-    assert accent_hits and accent_hits[0][1].id == "drive_taxonomy_and_filing_rules"
+    # Accent-insensitive French matching via fold_accents()
+    filing_hits = svc.select_relevant_frontmatters("filing rules")
+    assert filing_hits and filing_hits[0][1].id == "drive_taxonomy_and_filing_rules"
+    synth_hits = svc.select_relevant_frontmatters("synthese echeances")
+    assert synth_hits and synth_hits[0][1].id == "patrimoine_immobilier"
     preavis_hits = svc.select_relevant_frontmatters("quel est le preavis")
     assert preavis_hits and preavis_hits[0][1].id == "patrimoine_immobilier"
 

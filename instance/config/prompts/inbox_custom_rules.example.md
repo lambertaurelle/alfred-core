@@ -1,6 +1,6 @@
-# Règles Personnelles Supplémentaires `alfred-inbox` (Exemple)
+# Custom Personal `alfred-inbox` Rules (Example)
 
-Copiez ce fichier vers `instance/config/prompts/inbox_custom_rules.md` (gitignoré) si vous souhaitez injecter vos propres consignes de ton ou de tri.
+Copy this file to `instance/config/prompts/inbox_custom_rules.md` (gitignored) to inject your own tone, reply language (e.g., French or English), or triage preferences.
 
-- Ton souhaité sur les brouillons : courtois, direct et synthétique.
-- Signature de fin de mail : `Bien cordialement,`
+- Preferred draft tone: polite, direct, and concise (matching the incoming email's language, French or English).
+- Default closing sign-off: `Best regards,` (or your preferred closing greeting in French or English).

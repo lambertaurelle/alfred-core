@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -12,6 +13,39 @@ from alfred.services.evolve_governance_service import (
     EvolveGovernanceService,
     _sanitized_git_env,
 )
+
+
+def _run_english_only_gate(
+    worktree: Path,
+    python_bin: Path,
+    git_env: dict[str, str],
+) -> None:
+    """Execute check_english_only.py against worktree when present."""
+    eng_script = worktree / "core" / "scripts" / "check_english_only.py"
+    if not eng_script.exists():
+        return
+    eng_env = dict(git_env)
+    wt_core = worktree / "core"
+    runner_core = Path(__file__).resolve().parents[2]
+    py_paths = [
+        str(p)
+        for p in (wt_core, runner_core)
+        if (p / "alfred" / "services" / "english_policy_service.py").is_file()
+    ]
+    if eng_env.get("PYTHONPATH"):
+        py_paths.append(eng_env["PYTHONPATH"])
+    if py_paths:
+        eng_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(py_paths))
+    eng_res = subprocess.run(
+        [str(python_bin), str(eng_script), "--repo-root", str(worktree)],
+        cwd=worktree,
+        env=eng_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if eng_res.returncode != 0:
+        raise RuntimeError(f"English-only gate failed:\n{eng_res.stderr}\n{eng_res.stdout}")
 
 
 def run_leak_and_ext_checks(
@@ -54,6 +88,8 @@ def run_leak_and_ext_checks(
         if arch_res.returncode != 0:
             msg = f"Architecture gate failed:\n{arch_res.stderr}\n{arch_res.stdout}"
             raise RuntimeError(msg)
+
+    _run_english_only_gate(worktree, python_bin, git_env)
 
     if (worktree / "core" / "alfred" / "main.py").is_file() or (
         worktree / "docs" / "SPEC.md"

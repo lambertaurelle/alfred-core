@@ -252,13 +252,13 @@ class GcpBootstrapService:
         audience_url = f"https://console.cloud.google.com/auth/audience?project={project_id}"
         clients_url = f"https://console.cloud.google.com/auth/clients?project={project_id}"
         print(
-            "\n=== Création du client Desktop OAuth2 Google Cloud ===\n"
-            f"1. Écran de consentement (Audience) : {audience_url}\n"
-            f"2. Client OAuth Desktop : {clients_url}\n"
-            "3. Téléchargez le fichier JSON Desktop App et collez son contenu sur une ligne :\n"
+            "\n=== Create Google Cloud OAuth2 Desktop Client ===\n"
+            f"1. OAuth Consent Screen (Audience): {audience_url}\n"
+            f"2. OAuth Desktop Client: {clients_url}\n"
+            "3. Download the Desktop App JSON file and paste its content on one line:\n"
         )
         reader = self._input_fn if self._input_fn is not None else input
-        raw_text = reader("Contenu JSON du client OAuth Desktop : ").strip()
+        raw_text = reader("OAuth Desktop client JSON content: ").strip()
         if not raw_text:
             raise ValueError("Empty OAuth Desktop JSON input.")
         validate_and_save_client_json(self._paths.secrets_dir, raw_text)

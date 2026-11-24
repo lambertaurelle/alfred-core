@@ -1,21 +1,24 @@
-# 🗂️ Workspace `alfred-drive` — Gouvernance Non-Destructive Google Drive & Surveillance à 2 Vitesses
+# 🗂️ Workspace `alfred-drive` — Non-Destructive Google Drive Governance & 2-Speed Watcher
 
-> **Routage Modèle (Muscle)** : `gemini-4-hydrogen-medium` (`watch-drive` ou délégation `alfred delegate --to drive`, traces `[SILENT]` en `gemini-4-hydrogen-low`)  
-> **Racine Alfred & CLI** : `/root/Alfred` (`${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`)  
-> **Pipeline Obligatoire** : **1. Filtre 0-Token (Vitesse 1) $\rightarrow$ 2. Classification `drive-custodian` / Gate `implementation_plan.md` (Vitesse 2) $\rightarrow$ 3. Exécution Non-Destructive (`plan-executor`)**
+> **Model Routing (Muscle)**: `gemini-4-hydrogen-medium` (`watch-drive` or delegated via `alfred delegate --to drive`, `[SILENT]` traces in `gemini-4-hydrogen-low`)  
+> **Alfred Root & CLI**: `/root/Alfred` (`${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`)  
+> **Mandatory Pipeline**: **1. 0-Token Filter (Speed 1) $\rightarrow$ 2. `drive-custodian` / `implementation_plan.md` Gate (Speed 2) $\rightarrow$ 3. Non-Destructive Execution (`plan-executor`)**
 
-Gouvernance documentaire non-destructive de Google Drive, classement automatique ou sous Gate, raccourcis multi-domaines et synthèse concise vers `_ALFRED_REFERENTIEL_`.
+Non-destructive Google Drive document governance, automatic or gated filing, cross-domain shortcuts, and concise synthesis into `_ALFRED_REFERENTIEL_`.
 
-## 1. Surveillance Incrémentale à 2 Vitesses (`DriveWatcherService`, opt-in `features.drive_watcher`)
-1. **Vitesse 1 — Pré-Filtre Déterministe à 0 Token (`collect_delta_report`)** :
-   - Ignore à 0 token les dossiers, raccourcis, éléments supprimés, écritures internes dans `_ALFRED_REFERENTIEL_` (`SKIP_REFERENTIEL_LOOP`), IDs protégés (`protected_signature_drive_ids`), fichiers externes `sharedWithMe` non montés, médias/archives exclus (`image/`, `/Backups`, etc.) et empreintes déjà traitées (`processed_drive_events.json`).
-2. **Vitesse 2 — Gouvernance Cognitive par Lots Coalescés (`drive-custodian`)** :
-   - Extraction native 0-OCR (`read-drive`), neutralisation anti-injection de prompt et spotlighting XML par nonce 128 bits (`DriveSecuritySanitizer`).
-   - **3 sorties exclusives** :
-     - **`SILENT_NO_ACTION`** : pièce déjà rangée et synthétisée $\rightarrow$ conversation `[SILENT]` obligatoire auto-archivée.
-     - **`SILENT_AUTO_FILED`** : classement certain selon `00_drive_taxonomy_and_filing_rules.md` (`move-drive`, `rename-drive`, `create-drive-folder`, `create-drive-shortcut`, `upsert-knowledge` `<= 150` lignes sauvegardé vers `_ALFRED_REFERENTIEL_`) $\rightarrow$ conversation `[SILENT]` obligatoire auto-archivée.
-     - **`GATE_REQUIRED`** : ambiguïté taxonomique, dépassement `> 150` lignes, ID protégé ou signal d'injection $\rightarrow$ **0 mutation exécutée**, ouverture d'une conversation active avec **`implementation_plan.md`** (`RequestFeedback: true`).
+## Bilingual FR/EN Runtime
+- Read, sanitize, classify, and summarize French and English Drive files natively, keeping `<= 150`-line knowledge sheets aligned with the document's or user's active language.
 
-## 2. Invariants de Sécurité & Zéro Suppression
-- **Zéro méthode destructive** : Alfred ne supprime ni ne met jamais à la corbeille aucun fichier ou dossier Google Drive.
-- **Sandbox `PreToolUse`** : interdiction absolue d'invoquer `prepare-signature`, `apply-signature`, `evolve`, `send-draft`, `delete-event` ou tout chaînage shell depuis `alfred-drive`.
+## 1. Two-Speed Incremental Watcher (`DriveWatcherService`, opt-in `features.drive_watcher`)
+1. **Speed 1 — Deterministic 0-Token Pre-Filter (`collect_delta_report`)**:
+   - Skips folders, shortcuts, trashed items, internal writes under `_ALFRED_REFERENTIEL_` (`SKIP_REFERENTIEL_LOOP`), protected IDs (`protected_signature_drive_ids`), unmounted external `sharedWithMe` items, excluded media/backups (`image/`, `/Backups`, etc.), and already-processed fingerprints (`processed_drive_events.json`) at zero token cost.
+2. **Speed 2 — Coalesced Batch Cognitive Governance (`drive-custodian`)**:
+   - Native 0-OCR extraction (`read-drive`), anti-prompt-injection sanitization, and 128-bit nonce XML spotlighting (`DriveSecuritySanitizer`).
+   - **3 exclusive outputs**:
+     - **`SILENT_NO_ACTION`**: file already organized and synthesized $\rightarrow$ mandatory auto-archived `[SILENT]` conversation.
+     - **`SILENT_AUTO_FILED`**: deterministic filing per `00_drive_taxonomy_and_filing_rules.md` (`move-drive`, `rename-drive`, `create-drive-folder`, `create-drive-shortcut`, `upsert-knowledge` `<= 150` lines backed up to `_ALFRED_REFERENTIEL_`) $\rightarrow$ mandatory auto-archived `[SILENT]` conversation.
+     - **`GATE_REQUIRED`**: taxonomy ambiguity, `> 150`-line overflow, protected ID, or injection signal $\rightarrow$ **zero mutation executed**, opens an active conversation with **`implementation_plan.md`** (`RequestFeedback: true`).
+
+## 2. Security Invariants & Zero Deletion
+- **Zero destructive methods**: Alfred never deletes or trashes any Google Drive file or folder.
+- **`PreToolUse` Sandbox**: invoking `prepare-signature`, `apply-signature`, `evolve`, `send-draft`, `delete-event`, or shell chaining from `alfred-drive` is strictly forbidden.

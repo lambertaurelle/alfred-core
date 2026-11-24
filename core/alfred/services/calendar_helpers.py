@@ -339,7 +339,7 @@ def format_unlimited_calendar_snapshot(
         timezone: Configured IANA timezone name.
         events: Unlimited future CalendarEventItem list.
     """
-    lines = [f"Maintenant ({timezone}) : {now_iso}"]
+    lines = [f"Now ({timezone}): {now_iso}"]
     single = sort_events_chronologically([ev for ev in events if not ev.recurrence])
     recurring = sort_events_chronologically([ev for ev in events if ev.recurrence])
     for ev in single:
@@ -349,6 +349,6 @@ def format_unlimited_calendar_snapshot(
         tag = f"[HOLD thread={ev.thread_id or '-'} id={ev.event_id}] " if ev.is_hold else ""
         rrule_txt = "; ".join(ev.recurrence)
         lines.append(
-            f"- [RÉCURRENT {rrule_txt}] {ev.start_iso} -> {ev.end_iso} : {tag}{ev.summary}"
+            f"- [RECURRING {rrule_txt}] {ev.start_iso} -> {ev.end_iso} : {tag}{ev.summary}"
         )
     return "\n".join(lines)

@@ -15,7 +15,7 @@ CALENDAR_SUBJECT_RE = re.compile(
     r"^\s*(?:(?:re|fwd|tr)\s*:\s*)*"
     r"(?:invitation|updated\s+invitation|canceled\s+event|cancelled\s+event|"
     r"accepted|declined|tentative|accept[eé]|refus[eé]|peut-[eê]tre|"
-    r"annul[eé]|mise\s+[aà]\s+jour\s+de\s+l'invitation)\s*:",
+    r"annul[eé]|mise\s+[aà]\s+jour\s+de\s+l['’]invitation)\s*:",
     re.IGNORECASE,
 )
 CALENDAR_MIMES: frozenset[str] = frozenset({"text/calendar", "application/ics"})

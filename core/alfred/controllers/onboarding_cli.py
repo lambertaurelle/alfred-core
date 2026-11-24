@@ -88,7 +88,7 @@ def _register_signature_and_mcp_parsers(sub: Any) -> None:
     """Register prepare-signature, apply-signature, setup-mcp, and serve-mcp subparsers."""
     p_psig = sub.add_parser("prepare-signature")
     p_psig.add_argument("--pdf", required=True)
-    p_psig.add_argument("--reason", default="Signature document validée par l'utilisateur")
+    p_psig.add_argument("--reason", default="Document signature approved by user")
     p_psig.add_argument("--workspace", default="alfred-life")
     p_psig.add_argument("--page", type=int, default=0)
     p_psig.add_argument("--x", type=float, default=360.0)

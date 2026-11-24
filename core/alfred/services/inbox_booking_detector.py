@@ -6,6 +6,7 @@ import re
 from email.utils import parseaddr
 
 from alfred.domain.models import EmailMessage, fold_accents
+from alfred.services.attachment_extractor import split_attachment_body
 
 PASSIVE_PORTAL_PATTERNS: tuple[str, ...] = (
     r"nouveaux?\s+documents?.*espace",
@@ -14,6 +15,10 @@ PASSIVE_PORTAL_PATTERNS: tuple[str, ...] = (
     r"espace\s+generali",
     r"newsletter",
     r"se\s+desabonner",
+    r"new\s+documents?.*(?:portal|account)",
+    r"regulatory\s+document.*available",
+    r"monthly\s+(?:subscription\s+)?invoice.*available",
+    r"unsubscribe",
 )
 
 _AUTOMATED_EXACT_LOCALS: frozenset[str] = frozenset(
@@ -42,15 +47,17 @@ _AUTOMATED_LOCAL_RE = re.compile(
 )
 
 _SUBJECT_DISQUALIFY_RE = re.compile(
-    r"\b(?:offre\s+flash|code\s+promo\w*|bon\s+de\s+reduction|vente\s+privee|"
+    r"\b(?:offre\s+flash|flash\s+sale|code\s+promo\w*|promo\s+code|discount\s+code|"
+    r"bon\s+de\s+reduction|vente\s+privee|private\s+sale|"
     r"-\s*\d+\s*%|newsletter|inscription\s+(?:a\s+(?:la|notre)\s+)?newsletter|"
     r"recu\s+(?:de|pour\s+votre)\s+paiement|payment\s+receipt|avis\s+de\s+paiement|"
     r"code\s+de\s+verification|verification\s+code|"
-    r"facture\s+mensuelle)\b"
+    r"facture\s+mensuelle|monthly\s+invoice)\b"
 )
 _PARCEL_DISQUALIFY_RE = re.compile(
     r"\b(?:colis\s+en\s+preparation|suivi\s+de\s+livraison|livraison\s+standard|"
-    r"votre\s+colis\s+sera\s+prepare)\b"
+    r"votre\s+colis\s+sera\s+prepare|package\s+tracking|"
+    r"parcel\s+(?:is\s+)?out\s+for\s+delivery|out\s+for\s+delivery|shipment\s+tracking)\b"
 )
 
 _BOOKING_EVENT_CUE_RE = re.compile(
@@ -73,10 +80,13 @@ _BOOKING_CONFIRM_RE = re.compile(
     r"\be-?billet\b|\be-?ticket\b|\bboarding\s+pass\b|\bcarte\s+d['’ ]embarquement\b|"
     r"\bid\s+du\s+billet\b|\bnumero\s+de\s+(?:billet|reservation)\b|"
     r"\breservation\s*#[a-z0-9_-]+|\bbooking\s+(?:id|ref|reference)\b|"
-    r"\bcheck[- ]?in\b.{0,40}\bcheck[- ]?out\b"
+    r"\bcheck[- ]?in\b.{0,40}\bcheck[- ]?out\b|"
+    r"\bappointment\s+reminder\b"
     r")"
 )
-_PURCHASE_CONFIRM_RE = re.compile(r"\bconfirmation\s+d['’ ]achat\b")
+_PURCHASE_CONFIRM_RE = re.compile(
+    r"(?:\bconfirmation\s+d['’ ]achat\b|\bpurchase\s+confirmation\b)"
+)
 
 _MONTH_WORDS = (
     r"(?:janvier|january|janv?\.?|"
@@ -130,7 +140,7 @@ def has_dated_booking_signal(msg: EmailMessage) -> bool:
     Args:
         msg: Normalized EmailMessage to inspect.
     """
-    email_body = msg.body_text.split("\n\n[Pièce jointe:", 1)[0]
+    email_body, _, _ = split_attachment_body(msg.body_text)
     subj_folded = fold_accents(msg.subject)
     corpus = fold_accents(f"{msg.subject}\n{msg.snippet}\n{email_body}")
     if _SUBJECT_DISQUALIFY_RE.search(subj_folded) or _PARCEL_DISQUALIFY_RE.search(corpus):

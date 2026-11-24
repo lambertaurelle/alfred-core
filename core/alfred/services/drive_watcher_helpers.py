@@ -62,7 +62,7 @@ def classify_drive_batch_with_agy(
     agy_bin = agy.locate_agy_binary()
     if agy_bin is None:
         return (DriveWatcherOutputType.GATE_REQUIRED, "agy CLI unavailable for Speed-2", [])
-    kb = "\n\n".join(f"### {d.file_name}\n{d.body.strip()}" for d in docs) or "(Aucun)"
+    kb = "\n\n".join(f"### {d.file_name}\n{d.body.strip()}" for d in docs) or "(None)"
     blocks = [
         sanitizer.wrap_untrusted_drive_item(
             it.file_id,
@@ -74,9 +74,10 @@ def classify_drive_batch_with_agy(
         for it in items
     ]
     prompt = (
-        "Tu es `drive-custodian` dans `alfred-drive`. Classe ce lot en `SILENT_NO_ACTION`, "
-        "`SILENT_AUTO_FILED` ou `GATE_REQUIRED` (zéro suppression, fiches `.md` <= 150 lignes).\n\n"
-        f"## Référentiel\n{kb}\n\n## Pièces Drive\n" + "\n\n".join(blocks)
+        "You are `drive-custodian` in `alfred-drive`. Classify this batch into "
+        "`SILENT_NO_ACTION`, `SILENT_AUTO_FILED`, or `GATE_REQUIRED` "
+        "(zero deletions, `.md` notes <= 150 lines).\n\n"
+        f"## Knowledge Base\n{kb}\n\n## Drive Items\n" + "\n\n".join(blocks)
     )
     cmd = [
         agy_bin, "--project", settings.resolve_workspace_project("alfred-drive"),
@@ -106,7 +107,7 @@ def classify_drive_batch_with_agy(
         ]
     except Exception:
         return (DriveWatcherOutputType.GATE_REQUIRED, "Invalid agy Drive payload", [])
-    return (out_type, str(payload.get("reason") or "Analysé par alfred-drive"), ops)
+    return (out_type, str(payload.get("reason") or "Analyzed by alfred-drive"), ops)
 
 
 def render_drive_silent_trace(
@@ -133,15 +134,15 @@ def render_drive_silent_trace(
         "\n".join(
             f"- **{m.action.value}** `{m.file_id}` -> `{m.path or m.name}`" for m in applied
         )
-        or "- Aucune mutation Google Drive requise."
+        or "- No Google Drive mutations required."
     )
-    know_bullets = "\n".join(f"- `{fn}`" for fn in knowledge_files) or "- Aucune mise à jour `.md`."
+    know_bullets = "\n".join(f"- `{fn}`" for fn in knowledge_files) or "- No `.md` updates."
     return (
-        f"# Trace Automatique `alfred-drive` (`{output_type.value}`)\n\n"
-        f"- **Motif** : {reason}\n\n"
-        f"## Fichiers Analysés ({len(items)})\n{file_bullets}\n\n"
-        f"## Mutations Non-Destructives Appliquées\n{mut_bullets}\n\n"
-        f"## Fiches de Connaissance Synchronisées\n{know_bullets}\n"
+        f"# Automatic Trace `alfred-drive` (`{output_type.value}`)\n\n"
+        f"- **Reason**: {reason}\n\n"
+        f"## Analyzed Files ({len(items)})\n{file_bullets}\n\n"
+        f"## Non-Destructive Mutations Applied\n{mut_bullets}\n\n"
+        f"## Synced Knowledge Notes\n{know_bullets}\n"
     )
 
 
@@ -169,28 +170,28 @@ def render_drive_gate_plan(
     alerts: list[str] = []
     if suspicious_injection:
         alerts.append(
-            "> [!CAUTION]\n> Signal suspect d'injection de prompt détecté dans le fichier Drive. "
-            "Zéro mutation automatique exécutée."
+            "> [!CAUTION]\n> Suspicious prompt-injection signal detected in Drive file. "
+            "Zero automatic mutations executed."
         )
     if violations:
-        alerts.append(f"> [!WARNING]\n> Garde-fou déterministe déclenché : {'; '.join(violations)}")
+        alerts.append(f"> [!WARNING]\n> Deterministic guard triggered: {'; '.join(violations)}")
     alert_block = ("\n\n".join(alerts) + "\n\n") if alerts else ""
     item_lines = [
         f"- `{it.file_id}` — `{sanitized_map[it.file_id].clean_path or it.name}` (`{it.mime_type}`)"
         for it in items
     ]
     op_lines = [
-        f"- `{op.action.value}` (cible=`{op.file_id or op.knowledge_file}`, "
-        f"parent=`{op.target_parent_id}`, nom=`{op.new_name}`)"
+        f"- `{op.action.value}` (target=`{op.file_id or op.knowledge_file}`, "
+        f"parent=`{op.target_parent_id}`, name=`{op.new_name}`)"
         for op in proposed_ops
-    ] or ["- Proposition à confirmer avec l'utilisateur avant exécution `plan-executor`."]
+    ] or ["- Proposal to be confirmed with the user before `plan-executor` execution."]
     return (
-        f"# Gate Gouvernance Google Drive (`alfred-drive`)\n\n"
+        f"# Google Drive Governance Gate (`alfred-drive`)\n\n"
         f"{alert_block}"
-        f"## 1. Motif d'Escalade Humaine\n- {reason}\n\n"
-        f"## 2. Pièces Google Drive Concernées (0 Mutation Exécutée)\n"
+        f"## 1. Human Escalation Reason\n- {reason}\n\n"
+        f"## 2. Affected Google Drive Files (0 Mutations Executed)\n"
         + "\n".join(item_lines)
-        + "\n\n## 3. Actions Proposées Après Validation (`Proceed`)\n"
+        + "\n\n## 3. Proposed Actions After Approval (`Proceed`)\n"
         + "\n".join(op_lines)
         + "\n"
     )

@@ -237,8 +237,8 @@ class SpecialistTraceService:
             before_ids = agy_manager.archive_store.snapshot_summary_conversation_ids()
             prompt = (
                 f"# {clean_title}\n\n"
-                "Trace automatique d'exécution inter-workspace (zéro appel d'outil ; "
-                "confirme en une phrase) :\n\n"
+                "Automated cross-workspace execution trace (zero tool calls; "
+                "confirm in one sentence):\n\n"
                 f"{trace_markdown}"
             )
             cmd = [

@@ -11,6 +11,7 @@ from alfred.domain.calendar_models import (
     CalendarTriageAction,
 )
 from alfred.domain.models import AlfredPaths, EmailMessage, InboxOutputType, KnowledgeDocument
+from alfred.services.attachment_extractor import split_attachment_body
 from alfred.services.email_security_service import wrap_untrusted_email_block
 from alfred.services.prompt_loader import PromptTemplateLoader
 
@@ -90,46 +91,46 @@ def build_cognitive_triage_prompt(
         f"### {d.file_name} ({d.frontmatter.title})\n{d.frontmatter.summary}\n{d.body}"
         for d in docs
     ]
-    ref_context = "\n\n".join(doc_blocks) if doc_blocks else "(Aucune fiche correspondante)"
+    ref_context = "\n\n".join(doc_blocks) if doc_blocks else "(No matching reference document)"
     identity_line = (
-        f"Adresses de l'utilisateur propriétaire (ne jamais créer de DRAFT_REPLY vers soi) : "
+        f"Owner user addresses (never generate a DRAFT_REPLY to yourself): "
         f"{', '.join(sorted(user_addresses))}\n"
         if user_addresses
         else ""
     )
-    marker = "\n\n[Pièce jointe:"
-    if marker in msg.body_text:
-        email_part, att_part = msg.body_text.split(marker, 1)
-        clipped_body = f"{email_part[:2400]}{marker}{att_part[:2400]}"
+    email_part, att_marker, att_part = split_attachment_body(msg.body_text)
+    if att_marker:
+        sep = "\n\n" if email_part else ""
+        clipped_body = f"{email_part[:2400]}{sep}{att_marker}{att_part[:2400]}"
     else:
         clipped_body = msg.body_text[:4000]
     spotlighted, _ = wrap_untrusted_email_block(msg, clipped_body)
     if paths is not None:
         loader = PromptTemplateLoader(paths)
-        custom_rules = loader.load_custom_inbox_rules() or "(Aucune règle personnalisée)"
+        custom_rules = loader.load_custom_inbox_rules() or "(No custom rules)"
         return loader.render(
             "inbox_triage.md",
             {
                 "knowledge_frontmatters": ref_context,
                 "custom_inbox_rules": custom_rules,
-                "calendar_snapshot": calendar_context or "(Aucun événement futur)",
+                "calendar_snapshot": calendar_context or "(No upcoming events)",
                 "spotlighted_email": f"{identity_line}{spotlighted}",
             },
         )
     cal_block = (
-        f"\nAgenda Principal (Tous les Événements Futurs — Sans Horizon) :\n{calendar_context}\n"
+        f"\nPrimary Calendar (All Future Events — Unlimited Horizon):\n{calendar_context}\n"
         if calendar_context
         else ""
     )
     return (
-        "Mode classifieur JSON (pas d'artefact implementation_plan.md, zéro appel d'outil). "
-        "Classe cet e-mail entrant dans l'une des 3 sorties exclusives d'Alfred V8.0 "
+        "JSON classifier mode (no implementation_plan.md artifact, zero tool calls). "
+        "Classify this incoming email into one of the 3 exclusive Alfred V8.0 outputs "
         "(SILENT_NO_ACTION, DRAFT_REPLY, USER_ACTION_REQUIRED). "
-        "Si c'est une confirmation datée d'achat de billet, réservation, hôtel, transport, "
-        "spectacle ou RDV absent de l'agenda, renseigne calendar_action.intent='CONFIRM_EVENT' "
-        "avec attendees=[] et send_invites=false pour les marchands/billetteries (durée +1h par "
-        "défaut si l'heure de fin manque).\n\n"
-        f"{identity_line}{spotlighted}\n{cal_block}\nFiches de référence Tier-2:\n{ref_context}"
+        "If it is a dated ticket purchase, booking, hotel, transport, show, or appointment "
+        "confirmation missing from the calendar, populate calendar_action.intent='CONFIRM_EVENT' "
+        "with attendees=[] and send_invites=false for merchants/ticketing (default +1h duration "
+        "when end time is missing).\n\n"
+        f"{identity_line}{spotlighted}\n{cal_block}\nTier-2 Reference Docs:\n{ref_context}"
     )
 
 

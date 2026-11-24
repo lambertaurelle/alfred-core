@@ -18,6 +18,7 @@ from alfred.domain.models import (
 )
 from alfred.repositories.state_store import StateStore
 from alfred.services.agy_session_manager import AgySessionManager
+from alfred.services.attachment_extractor import split_attachment_body
 from alfred.services.calendar_service import CalendarService
 from alfred.services.drive_service import DriveService
 from alfred.services.email_security_service import EmailSanitizer, InboxCapabilityFirewall
@@ -45,14 +46,19 @@ ACTION_REQUIRED_PATTERNS = (
     r"action\s+requise", r"a\s+valider\s+avant", r"declaration\s+mensuelle",
     r"rejet\s+de\s+prelevement", r"impaye", r"document\s+a\s+signer",
     r"piece\s+justificative\s+manquante", r"mise\s+en\s+demeure",
+    r"action\s+required", r"to\s+validate\s+before", r"monthly\s+filing",
+    r"payment\s+failed", r"unpaid", r"document\s+to\s+sign",
+    r"missing\s+supporting\s+document", r"formal\s+notice",
 )
 COMPLEX_STUDY_PATTERNS = (
     r"mise\s+en\s+demeure", r"controle\s+fiscal", r"avenant\s+au\s+contrat",
     r"succession", r"litige", r"redressement",
+    r"formal\s+notice", r"tax\s+audit", r"contract\s+amendment",
+    r"inheritance", r"litigation", r"tax\s+reassessment",
 )
 DRIVE_SEARCH_STOPWORDS = frozenset(
     {"action", "requise", "valider", "avant", "votre", "merci", "bonjour", "nouveau", "nouvelle"}
-    | {"echeance"}
+    | {"echeance", "required", "validate", "before", "your", "thanks", "hello", "please"}
 )
 
 
@@ -300,9 +306,7 @@ class InboxTriageService:
         if is_self_only:
             rsn = "Self-sent memo or personal reminder requiring user follow-up"
             return (InboxOutputType.USER_ACTION_REQUIRED, rsn, None, no_cal, None, needs_orch)
-        email_body = msg.body_text.split("\n\n[Pièce jointe:", 1)[0]
-        if email_body.startswith("[Pièce jointe:"):
-            email_body = ""
+        email_body, _, _ = split_attachment_body(msg.body_text)
         passive_corpus = fold_accents(f"{msg.subject}\n{msg.snippet}\n{email_body}")
         if not is_from_self and self._is_passive_or_automated(msg, passive_corpus):
             rsn = "Passive portal or automated bulk notification without action signal"
@@ -372,7 +376,7 @@ class InboxTriageService:
             cal_session = self._agy.create_session(
                 workspace="alfred-calendar", source_message_id=msg.message_id,
                 implementation_plan_md=gate_md, spawn_live=spawn_live,
-                title=f"[Agenda] {eff_action.slots[0].summary}",
+                title=f"[Calendar] {eff_action.slots[0].summary}",
             )
             cal_session_id = cal_session.session_id
         return InboxTriageDecision(
@@ -417,7 +421,7 @@ class InboxTriageService:
             msg.thread_id, needs_orch, suspicious_injection,
         )
         session = self._agy.create_session(
-            "alfred-inbox", msg.message_id, plan_md, spawn_live, title=f"[Brouillon] {msg.subject}"
+            "alfred-inbox", msg.message_id, plan_md, spawn_live, title=f"[Draft] {msg.subject}"
         )
         return InboxTriageDecision(
             message_id=msg.message_id, output_type=InboxOutputType.DRAFT_REPLY,
@@ -445,7 +449,7 @@ class InboxTriageService:
             self._gmail.star_message(msg.message_id)
         brief_items = [
             *(attachment_brief or []),
-            *(f"Fiche de référence `{d.file_name}` : {d.frontmatter.summary}" for d in docs),
+            *(f"Reference note `{d.file_name}`: {d.frontmatter.summary}" for d in docs),
         ]
         folded_words = re.findall(r"[a-z0-9]{4,}", fold_accents(msg.subject))
         tokens = [tok for tok in folded_words if tok not in DRIVE_SEARCH_STOPWORDS][:4]
@@ -454,9 +458,9 @@ class InboxTriageService:
             for hit in self._drive.search_index(tok)[:2]:
                 if hit.file_id not in seen_ids:
                     seen_ids.add(hit.file_id)
-                    brief_items.append(f"Pièce Google Drive : `{hit.path}` (`{hit.file_id}`)")
+                    brief_items.append(f"Google Drive file: `{hit.path}` (`{hit.file_id}`)")
         if not brief_items:
-            brief_items.append("Vérification `01_profil_et_contacts_cles.md` recommandée.")
+            brief_items.append("Review `01_profil_et_contacts_cles.md` recommended.")
         target_doc_id = docs[0].frontmatter.id if docs else "profil_et_contacts_cles"
         eff_action = cal_action or CalendarTriageAction()
         cal_sec = (
@@ -466,7 +470,7 @@ class InboxTriageService:
         plan_md = render_action_required_plan(
             msg, reason, brief_items, target_doc_id, needs_orch, suspicious_injection, cal_sec
         )
-        prefix = "[Action · Étude Carbon]" if needs_orch else "[Action]"
+        prefix = "[Action · Carbon Study]" if needs_orch else "[Action]"
         session = self._agy.create_session(
             "alfred-inbox", msg.message_id, plan_md, spawn_live, title=f"{prefix} {msg.subject}"
         )
@@ -484,7 +488,7 @@ class InboxTriageService:
         """Build a concise courteous draft reply grounded in loaded reference context."""
         context_hint = f" ({docs[0].frontmatter.title})" if docs else ""
         return (
-            f"Bonjour,\n\nMerci pour votre message concernant « {msg.subject} »{context_hint}.\n"
-            "J'ai bien pris connaissance de votre demande et reviens vers vous pour confirmer.\n\n"
-            "Bien cordialement,"
+            f"Hello,\n\nThank you for your message regarding '{msg.subject}'{context_hint}.\n"
+            "I have reviewed your request and will get back to you to confirm.\n\n"
+            "Best regards,"
         )

@@ -202,7 +202,7 @@ class AlfredSettings(BaseModel):
 
     project_name: str = "Alfred Family Office Chief of Staff"
     timezone: str = "Europe/Paris"
-    language: str = "fr-FR"
+    language: str = "en-US"
     referentiel_drive_folder_name: str = "_ALFRED_REFERENTIEL_"
     primary_calendar_id: str = "primary"
     default_tasklist_id: str = "@default"
@@ -285,7 +285,7 @@ class AlfredSettings(BaseModel):
         return cls(
             project_name=str(raw.get("project_name", "Alfred Family Office Chief of Staff")),
             timezone=str(raw.get("timezone", "Europe/Paris")),
-            language=str(raw.get("language", "fr-FR")),
+            language=str(raw.get("language", "en-US")),
             referentiel_drive_folder_name=str(
                 g_dict.get("referentiel_drive_folder_name", "_ALFRED_REFERENTIEL_")
             ),

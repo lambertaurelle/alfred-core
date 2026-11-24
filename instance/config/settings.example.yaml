@@ -1,7 +1,7 @@
 # Copy to instance/config/settings.yaml (gitignored) or let alfred-onboard generate it.
 project_name: "Alfred Family Office Chief of Staff"
 timezone: "Europe/Paris"
-language: "fr-FR"
+language: "en-US"  # Supported runtime locales: "en-US", "fr-FR"
 
 features:
   drive_knowledge_sync: true
@@ -15,7 +15,7 @@ features:
   mcp_gemini_bridge: false
 
 identity:
-  # Outbound alias used in From: header on Gmail drafts/sends (e.g. prenom@domaine-perso.example)
+  # Outbound alias used in From: header on Gmail drafts/sends (e.g. name@my-domain.example)
   default_send_as_email: ""
   default_send_as_display_name: ""
   # Primary calendar account; aliases below are strictly stripped from Calendar attendees

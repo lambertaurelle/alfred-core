@@ -1,64 +1,65 @@
-# Alfred V8.0 — Spécification Technique Vivante (`docs/SPEC.md`)
+# Alfred V8.0 — Living Technical Specification (`docs/SPEC.md`)
 
-Ce document constitue l'unique spécification technique de référence du mono-repo **`alfred-core`** (V8.0). Les sections narratives décrivent les invariants d'architecture, de sécurité et de gouvernance ; l'inventaire technique ci-dessous est généré de façon déterministe par analyse AST (`alfred sync-spec`).
-
----
-
-## 1. Principes & Séparation Mono-Repo (`core/` vs `instance/`)
-
-- **`core/` (générique open-source)** : code applicatif (`core/alfred/`), scripts gardiens (`core/scripts/`), templates (`core/templates/`), workspaces (`core/workspaces/`), suite TDD (`core/tests/`) et exemples fictifs (`instance/examples/`).
-- **`instance/` (privé gitignoré)** : `instance/config/settings.yaml`, `instance/secrets/` (jetons OAuth2, `signature_vault/`), `instance/data/` (fiches de connaissances YAML 3 étages, index Drive, journaux d'état) et `instance/extensions/*.py` actifs.
-- **Découplage strict** : aucun module sous `core/` ne peut importer `instance` (`check_code_architecture.py` : règle `Instance Coupling`). Toute capacité hybride destinée à `upstream-pr` doit fonctionner de manière 100 % autonome dans `core/` sans dépendre d'`instance/`.
+This document is the single authoritative technical specification for the **`alfred-core`** mono-repo (V8.0). Curated sections define architecture, language, security, and governance invariants; the generated inventory below is deterministically maintained by AST inspection (`alfred sync-spec`).
 
 ---
 
-## 2. Clean Architecture OOP à 4 Couches & Gardiens
+## 1. Principles & Mono-Repo Separation (`core/` vs `instance/`)
+
+- **`core/` (generic open-source)**: application code (`core/alfred/`), guardian scripts (`core/scripts/`), templates (`core/templates/`), specialist workspaces (`core/workspaces/`), isolated TDD test suite (`core/tests/`), and anonymized examples (`instance/examples/`).
+- **`instance/` (private gitignored)**: `instance/config/settings.yaml`, `instance/secrets/` (OAuth2 tokens, `signature_vault/`), `instance/data/` (3-tier YAML knowledge sheets, Drive metadata index, state stores), and active `instance/extensions/*.py`.
+- **Strict Decoupling**: no module under `core/` may import `instance` (`check_code_architecture.py`: `Instance Coupling` rule). Any hybrid capability submitted via `upstream-pr` must operate 100% standalone inside `core/` without depending on `instance/`.
+
+---
+
+## 2. 4-Layer OOP Clean Architecture, Language Governance & Guardians
 
 ```text
 domain  <--  repositories  <--  services  <--  controllers  <--  main.py
 ```
 
-1. **Invariants AST (`check_code_architecture.py`)** : `main.py <= 79L`, tout autre fichier `<= 500L`, toute méthode `<= 60L` hors docstring, docstrings Google sur 100 % des modules/classes/fonctions (`Args:` obligatoire sur toute fonction publique paramétrée hors `@property`), respect strict des dépendances entre couches et interdiction d'`import instance` sous `core/`.
-2. **Zéro Fuite Amont (`check-upstream-leak.sh`)** : contrôle du working tree, de l'index et de l'historique actif `HEAD` (`git log HEAD`) afin d'éviter toute fuite sur les branches locales ou fork.
-3. **Qualité & Couverture** : `ruff check core`, `mypy --strict core/alfred core/scripts core/tests`, `pytest --cov=core --cov-fail-under=90` et fraîcheur de `docs/SPEC.md` vérifiée en pre-commit (`alfred sync-spec --check`).
+1. **AST Invariants (`check_code_architecture.py`)**: `main.py <= 79L`, all other files `<= 500L`, all methods `<= 60L` excluding docstrings, 100% English Google docstrings (`Args:` required on parameterized public functions except `@property`), strict layer dependency DAG, and zero `import instance` inside `core/`.
+2. **English-Only Repository & Bilingual FR/EN Runtime Invariant (`check_english_only.py`)**: all repository documentation, manifests, templates, `# comments`, docstrings, and non-allowlisted strings MUST be 100% English (`detect_french_in_text`), while Alfred's runtime remains natively bilingual in French and English (`BILINGUAL_RUNTIME_STRING_ALLOWLIST` for booking, triage, injection, and stopword detectors; matching user/email language for replies and knowledge).
+3. **Zero Upstream Leak (`check-upstream-leak.sh`)**: scans the working tree, Git index, and active `HEAD` history (`git log HEAD`) to prevent personal data leaks across local or fork branches.
+4. **Static Quality, Coverage & Living Spec**: `ruff check core`, `mypy --strict core/alfred core/scripts core/tests`, `pytest --cov=core --cov-fail-under=90`, and `docs/SPEC.md` freshness verified in pre-commit (`alfred sync-spec --check`).
 
 ---
 
-## 3. Sécurité, Identité & Onboarding GCP
+## 3. Security, Identity & GCP Onboarding
 
-- **Hook `PreToolUse` (`.agents/hooks.json` -> `security_pre_tool_hook.py`)** : interdit la lecture/écriture directe de `signature_vault/`, `client_secret*.json`, `token.json`, `mcp_oauth.json`, `oauth_pending.json` et `leak_terms.txt` ; impose une confirmation explicite (`force_ask`) sur `apply-signature` et bloque toute exécution hors-périmètre dans `alfred-inbox`.
-- **Signature manuscrite hors-bande** : `prepare-signature` génère uniquement un aperçu sans tampon ; aucune signature n'est apposée sans consentement humain explicite récent.
-- **Pare-feu Inbox & Identité `sendAs`** : assainissement HTML/Unicode (`EmailSanitizer`), encapsulation par nonce aléatoire, vérification propriétaire SPF/DKIM pour `alfred-evolve` et exclusion automatique des adresses personnelles (`never_invite_emails`) hors des invitations Calendar.
-- **Bootstrap GCP & Pont MCP OAuth 2.1** : `alfred bootstrap-gcp` automatise l'installation multi-architecture de `gcloud`, la connexion `--no-launch-browser`, la création du projet, l'activation minimale des APIs selon `features.*` et l'ingestion `0600` du client OAuth Desktop. Le serveur MCP expose `/.well-known/*`, `/oauth/{register,authorize,token}` (PKCE `S256`) et `/mcp`.
+- **`PreToolUse` Hook (`.agents/hooks.json` -> `security_pre_tool_hook.py`)**: blocks direct read/write access to `signature_vault/`, `client_secret*.json`, `token.json`, `mcp_oauth.json`, `oauth_pending.json`, and `leak_terms.txt`; enforces explicit confirmation (`force_ask`) on `apply-signature`; restricts `alfred-inbox` and `alfred-drive` from out-of-scope execution.
+- **Out-of-Band Handwritten Signature**: `prepare-signature` generates a preview only; no handwritten signature is ever applied without recent explicit human consent.
+- **Inbox Firewall & `sendAs` Identity**: HTML/Unicode sanitization (`EmailSanitizer`), random-nonce spotlighting, owner SPF/DKIM verification for `alfred-evolve`, and automatic exclusion of owner personal addresses (`never_invite_emails`) from Google Calendar invites.
+- **GCP Bootstrap & OAuth 2.1 MCP Bridge**: `alfred bootstrap-gcp` automates multi-architecture `gcloud` setup, `--no-launch-browser` login, project creation, minimal API enablement per `features.*`, and `0600` Desktop OAuth ingestion. The MCP server exposes `/.well-known/*`, `/oauth/{register,authorize,token}` (PKCE `S256`), and `/mcp`.
 
 ---
 
-## 4. Gouvernance `alfred-evolve` (`instance` | `upstream-pr` | `local-fork`)
+## 4. `alfred-evolve` Governance (`instance` | `upstream-pr` | `local-fork`)
 
-- **Qualification (`evolve-qualifier`)** : classe chaque besoin en `PURE_INSTANCE`, `INSTANCE_WITH_COMMUNITY_OPTION`, `HYBRID_CORE_AND_INSTANCE` ou `CORE_EVOLUTION`.
-- **Modes d'exécution** :
-  - `instance` : écritures cantonnées à `instance/`, zéro PR, `docs/SPEC.md` inchangé.
-  - `upstream-pr` : exécution en `git worktree` isolé via la triade `tdd-red` -> `tdd-green` -> `tdd-verifier`, synchronisation automatique de `docs/SPEC.md`, vérification d'autonomie (`--hybrid --core-complete`), marquage automatique `[BREAKING]` en cas de suppression de module/commande/flag et publication PR sur `origin` avec fallback fork GitHub.
-  - `local-fork` : commit local sur `evolve/<id>` sans ouverture de PR amont.
+- **Qualification (`evolve-qualifier`)**: classifies each request into `PURE_INSTANCE`, `INSTANCE_WITH_COMMUNITY_OPTION`, `HYBRID_CORE_AND_INSTANCE`, or `CORE_EVOLUTION`.
+- **Execution Modes**:
+  - `instance`: edits restricted to `instance/`, zero PR, `docs/SPEC.md` unchanged.
+  - `upstream-pr`: runs in an isolated `git worktree` via **`tdd-red` -> `tdd-green` -> `doc-maintainer` -> `tdd-verifier`**, enforcing English-only docs/manifests (`check_english_only.py`), synchronizing `docs/SPEC.md` (`sync-spec`), checking `--hybrid --core-complete` standalone completeness, tagging `[BREAKING]` on removals/breaking changes, and publishing PRs against `origin` with automatic GitHub fork fallback.
+  - `local-fork`: local commit on `evolve/<id>` without opening an upstream PR.
 
 ---
 
 <!-- BEGIN ALFRED_CORE_GENERATED_SPEC -->
-## Inventaire Généré (`alfred-core` v8.0.0)
+## Generated Inventory (`alfred-core` v8.0.0)
 
-### Workspaces Spécialisés (`core/workspaces/`)
+### Specialist Workspaces (`core/workspaces/`)
 | Workspace | Description |
 | :--- | :--- |
-| `alfred-calendar` | - Inspecte les agendas et créneaux occupés sans limite d'horizon via `list-calendars`, `query-freebusy --from "<ISO>" --to "<ISO>"`, `list-events` et `hold-allowlist --list` (couvrant événements futurs lointains et séries récurrentes `RRULE`). |
-| `alfred-drive` | Gouvernance documentaire non-destructive de Google Drive, classement automatique ou sous Gate, raccourcis multi-domaines et synthèse concise vers `_ALFRED_REFERENTIEL_`. |
-| `alfred-evolve` | - **`evolve-qualifier`** inspecte `docs/SPEC.md`, `core/` et `instance/` pour trancher entre les 3 modes : |
-| `alfred-inbox` | - Pré-filtrage à 0 token des invitations `.ics` automatiques, promotions/forums et expéditeurs denylistés avant tout appel cognitif — tout en laissant passer les **confirmations datées de billets, réservations, hôtels, transports ou rendez-vous** (`has_dated_booking_signal`) pour inscription sous Gate à l'agenda (sans limite d'horizon). |
-| `alfred-life` | Adapte immédiatement l'ampleur de l'investigation à la demande : |
-| `alfred-onboard` | - Inspecte l'état courant via `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred status-onboarding --json` (incluant `gcloud_installed`, `gcloud_account`, `gcp_project_id`) et `oauth-guide`. |
-| `alfred-tasks` | - Consulte les listes et tâches actives via `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred list-tasklists` et `list-tasks [--tasklist "<id>"]`. |
+| `alfred-calendar` | Generic multi-calendar availability, allowlisted `[HOLD]` scheduling, dated booking confirmations, and strict self-invite exclusion. |
+| `alfred-drive` | Non-destructive Google Drive document governance, automatic or gated filing, cross-domain shortcuts, and concise synthesis into `_ALFRED_REFERENTIEL_`. |
+| `alfred-evolve` | Isolated git worktree engineering workflow with architectural qualification, 4-stage TDD + doc-maintainer triad, and zero-leak PRs. |
+| `alfred-inbox` | Secure 2-speed email triage combining zero-token pre-filtering, SPF/DKIM prompt-injection firewalling, and three exclusive outputs. |
+| `alfred-life` | General Family Office Chief of Staff hub for cross-domain decisions, multi-source studies, and the Gemini App MCP bridge. |
+| `alfred-onboard` | Interactive onboarding, modular feature flags, automated GCP OAuth2 setup, Drive taxonomy scaffolding, and workspace provisioning. |
+| `alfred-tasks` | Google Tasks management with RFC 3339 due dates, contextual notes, and Google People Contacts directory lookup. |
 
-### Feature Flags, APIs GCP & Scopes OAuth2
-| Feature Flag | Défaut | APIs GCP | Scopes OAuth2 |
+### Feature Flags, GCP APIs & OAuth2 Scopes
+| Feature Flag | Default | GCP APIs | OAuth2 Scopes |
 | :--- | :---: | :--- | :--- |
 | `drive_knowledge_sync` | `true` | `drive.googleapis.com`, `sheets.googleapis.com` | `drive` |
 | `inbox_auto_triage` | `true` | `gmail.googleapis.com` | `gmail.modify`, `gmail.compose`, `gmail.settings.basic` |
@@ -71,8 +72,8 @@ domain  <--  repositories  <--  services  <--  controllers  <--  main.py
 | `mcp_gemini_bridge` | `false` | — | — |
 | `drive_watcher` | `false` | `drive.googleapis.com`, `sheets.googleapis.com` | `drive` |
 
-### Modules Clean Architecture (`core/alfred/`)
-| Couche | Module | Rôle |
+### Clean Architecture Modules (`core/alfred/`)
+| Layer | Module | Role |
 | :--- | :--- | :--- |
 | `domain` | `core/alfred/domain/attachment_models.py` | Pure domain models for Gmail MIME attachments and Gmail-to-Drive transfers. |
 | `domain` | `core/alfred/domain/calendar_models.py` | Domain models for generic multi-calendar HOLDs, FreeBusy windows, invitations, and PRs. |
@@ -105,6 +106,8 @@ domain  <--  repositories  <--  services  <--  controllers  <--  main.py
 | `services` | `core/alfred/services/drive_watcher_helpers.py` | Cognitive prompt/schema helpers and Markdown plan/trace renderers for DriveWatcherService. |
 | `services` | `core/alfred/services/drive_watcher_service.py` | 2-speed Google Drive watcher service with 0-token pre-filters, coalescing, and anti-loop. |
 | `services` | `core/alfred/services/email_security_service.py` | Four-layer anti-prompt-injection sanitizer, nonce spotlighting, and inbox firewall. |
+| `services` | `core/alfred/services/english_policy_helpers.py` | Low-level text normalization, French pattern matching, and repo file collection helpers. |
+| `services` | `core/alfred/services/english_policy_service.py` | Deterministic English-only repository policy checker with bilingual runtime allowlist. |
 | `services` | `core/alfred/services/evolve_gate_runner.py` | Deterministic leak, AST architecture, ruff, mypy, pytest, and SPEC gate runners. |
 | `services` | `core/alfred/services/evolve_governance_service.py` | Governance, qualification, isolation, and breaking-change detection for alfred-evolve. |
 | `services` | `core/alfred/services/evolve_worktree_service.py` | alfred-evolve isolated git worktree TDD runner, governance gate, and Mono-Repo PR builder. |
@@ -143,8 +146,8 @@ domain  <--  repositories  <--  services  <--  controllers  <--  main.py
 | `controllers` | `core/alfred/controllers/tasks_cli.py` | CLI subcommand registration and dispatcher for Google Tasks, Contacts, and Workspace Suite. |
 | `main` | `core/alfred/main.py` | Alfred V8.0 Family Office CLI entrypoint and dependency injection bootstrap (< 80 lines). |
 
-### Commandes CLI (`alfred <subcommand>`)
-| Commande | Options | Source |
+### CLI Commands (`alfred <subcommand>`)
+| Command | Options | Source |
 | :--- | :--- | :--- |
 | `append-sheet` | `--spreadsheet-id`, `--range`, `--value`, `--archive-trace`, `--no-archive-trace` | `core/alfred/controllers/tasks_cli.py` |
 | `apply-onboarding` | `--enable-all`, `--enable`, `--disable`, `--default-send-as`, `--send-as-name`, `--calendar-organizer`, `--never-invite`, `--mcp-host`, `--mcp-port`, `--mcp-public-url` | `core/alfred/controllers/onboarding_cli.py` |

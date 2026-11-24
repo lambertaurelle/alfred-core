@@ -21,31 +21,34 @@ if [[ ! -x "${PYTHON_BIN}" ]]; then
     PYTHON_BIN="python3"
 fi
 
-echo "[Alfred Gate 1/5] Checking Clean Architecture OOP & Line Limits..."
+echo "[Alfred Gate 1/7] Checking Clean Architecture OOP & Line Limits..."
 "${PYTHON_BIN}" "${REPO_ROOT}/core/scripts/check_code_architecture.py"
 
-echo "[Alfred Gate 2/5] Checking Zero Personal Data Leak..."
+echo "[Alfred Gate 2/7] Checking Zero Personal Data Leak..."
 bash "${REPO_ROOT}/core/scripts/check-upstream-leak.sh" "${REPO_ROOT}"
 
 if [[ -x "${VENV_DIR}/bin/ruff" ]]; then
-    echo "[Alfred Gate 3/5] Running Ruff..."
+    echo "[Alfred Gate 3/7] Running Ruff..."
     "${VENV_DIR}/bin/ruff" check core
 fi
 
 if [[ -x "${VENV_DIR}/bin/mypy" ]]; then
-    echo "[Alfred Gate 4/5] Running Mypy (--strict)..."
+    echo "[Alfred Gate 4/7] Running Mypy (--strict)..."
     "${VENV_DIR}/bin/mypy" --strict core/alfred core/scripts
 fi
 
 if [[ -x "${VENV_DIR}/bin/pytest" ]]; then
-    echo "[Alfred Gate 5/5] Running Pytest TDD Coverage (>= 90%)..."
+    echo "[Alfred Gate 5/7] Running Pytest TDD Coverage (>= 90%)..."
     "${VENV_DIR}/bin/pytest" --cov=core --cov-fail-under=90
 fi
 
 if [[ -f "${REPO_ROOT}/docs/SPEC.md" ]]; then
-    echo "[Alfred Gate 6/6] Checking Living Spec Sync (docs/SPEC.md)..."
+    echo "[Alfred Gate 6/7] Checking Living Spec Sync (docs/SPEC.md)..."
     PYTHONPATH="${REPO_ROOT}/core" ALFRED_ROOT_DIR="${REPO_ROOT}" \
         "${PYTHON_BIN}" -m alfred.main sync-spec --check --repo-root "${REPO_ROOT}"
 fi
+
+echo "[Alfred Gate 7/7] Checking English-Only Repository Policy..."
+"${PYTHON_BIN}" "${REPO_ROOT}/core/scripts/check_english_only.py" --repo-root "${REPO_ROOT}"
 
 echo "[Alfred Pre-Commit] All deterministic gates passed."
