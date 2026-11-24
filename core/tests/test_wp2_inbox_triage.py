@@ -20,7 +20,8 @@ def _build_inbox_stack(
     """Wire InboxTriageService with mocked Gmail/Drive clients and local knowledge templates."""
     paths = AlfredPaths.from_env(tmp_path)
     paths.templates_knowledge_dir.mkdir(parents=True, exist_ok=True)
-    for tpl in Path("/root/Alfred/core/templates/knowledge").glob("*.md"):
+    tpl_dir = Path(__file__).resolve().parents[2] / "core" / "templates" / "knowledge"
+    for tpl in tpl_dir.glob("*.md"):
         (paths.templates_knowledge_dir / tpl.name).write_text(
             tpl.read_text(encoding="utf-8"),
             encoding="utf-8",
@@ -175,7 +176,7 @@ def test_user_action_required_stars_email_and_builds_research_brief(tmp_path: Pa
     assert archived_ids == []
     gmail_client.users.return_value.messages.return_value.modify.assert_called_once()
     assert decision.implementation_plan_markdown is not None
-    assert "Défrichage" in decision.implementation_plan_markdown
+    assert "Research Brief" in decision.implementation_plan_markdown
     assert len(decision.research_brief) >= 1
     assert decision.session_id is not None
     assert store.conversations.load().sessions[decision.session_id].status == "ACTIVE"

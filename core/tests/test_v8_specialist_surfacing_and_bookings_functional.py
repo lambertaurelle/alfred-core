@@ -291,7 +291,7 @@ def test_dated_booking_in_promotions_bulk_wakes_cognitive_and_opens_calendar_gat
 def test_user_action_required_with_confirm_event_renders_coordination_agenda_section(
     tmp_path: Path,
 ) -> None:
-    """USER_ACTION_REQUIRED with CONFIRM_EVENT embeds Coordination Agenda in alfred-inbox plan."""
+    """USER_ACTION_REQUIRED with CONFIRM_EVENT embeds Calendar Coordination in alfred-inbox plan."""
     cls_conv = "cccccccc-1111-2222-3333-444444444444"
     inbox_conv = "dddddddd-1111-2222-3333-444444444444"
 
@@ -339,12 +339,12 @@ def test_user_action_required_with_confirm_event_renders_coordination_agenda_sec
     assert decision.output_type == InboxOutputType.USER_ACTION_REQUIRED
     assert decision.calendar_action_intent == CalendarActionIntent.CONFIRM_EVENT.value
     assert decision.implementation_plan_markdown is not None
-    assert "Coordination Agenda" in decision.implementation_plan_markdown
+    assert "Calendar Coordination" in decision.implementation_plan_markdown
     assert "--location" in decision.implementation_plan_markdown
     assert "--description" in decision.implementation_plan_markdown
     plan_file = Path(store.conversations.load().sessions[inbox_conv].plan_path)
     saved_plan = plan_file.read_text(encoding="utf-8")
-    assert "Coordination Agenda" in saved_plan
+    assert "Calendar Coordination" in saved_plan
     assert "--location" in saved_plan
     assert "--description" in saved_plan
 
@@ -413,14 +413,14 @@ def test_inbox_triage_prompt_template_specifies_bookings_merchant_privacy_and_no
     assert "CONFIRM_EVENT" in raw
     assert re.search(r"send_invites\W+false", raw, re.IGNORECASE) is not None
     assert re.search(r"attendees\W+\[\s*\]", raw) is not None
-    assert "billet" in lower
-    assert "réservation" in lower or "reservation" in lower
-    assert "marchand" in lower or "billetterie" in lower
-    assert "fenêtre proche" not in lower
+    assert "ticket" in lower
+    assert "reservation" in lower
+    assert "merchant" in lower
+    assert "near window" not in lower
     assert "14j" not in lower
     assert any(
         tok in lower
-        for tok in ("sans horizon", "aucun horizon", "tous les événements", "récurrences")
+        for tok in ("no horizon", "all future events", "recurrences")
     )
 
 

@@ -24,7 +24,7 @@ class FreelanceBillingTrackerExtension:
     @property
     def description(self) -> str:
         """Return one-line functional summary."""
-        return "Génère à J-2 de fin de mois les tâches de facturation client à partir des missions."
+        return "Generate client invoicing tasks two days before month-end from active engagements."
 
     def validate_config(self, raw_config: dict[str, object]) -> list[str]:
         """Validate daily_rate_eur and clients list in extensions.freelance_billing_tracker.
@@ -51,7 +51,7 @@ class FreelanceBillingTrackerExtension:
             context: Immutable ExtensionContext providing today_iso and extension_settings.
 
         Returns:
-            Single ExtensionJobOutcome (OK on J-2, NO_CHANGES on other days).
+            Single ExtensionJobOutcome (OK on D-2, NO_CHANGES on other days).
         """
         today = date.fromisoformat(context.today_iso)
         _, last_day = calendar.monthrange(today.year, today.month)
@@ -69,8 +69,8 @@ class FreelanceBillingTrackerExtension:
         due_iso = date(today.year, today.month, last_day).isoformat()
         tasks = [
             ExtensionTaskDraft(
-                title=f"Émettre facture {today.strftime('%Y-%m')} — {client}",
-                notes="Vérifier les créneaux [CLIENT] de l'agenda et exporter le relevé.",
+                title=f"Issue invoice {today.strftime('%Y-%m')} — {client}",
+                notes="Verify [CLIENT] calendar slots and export the timesheet statement.",
                 due_date_iso=due_iso,
             )
             for client in clients

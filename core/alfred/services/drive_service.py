@@ -113,7 +113,7 @@ class DriveService:
         buckets: dict[str, dict[str, Any]] = {}
         for entry in index.entries.values():
             parts = [seg for seg in entry.path.strip("/").split("/") if seg]
-            root_name = parts[0] if len(parts) > 1 or entry.is_folder else "(Racine)"
+            root_name = parts[0] if len(parts) > 1 or entry.is_folder else "(Root)"
             if root_name == self._settings.referentiel_drive_folder_name:
                 continue
             b = buckets.setdefault(
@@ -155,29 +155,27 @@ class DriveService:
         )
         fm = FrontmatterSchema(
             id="drive_taxonomy_and_filing_rules",
-            title="Cartographie Google Drive & Règles de Rangement",
+            title="Google Drive Taxonomy & Filing Rules",
             domain="drive_governance",
-            summary=(
-                f"Arborescence Drive ({index.folder_count} dossiers, {index.file_count} fichiers)."
-            ),
-            keywords=["drive", "taxonomie", "rangement", "arborescence", "classement"],
+            summary=f"Drive tree ({index.folder_count} folders, {index.file_count} files).",
+            keywords=["drive", "taxonomy", "filing", "rules", "folders"],
             drive_source_ids=[],
         )
-        folders = "\n".join(f"- `{n}/`" for n in index.top_level_folders[:30]) or "- `(Racine)`"
+        folders = "\n".join(f"- `{n}/`" for n in index.top_level_folders[:30]) or "- `(Root)`"
         file_lines = [f"- `{e.path}`" for e in index.entries.values() if not e.is_folder]
-        samples = "\n".join(file_lines)[:900] or "- `(Aucun fichier)`"
+        samples = "\n".join(file_lines)[:900] or "- `(No files)`"
         ref_dir = self._settings.referentiel_drive_folder_name
         body = (
-            f"# Cartographie Google Drive & Règles de Rangement\n\n"
-            f"## 1. Métriques d'Indexation First-Run\n"
-            f"- **Dossiers indexés** : {index.folder_count}\n"
-            f"- **Fichiers indexés** : {index.file_count}\n"
-            f"- **Dernière synchronisation** : `{index.last_synced_at}`\n\n"
-            f"## 2. Dossiers Racines Détectés\n{folders}\n\n"
-            f"## 3. Échantillon d'Arborescence\n{samples}\n\n"
-            f"## 4. Règles de Rangement\n"
-            f"- Les pièces originales restent dans leurs dossiers thématiques Google Drive.\n"
-            f"- Les fiches `.md` sont sauvegardées dans `{ref_dir}`.\n"
+            f"# Google Drive Taxonomy & Filing Rules\n\n"
+            f"## 1. First-Run Indexing Metrics\n"
+            f"- **Indexed folders**: {index.folder_count}\n"
+            f"- **Indexed files**: {index.file_count}\n"
+            f"- **Last synced**: `{index.last_synced_at}`\n\n"
+            f"## 2. Detected Root Folders\n{folders}\n\n"
+            f"## 3. Sample Indexed Tree\n{samples}\n\n"
+            f"## 4. Filing Rules\n"
+            f"- Original supporting documents stay in their thematic Google Drive folders.\n"
+            f"- Reference `.md` files are backed up to `{ref_dir}`.\n"
         )
         return knowledge_service.upsert_document("00_drive_taxonomy_and_filing_rules.md", fm, body)
 
@@ -303,7 +301,7 @@ class DriveService:
         """Back up an up-to-date .md reference file intact to _ALFRED_REFERENTIEL_ on Drive.
 
         Args:
-            file_name: Reference .md file name (e.g. '02_patrimoine_et_contrats_cles.md').
+            file_name: Reference .md file name (e.g. '02_assets_and_key_contracts.md').
             content: Full Markdown string including YAML frontmatter.
 
         Returns:
@@ -476,22 +474,22 @@ class DriveService:
     def _render_init_drive_plan(self, index: DriveMetadataIndex) -> str:
         """Render the First-Run Gate implementation_plan.md proposing 00_drive_taxonomy."""
         folder_bullets = (
-            "\n".join(f"- `{name}/`" for name in index.top_level_folders) or "- `(Racine)`"
+            "\n".join(f"- `{name}/`" for name in index.top_level_folders) or "- `(Root)`"
         )
         sample_files = [e.path for e in list(index.entries.values()) if not e.is_folder][:10]
-        file_bullets = "\n".join(f"- `{path}`" for path in sample_files) or "- `(Aucun fichier)`"
+        file_bullets = "\n".join(f"- `{path}`" for path in sample_files) or "- `(No files)`"
         return (
-            "# Plan d'Initialisation First-Run Google Drive (`init-drive`)\n\n"
-            "## 1. Synthèse de l'Analyse Exhaustive\n"
-            f"- **Dossiers analysés** : {index.folder_count}\n"
-            f"- **Fichiers indexés** : {index.file_count}\n"
-            f"- **Jeton Delta (`startPageToken`)** : `{index.start_page_token}`\n\n"
-            "## 2. Dossiers Racines Détectés\n"
+            "# Google Drive First-Run Initialization Plan (`init-drive`)\n\n"
+            "## 1. Exhaustive Scan Summary\n"
+            f"- **Analyzed folders**: {index.folder_count}\n"
+            f"- **Indexed files**: {index.file_count}\n"
+            f"- **Delta token (`startPageToken`)**: `{index.start_page_token}`\n\n"
+            "## 2. Detected Root Folders\n"
             f"{folder_bullets}\n\n"
-            "## 3. Échantillon d'Arborescence Indexée\n"
+            "## 3. Sample Indexed Tree\n"
             f"{file_bullets}\n\n"
-            "## 4. Proposition pour `00_drive_taxonomy_and_filing_rules.md`\n"
-            "Après validation (`Proceed` -> `alfred init-drive --execute`), Alfred enregistrera "
-            "cette cartographie dans `00_drive_taxonomy_and_filing_rules.md` "
-            f"et la sauvegardera dans `{self._settings.referentiel_drive_folder_name}`.\n"
+            "## 4. Proposal for `00_drive_taxonomy_and_filing_rules.md`\n"
+            "After validation (`Proceed` -> `alfred init-drive --execute`), Alfred will save "
+            "this taxonomy in `00_drive_taxonomy_and_filing_rules.md` "
+            f"and back it up to `{self._settings.referentiel_drive_folder_name}`.\n"
         )

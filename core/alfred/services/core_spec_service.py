@@ -22,6 +22,7 @@ from alfred.services.core_spec_ast import (
     extract_extension_tokens_ast,
     extract_features_from_source,
 )
+from alfred.services.english_policy_service import detect_french_in_text
 
 __all__ = [
     "BEGIN_GENERATED",
@@ -99,9 +100,9 @@ class CoreSpecService:
         """
         lines: list[str] = [
             BEGIN_GENERATED,
-            f"## Inventaire Généré (`alfred-core` v{snapshot.version})",
+            f"## Generated Inventory (`alfred-core` v{snapshot.version})",
             "",
-            "### Workspaces Spécialisés (`core/workspaces/`)",
+            "### Specialist Workspaces (`core/workspaces/`)",
             "| Workspace | Description |",
             "| :--- | :--- |",
         ]
@@ -110,8 +111,8 @@ class CoreSpecService:
         lines.extend(
             [
                 "",
-                "### Feature Flags, APIs GCP & Scopes OAuth2",
-                "| Feature Flag | Défaut | APIs GCP | Scopes OAuth2 |",
+                "### Feature Flags, GCP APIs & OAuth2 Scopes",
+                "| Feature Flag | Default | GCP APIs | OAuth2 Scopes |",
                 "| :--- | :---: | :--- | :--- |",
             ]
         )
@@ -123,8 +124,8 @@ class CoreSpecService:
         lines.extend(
             [
                 "",
-                "### Modules Clean Architecture (`core/alfred/`)",
-                "| Couche | Module | Rôle |",
+                "### Clean Architecture Modules (`core/alfred/`)",
+                "| Layer | Module | Role |",
                 "| :--- | :--- | :--- |",
             ]
         )
@@ -133,8 +134,8 @@ class CoreSpecService:
         lines.extend(
             [
                 "",
-                "### Commandes CLI (`alfred <subcommand>`)",
-                "| Commande | Options | Source |",
+                "### CLI Commands (`alfred <subcommand>`)",
+                "| Command | Options | Source |",
                 "| :--- | :--- | :--- |",
             ]
         )
@@ -171,9 +172,9 @@ class CoreSpecService:
             new_content = f"{existing[:b_idx]}{generated_block}{existing[e_idx:]}"
         else:
             new_content = (
-                f"# Alfred V{snapshot.version} — Spécification Technique Vivante\n\n"
-                f"Document de référence mono-repo (`core/` générique open-source vs "
-                f"`instance/` privé gitignoré).\n\n{generated_block}\n"
+                f"# Alfred V{snapshot.version} — Living Technical Specification\n\n"
+                f"Mono-repo reference document (generic open-source `core/` vs "
+                f"gitignored private `instance/`).\n\n{generated_block}\n"
             )
         atomic_write_text(spec_path, new_content)
         Path(f"{spec_path.resolve()}.lock").unlink(missing_ok=True)
@@ -219,6 +220,8 @@ class CoreSpecService:
         for banned in _BANNED_V7_TERMS:
             if banned in lowered:
                 errors.append(f"Banned legacy term found in docs/SPEC.md: '{banned}'")
+        for hit in detect_french_in_text(raw):
+            errors.append(f"English-only policy violation in docs/SPEC.md: {hit}")
         errors.extend(self._detect_extension_leaks(root, raw, instance_dirs))
         return errors
 

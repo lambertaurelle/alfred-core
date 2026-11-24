@@ -1,10 +1,10 @@
-# Extensions Personnelles (`instance/extensions/`)
+# Personal Extensions (`instance/extensions/`)
 
-Ce dossier accueille les automatisations personnelles créées sur mesure par **`alfred-evolve`**.
+This directory hosts personal automations tailored for your instance by **`alfred-evolve`**.
 
-## Règles Obligatoires
-1. **Zéro versionnement Git des extensions actives** : tout fichier `instance/extensions/*.py` (hors `__init__.py` et `*.example.py`) reste strictement ignoré par Git et sauvegardé automatiquement dans votre dossier référentiel Google Drive.
-2. **Contrat unique `AlfredExtension`** (`core/alfred/domain/extension_protocol.py`) :
-   - Expose une fabrique `build_extension() -> AlfredExtension` (ou une classe implémentant `extension_id`, `description`, `validate_config`, `run_periodic`).
-   - Respecte les 5 gardiens déterministes (`<= 500L/fichier`, `<= 60L/méthode`, docstrings Google `Args:`, `ruff`, `mypy --strict`).
-3. **Exemples complets prêts à copier** : voir [`../examples/`](../examples/).
+## Mandatory Rules
+1. **Never version active extensions in Git**: every `instance/extensions/*.py` file (outside `__init__.py` and `*.example.py`) stays strictly gitignored and is automatically backed up to your Google Drive knowledge folder (`_ALFRED_REFERENTIEL_`).
+2. **Single `AlfredExtension` contract** (`core/alfred/domain/extension_protocol.py`):
+   - Expose a `build_extension() -> AlfredExtension` factory (or a class implementing `extension_id`, `description`, `validate_config`, `run_periodic`).
+   - Comply with all code guardians (`<= 500L/file`, `<= 60L/method`, English Google docstrings with `Args:`, `ruff`, `mypy --strict`).
+3. **Ready-to-copy complete examples**: see [`../examples/`](../examples/).

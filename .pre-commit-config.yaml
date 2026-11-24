@@ -26,3 +26,8 @@ repos:
         entry: .venv/bin/pytest --cov=core --cov-fail-under=90
         language: system
         pass_filenames: false
+      - id: check-english-only
+        name: English-Only Repository Policy Guard
+        entry: .venv/bin/python core/scripts/check_english_only.py
+        language: system
+        pass_filenames: false

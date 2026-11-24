@@ -64,7 +64,7 @@ def _init_mono_git_fixture(tmp_path: Path) -> AlfredPaths:
     paths = AlfredPaths.from_env(tmp_path)
     (paths.core_dir / "scripts").mkdir(parents=True)
     for name in ("check-upstream-leak.sh", "check_code_architecture.py"):
-        src = Path("/root/Alfred/core/scripts") / name
+        src = Path(__file__).resolve().parents[2] / "core" / "scripts" / name
         dst = paths.core_dir / "scripts" / name
         dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
         dst.chmod(0o755)
@@ -189,14 +189,15 @@ def test_cli_controller_and_main_bootstrap(tmp_path: Path, monkeypatch: pytest.M
     """Verify V8 CLI controller core commands and main() < 80-line entrypoint."""
     paths = _init_mono_git_fixture(tmp_path)
     paths.templates_knowledge_dir.mkdir(parents=True, exist_ok=True)
-    for tpl in Path("/root/Alfred/core/templates/knowledge").glob("*.md"):
+    tpl_dir = Path(__file__).resolve().parents[2] / "core" / "templates" / "knowledge"
+    for tpl in tpl_dir.glob("*.md"):
         (paths.templates_knowledge_dir / tpl.name).write_text(
             tpl.read_text(encoding="utf-8"), encoding="utf-8"
         )
     cli, evolve = _build_test_cli(paths)
 
     assert cli.run(["auth-google", "--no-browser"]) == 0
-    assert cli.run(["scan-knowledge", "--query", "classement"]) == 0
+    assert cli.run(["scan-knowledge", "--query", "filing"]) == 0
     assert cli.run(["init-drive"]) == 0
     assert cli.run(["init-drive", "--execute"]) == 0
     assert cli.run(["poll-inbox"]) == 0

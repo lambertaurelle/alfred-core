@@ -377,7 +377,7 @@ class McpBridgeService:
         }
         fn = handlers.get(name)
         if fn is None:
-            err_block = [{"type": "text", "text": f"Outil inconnu : {name}"}]
+            err_block = [{"type": "text", "text": f"Unknown tool: {name}"}]
             return {"content": err_block, "isError": True}
         return {"content": [{"type": "text", "text": fn(args)}], "isError": False}
 
@@ -385,7 +385,7 @@ class McpBridgeService:
         """Spawn an alfred-life orchestrator session guarded by sync_wait_seconds."""
         prompt = str(args.get("prompt") or "").strip()
         if not prompt:
-            return "Prompt vide : aucune session ouverte."
+            return "Empty prompt: no session opened."
         title = str(args.get("title") or f"[MCP] {prompt[:60]}").strip()
         workspace = self._settings.resolve_workspace_project("life")
         model_id, _ = self._settings.models.resolve_for_workspace("life")
@@ -414,10 +414,10 @@ class McpBridgeService:
         worker.join(timeout=wait_sec)
         if "record" in holder:
             rec = holder["record"]
-            return f"Session ouverte : {rec.session_id} ({rec.workspace}) — {rec.title}"
+            return f"Session opened: {rec.session_id} ({rec.workspace}) — {rec.title}"
         return (
-            f"Session {workspace} ({model_id}) lancée en arrière-plan pour '{title}'. "
-            "Interrogez alfred_session_status pour suivre l'avancement."
+            f"Session {workspace} ({model_id}) started in background for '{title}'. "
+            "Query alfred_session_status to track progress."
         )
 
     def _tool_session_status(self, args: dict[str, object]) -> str:
@@ -427,7 +427,7 @@ class McpBridgeService:
         if session_id:
             rec = sessions.get(session_id)
             if rec is None:
-                return f"Session '{session_id}' introuvable dans l'état local."
+                return f"Session '{session_id}' not found in local state."
             return json.dumps(rec.model_dump(mode="json"), ensure_ascii=False)
         summary = [r.model_dump(mode="json") for r in list(sessions.values())[-10:]]
         return json.dumps({"count": len(sessions), "sessions": summary}, ensure_ascii=False)
@@ -437,7 +437,7 @@ class McpBridgeService:
         session_id = str(args.get("session_id") or "").strip()
         feedback = str(args.get("feedback") or "Proceed").strip()
         if not session_id:
-            return "Paramètre session_id requis."
+            return "Parameter session_id is required."
         wait_sec = max(0.5, float(self._settings.mcp.sync_wait_seconds) - 0.5)
         if self._agy is not None and not isinstance(self._agy, AgySessionManager):
             approve_fn: Any = getattr(self._agy, "approve_session", None)
@@ -464,7 +464,7 @@ class McpBridgeService:
                 else st
             )
         )
-        return f"Session {session_id} approuvée ({feedback})."
+        return f"Session {session_id} approved ({feedback})."
 
     def _tool_quick_context(self, args: dict[str, object]) -> str:
         """Query Tier-1/Tier-2 reference knowledge documents matching query."""
@@ -487,7 +487,7 @@ class McpBridgeService:
                 if isinstance(raw_docs, list):
                     docs = [d for d in raw_docs if isinstance(d, KnowledgeDocument)]
         if not docs:
-            return f"Aucune fiche de référence trouvée pour '{query}'."
+            return f"No reference knowledge note found for '{query}'."
         blocks = [
             f"### {d.frontmatter.title} (`{d.frontmatter.id}`)\n"
             f"{d.frontmatter.summary}\n\n{d.body.strip()}"

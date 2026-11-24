@@ -11,6 +11,7 @@ DEFAULT_EXCLUDED_DRIVE_PATH_PREFIXES: tuple[str, ...] = (
     "/Backups",
     "/Photos",
     "/Archives_Froides",
+    "/Cold_Archives",
     "/node_modules",
     "/.git",
 )

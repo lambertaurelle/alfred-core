@@ -435,7 +435,7 @@ def test_e2e_evolve_governance_pillars_and_manifests_contract(tmp_path: Path) ->
     for label, text in corpus_items:
         folded = fold_accents(text)
         assert "unit" in folded, f"{label} missing unit test requirement"
-        assert "fonctionnel" in folded, f"{label} missing functional test requirement"
+        assert "functional" in folded, f"{label} missing functional test requirement"
         assert (
             "e2e" in folded or "bout en bout" in folded or "bout-en-bout" in folded
         ), f"{label} missing E2E test requirement"

@@ -119,31 +119,31 @@ class EvolveWorktreeService:
             is_breaking=is_breaking,
         )
         self._save_proposal_record(safe_id, record)
-        brk = "\n- **Breaking Core Change** : `[BREAKING]` requis." if is_breaking else ""
+        brk = "\n- **Breaking Core Change**: `[BREAKING]` required." if is_breaking else ""
         plan_md = (
-            f"# Plan d'Évolution `alfred-evolve` (`{safe_id}`)\n\n"
-            f"- **Titre** : {title}\n- **Mode** : `{norm_mode}`{brk}\n"
-            f"- **Description** : {description}\n\n"
-            "## Qualification `evolve-qualifier`\n"
-            "- **Par défaut (`instance/`)** : isoler le personnel sous `instance/` "
+            f"# Evolution Plan `alfred-evolve` (`{safe_id}`)\n\n"
+            f"- **Title**: {title}\n- **Mode**: `{norm_mode}`{brk}\n"
+            f"- **Description**: {description}\n\n"
+            "## `evolve-qualifier` Assessment\n"
+            "- **Default (`instance/`)**: isolate personal logic under `instance/` "
             "(`--mode instance`).\n"
-            "- **En faire profiter la communauté `alfred-core`** *(optionnel)* : exemple anonyme "
-            "sous `instance/examples/*.example.py` et PR `--mode upstream-pr`.\n"
-            "- **Zéro demi-morceau dans `core/`** : si `--hybrid`, la brique `core/` doit être "
-            "100 % autonome sans `instance/` (`--core-complete`), sinon `--mode instance` seul.\n\n"
-            "## Contrats TDD & Bonnes Pratiques Obligatoires\n"
-            "1. **3 Niveaux de Tests (`tdd-red` -> `tdd-green`)** : tests **unitaires**, "
-            "tests **fonctionnels** inter-services et tests **E2E** (bout en bout).\n"
-            "2. **Analyse & Tests de Non-Régression** : identification explicite des impacts "
-            "et exécution complète de la suite anti-régression.\n"
-            "3. **Adversarial Testing (`swarm`)** : campagne adversariale multi-agents `swarm` "
-            "sur les entrées non fiables, traversées de chemin, injections et cas limites.\n\n"
-            "## Pipeline Post-Validation (`Proceed`)\n"
-            f"1. Création d'un `git worktree` isolé mono-repo sur `evolve/{safe_id}`.\n"
-            "2. Synchronisation `docs/SPEC.md` (`sync-spec`) et validation TDD "
-            "(`check_code_architecture.py`, `ruff`, `mypy`, `pytest >= 90%`).\n"
-            "3. Vérification `check-upstream-leak.sh` (0 donnée personnelle).\n"
-            "4. Pull Request unique sur **`alfred-core`**.\n"
+            "- **Contribute upstream to `alfred-core`** *(optional)*: provide an anonymized "
+            "example under `instance/examples/*.example.py` and open a `--mode upstream-pr` PR.\n"
+            "- **Zero half-measures in `core/`**: when `--hybrid`, the `core/` slice must be "
+            "100% standalone without `instance/` (`--core-complete`), else `--mode instance`.\n\n"
+            "## Mandatory TDD, Bilingual Runtime & Quality Contracts\n"
+            "1. **3 Test Levels (`tdd-red` -> `tdd-green`)**: **unit**, **functional**, and "
+            "**E2E** tests covering the Bilingual FR/EN runtime invariant.\n"
+            "2. **Regression Analysis**: explicit impact assessment and full regression run.\n"
+            "3. **Adversarial Testing (`swarm`)**: multi-agent `swarm` red-team testing "
+            "against untrusted inputs, path traversal, injections, and edge cases.\n\n"
+            "## Post-Validation Pipeline (`Proceed`)\n"
+            f"1. Create isolated mono-repo `git worktree` on `evolve/{safe_id}`.\n"
+            "2. Sync `docs/SPEC.md` (`sync-spec`) via `doc-maintainer` and run TDD + English "
+            "gates (`check_code_architecture.py`, `check_english_only.py`, `ruff`, `mypy`, "
+            "`pytest >= 90%`).\n"
+            "3. Run `check-upstream-leak.sh` (zero personal data) and open PR on "
+            "**`alfred-core`**.\n"
         )
         return record, plan_md
 
@@ -257,6 +257,7 @@ class EvolveWorktreeService:
             Persisted EvolutionProposalRecord marked LOCAL_FORK_COMMITTED.
         """
         safe_id = _validate_proposal_id(proposal_id)
+        EvolveGovernanceService().validate_pr_metadata_english(title, body)
         self._sync_spec_if_present(worktree)
         self._run_tdd_and_leak_gates(worktree)
         branch = f"evolve/{safe_id}"
@@ -306,6 +307,7 @@ class EvolveWorktreeService:
         """
         safe_id = _validate_proposal_id(proposal_id)
         gov = EvolveGovernanceService()
+        gov.validate_pr_metadata_english(title, body)
         gov.validate_hybrid_completeness(
             is_hybrid=is_hybrid, core_is_standalone_complete=core_complete
         )
@@ -318,6 +320,7 @@ class EvolveWorktreeService:
         pr_title, pr_body = gov.format_pr_metadata(
             title, body, breaking_report, force_breaking=effective_breaking
         )
+        gov.validate_pr_metadata_english(pr_title, pr_body)
         artifact = self._commit_and_open_pr(
             repo_name="alfred-core",
             worktree=worktree,

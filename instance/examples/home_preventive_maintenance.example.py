@@ -23,7 +23,7 @@ class HomePreventiveMaintenanceExtension:
     @property
     def description(self) -> str:
         """Return one-line functional summary."""
-        return "Planifie 30 jours à l'avance les entretiens annuels (chaudière, toiture, véhicule)."
+        return "Schedule annual preventive maintenance 30 days ahead (boiler, roof, vehicle)."
 
     def validate_config(self, raw_config: dict[str, object]) -> list[str]:
         """Validate deadlines mapping in extensions.home_preventive_maintenance.
@@ -71,11 +71,11 @@ class HomePreventiveMaintenanceExtension:
             except ValueError:
                 continue
             if (due_dt - today).days == lead_days:
-                label = str(entry.get("label", "Entretien annuel"))
+                label = str(entry.get("label", "Annual maintenance"))
                 tasks.append(
                     ExtensionTaskDraft(
-                        title=f"[Entretien J-{lead_days}] {label}",
-                        notes=f"Échéance cible : {due_dt.isoformat()}",
+                        title=f"[Maintenance D-{lead_days}] {label}",
+                        notes=f"Target due date: {due_dt.isoformat()}",
                         due_date_iso=due_dt.isoformat(),
                     )
                 )

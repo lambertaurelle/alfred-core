@@ -22,13 +22,13 @@ for arg in "$@"; do
             DO_ONBOARD=true
             ;;
         *)
-            echo "Option inconnue : ${arg} (supportées : --skip-pip, --upgrade, --onboard)" >&2
+            echo "Unknown option: ${arg} (supported: --skip-pip, --upgrade, --onboard)" >&2
             exit 2
             ;;
     esac
 done
 
-echo "[1/4] Préparation de l'arborescence privée gitignorée instance/..."
+echo "[1/4] Preparing gitignored private instance/ directory tree..."
 mkdir -p \
     "${ALFRED_ROOT}/instance/config" \
     "${ALFRED_ROOT}/instance/secrets/signature_vault" \
@@ -40,12 +40,12 @@ chmod 700 "${ALFRED_ROOT}/instance/secrets" "${ALFRED_ROOT}/instance/secrets/sig
 
 if [[ ! -f "${ALFRED_ROOT}/instance/config/settings.yaml" ]]; then
     cp "${ALFRED_ROOT}/core/config/settings.example.yaml" "${ALFRED_ROOT}/instance/config/settings.yaml"
-    echo "  -> Créé instance/config/settings.yaml depuis le modèle."
+    echo "  -> Created instance/config/settings.yaml from template."
 else
-    echo "  -> instance/config/settings.yaml existant préservé."
+    echo "  -> Existing instance/config/settings.yaml preserved."
 fi
 
-echo "[2/4] Vérification de l'environnement Python (.venv)..."
+echo "[2/4] Checking Python environment (.venv)..."
 if [[ ! -x "${ALFRED_ROOT}/.venv/bin/python" ]]; then
     python3 -m venv "${ALFRED_ROOT}/.venv"
 fi
@@ -55,7 +55,7 @@ if [[ "${SKIP_PIP}" != true ]]; then
     fi
 fi
 
-echo "[3/4] Activation des hooks Git locaux (.githooks) et liens .agents..."
+echo "[3/4] Enabling local Git hooks (.githooks) and .agents symlinks..."
 if [[ -d "${ALFRED_ROOT}/.git" && -d "${ALFRED_ROOT}/.githooks" ]]; then
     git -C "${ALFRED_ROOT}" config core.hooksPath .githooks
 fi
@@ -67,13 +67,13 @@ for ws_dir in "${ALFRED_ROOT}"/core/workspaces/alfred-*; do
 done
 
 if [[ "${DO_ONBOARD}" == true ]]; then
-    echo "[4/4] Lancement de l'assistant GCP & OAuth2 (alfred bootstrap-gcp --finish-setup)..."
+    echo "[4/4] Launching GCP & OAuth2 onboarding wizard (alfred bootstrap-gcp --finish-setup)..."
     "${ALFRED_ROOT}/.venv/bin/alfred" bootstrap-gcp --finish-setup
 else
-    echo "[4/4] Bootstrap Alfred V8.0 terminé."
-    echo "Prochaines étapes :"
-    echo "  1. ${ALFRED_ROOT}/.venv/bin/alfred bootstrap-gcp   (ou ./scripts/bootstrap.sh --onboard)"
+    echo "[4/4] Alfred V8.0 bootstrap complete."
+    echo "Next steps:"
+    echo "  1. ${ALFRED_ROOT}/.venv/bin/alfred bootstrap-gcp   (or ./scripts/bootstrap.sh --onboard)"
     echo "  2. ${ALFRED_ROOT}/.venv/bin/alfred status-onboarding --json"
     echo "  3. ${ALFRED_ROOT}/.venv/bin/alfred init-workspaces --prune-legacy"
-    echo "  4. Ouvrir le workspace 'alfred-onboard' dans Antigravity Web."
+    echo "  4. Open the 'alfred-onboard' workspace in Antigravity Web."
 fi

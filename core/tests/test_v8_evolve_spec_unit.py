@@ -148,8 +148,8 @@ def test_core_spec_service_sync_preserves_curated_prose_and_validates(tmp_path: 
     assert BEGIN_GENERATED in raw and END_GENERATED in raw
     assert svc.validate_spec_file(repo) == []
 
-    curated_header = "# Alfred Living Spec\n\nProse humaine curatee en tete.\n\n"
-    curated_footer = "\n\n## Decisions Architecturales\n\nConserver strictement ce texte.\n"
+    curated_header = "# Alfred Living Spec\n\nCurated human header prose.\n\n"
+    curated_footer = "\n\n## Architectural Decisions\n\nPreserve this text verbatim.\n"
     spec_path.write_text(
         f"{curated_header}{BEGIN_GENERATED}\nstale\n{END_GENERATED}{curated_footer}",
         encoding="utf-8",
@@ -285,7 +285,7 @@ def test_evolve_governance_format_pr_metadata_and_record_backcompat() -> None:
     )
     t_brk, b_brk = gov.format_pr_metadata("feat: drop old cmd", "Details", brk_rep)
     assert t_brk == "[BREAKING] feat: drop old cmd"
-    assert b_brk.startswith("## ⚠️ BREAKING CORE CHANGE — Arbitrage Mainteneur Requis")
+    assert b_brk.startswith("## ⚠️ BREAKING CORE CHANGE — Maintainer Approval Required")
     assert "Details" in b_brk
 
     t_forced, _ = gov.format_pr_metadata("[BREAKING] Already tagged", "Body", clean_rep, True)

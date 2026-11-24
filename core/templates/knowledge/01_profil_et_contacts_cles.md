@@ -1,23 +1,23 @@
 ---
 id: profil_et_contacts_cles
-title: Profil Utilisateur, Contacts Clés & Style Relationnel
+title: User Profile, Key Contacts & Communication Style
 domain: communications
-summary: Préférences de rédaction, ton relationnel par interlocuteur et répertoire des contacts récurrents.
+summary: Writing preferences, per-correspondent tone, and directory of recurring contacts.
 keywords:
-  - profil
+  - profile
   - contacts
   - style
-  - brouillon
-  - ton
+  - draft
+  - tone
 drive_source_ids: []
 updated_at: "2026-01-01T00:00:00Z"
 ---
 
-# Profil Utilisateur, Contacts Clés & Style Relationnel
+# User Profile, Key Contacts & Communication Style
 
-## 1. Style de Rédaction par Défaut
-- Ton courtois, direct et synthétique.
-- Toujours soumettre les brouillons Gmail (`DRAFT_REPLY`) dans `implementation_plan.md` avant tout envoi.
+## 1. Default Writing Style
+- Polite, direct, and concise tone matching the incoming email language (French or English).
+- Always submit Gmail drafts (`DRAFT_REPLY`) in `implementation_plan.md` before sending.
 
-## 2. Contacts Fréquents
-- À compléter au fil des interactions validées (ex: `interlocuteur@example.com` — vouvoiement / tutoiement).
+## 2. Frequent Contacts
+- Update progressively across validated interactions (e.g. `contact@example.com` — formal / informal register).

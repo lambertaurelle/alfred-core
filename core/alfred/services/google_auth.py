@@ -176,15 +176,15 @@ class GoogleOAuthService:
             eff_port = port if port > 0 else 8085
             auth_url = self.start_headless_auth(port=eff_port)
             print(
-                "\n=== Authentification OAuth2 Google (mode headless / SSH) ===\n"
-                "1. Ouvrez l'URL suivante dans votre navigateur local :\n"
+                "\n=== Google OAuth2 Authentication (Headless / SSH Mode) ===\n"
+                "1. Open the following URL in your local browser:\n"
                 f"   {auth_url}\n\n"
-                "2. Après consentement, le navigateur affichera une erreur sur\n"
-                f"   http://localhost:{eff_port}/?state=...&code=... (normal en SSH).\n"
-                "3. Copiez l'URL complète de la barre d'adresse (ou le code) ci-dessous :\n"
+                "2. After consent, the browser will show an error on\n"
+                f"   http://localhost:{eff_port}/?state=...&code=... (expected over SSH).\n"
+                "3. Copy the full URL from the address bar (or the code) below:\n"
             )
             reader = self._input_fn if self._input_fn is not None else input
-            pasted = reader("URL de redirection ou code OAuth2 : ").strip()
+            pasted = reader("Redirect URL or OAuth2 code: ").strip()
             if not pasted:
                 raise ValueError("Empty OAuth2 redirect URL or authorization code.")
             return self.complete_headless_auth(pasted)

@@ -30,7 +30,7 @@ GOOGLE_CUSTOM_MCP_REDIRECT_PREFIX = (
 MCP_TOOLS_SPEC: tuple[dict[str, object], ...] = (
     {
         "name": "alfred_life_brain_dump",
-        "description": "Soumettre une demande ou un brain dump au workspace alfred-life.",
+        "description": "Submit a request or brain dump to the alfred-life workspace.",
         "inputSchema": {
             "type": "object",
             "properties": {"prompt": {"type": "string"}, "title": {"type": "string"}},
@@ -39,12 +39,12 @@ MCP_TOOLS_SPEC: tuple[dict[str, object], ...] = (
     },
     {
         "name": "alfred_session_status",
-        "description": "Consulter le statut d'une session Antigravity active ou archivée.",
+        "description": "Check the status of an active or archived Antigravity session.",
         "inputSchema": {"type": "object", "properties": {"session_id": {"type": "string"}}},
     },
     {
         "name": "alfred_approve_plan",
-        "description": "Valider ou annoter le plan Gate d'une session Antigravity.",
+        "description": "Approve or annotate the Gate plan of an Antigravity session.",
         "inputSchema": {
             "type": "object",
             "properties": {"session_id": {"type": "string"}, "feedback": {"type": "string"}},
@@ -53,7 +53,7 @@ MCP_TOOLS_SPEC: tuple[dict[str, object], ...] = (
     },
     {
         "name": "alfred_quick_context",
-        "description": "Interroger le référentiel de connaissances 3-tiers d'Alfred.",
+        "description": "Query Alfred's 3-tier reference knowledge base.",
         "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}}},
     },
 )
@@ -206,13 +206,13 @@ def render_authorize_html_form(params: dict[str, str], error_message: str = "") 
     )
     err_html = f"<p style='color:#b00020'>{html.escape(error_message)}</p>" if error_message else ""
     doc = (
-        "<!DOCTYPE html><html lang='fr'><head><meta charset='utf-8'>"
-        "<title>Alfred MCP — Autorisation OAuth 2.1</title></head><body>"
-        f"<h1>Alfred Chief of Staff — Pont MCP</h1>{err_html}"
+        "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+        "<title>Alfred MCP — OAuth 2.1 Authorization</title></head><body>"
+        f"<h1>Alfred Chief of Staff — MCP Bridge</h1>{err_html}"
         f"<form method='post' action='/oauth/authorize'>{hidden_fields}"
-        "<label for='pin'>Code PIN Administrateur :</label> "
+        "<label for='pin'>Administrator PIN:</label> "
         "<input id='pin' name='pin' type='password' autocomplete='off' required /> "
-        "<button type='submit'>Autoriser Gemini</button></form></body></html>"
+        "<button type='submit'>Authorize Gemini</button></form></body></html>"
     )
     return doc.encode("utf-8")
 

@@ -60,7 +60,7 @@ class SignatureVaultService:
         self,
         source_pdf: Path,
         rect: SignaturePlacementRect | None = None,
-        reason: str = "Signature document validée par l'utilisateur",
+        reason: str = "Document signature approved by user",
         workspace: str = "alfred-life",
         preview_out: Path | None = None,
         signed_out: Path | None = None,

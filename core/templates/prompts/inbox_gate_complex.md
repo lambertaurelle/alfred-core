@@ -1,19 +1,19 @@
-# Plan d'Action `alfred-inbox` — Dossier Complexe 2 Vitesses (`Hydrogen` -> `Orchestrator Carbon` -> `Hydrogen`)
+# Action Plan `alfred-inbox` — 2-Speed Complex Case (`Hydrogen` -> `Orchestrator Carbon` -> `Hydrogen`)
 
-## 1. Synthèse de l'E-mail
-- **De** : `{{sender}}`
-- **Objet** : {{subject}}
-- **Message ID** : `{{message_id}}` | **Thread ID** : `{{thread_id}}`
-- **Qualification** : `{{reason}}`
+## 1. Email Summary
+- **From**: `{{sender}}`
+- **Subject**: {{subject}}
+- **Message ID**: `{{message_id}}` | **Thread ID**: `{{thread_id}}`
+- **Classification**: `{{reason}}`
 {{security_banner}}
 
-## 2. Pré-Cadrage & Pièces Référentiel Détectées
+## 2. Preliminary Framing & Detected Reference Documents
 {{research_section}}
 
-## 3. Proposition Soumise à Validation (`Proceed`)
+## 3. Proposal Pending Approval (`Proceed`)
 {{action_section}}
 
-## 4. Étude Approfondie 2 Vitesses Post-`Proceed`
-Dès validation **`Proceed`** :
-1. **Étude `Orchestrator (Carbon)`** : invoquer le sous-agent `study-orchestrator` (`model: pro`) pour croiser les pièces Google Drive Tier-3 (`alfred drive-read`), l'historique Gmail et la réglementation applicable.
-2. **Exécution `Hydrogen` légère** : appliquer le résultat validé via `plan-executor` (`model: flash`) et archiver le fil Gmail.
+## 4. Post-`Proceed` Two-Speed Deep Study
+Immediately after **`Proceed`** approval:
+1. **`Orchestrator (Carbon)` Study**: invoke `study-orchestrator` (`model: pro`) to cross-reference Tier-3 Google Drive documents (`alfred read-drive`), Gmail thread history, and applicable regulations.
+2. **Lightweight `Hydrogen` Execution**: apply the approved outcome via `plan-executor` (`model: flash`) and archive the Gmail thread.

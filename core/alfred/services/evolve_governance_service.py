@@ -21,6 +21,7 @@ from alfred.services.core_spec_service import (
     extract_cli_commands_from_source,
     extract_features_from_source,
 )
+from alfred.services.english_policy_service import validate_english_text
 
 _ALLOWED_INSTANCE_RE = re.compile(
     r"^instance/(examples/.+|"
@@ -28,7 +29,7 @@ _ALLOWED_INSTANCE_RE = re.compile(
     r"config/prompts/[^/]+\.example\.md|"
     r"extensions/(__init__\.py|README\.md|[^/]+\.example\.py))$"
 )
-_BREAKING_BANNER = "## ⚠️ BREAKING CORE CHANGE — Arbitrage Mainteneur Requis"
+_BREAKING_BANNER = "## ⚠️ BREAKING CORE CHANGE — Maintainer Approval Required"
 
 
 def _sanitized_git_env(root: Path | None = None) -> dict[str, str]:
@@ -153,16 +154,16 @@ class EvolveGovernanceService:
                 return UseCaseQualification(
                     architecture_kind=EvolutionArchitectureKind.INSTANCE_WITH_COMMUNITY_OPTION,
                     recommended_mode=EvolutionMode.INSTANCE,
-                    rationale="Extension privée exécutable immédiatement sous instance/.",
+                    rationale="Private extension executable immediately under instance/.",
                     community_pr_option_summary=(
-                        "Option communautaire : anonymiser un exemple sous "
-                        "instance/examples/*.example.py et soumettre une PR upstream-pr."
+                        "Community option: anonymize an example under "
+                        "instance/examples/*.example.py and submit an upstream-pr PR."
                     ),
                 )
             return UseCaseQualification(
                 architecture_kind=EvolutionArchitectureKind.PURE_INSTANCE,
                 recommended_mode=EvolutionMode.INSTANCE,
-                rationale="Besoin strictement personnel relevant de instance/ uniquement.",
+                rationale="Strictly personal need belonging under instance/ only.",
             )
 
         if is_hybrid:
@@ -171,25 +172,42 @@ class EvolveGovernanceService:
                     architecture_kind=EvolutionArchitectureKind.HYBRID_CORE_AND_INSTANCE,
                     recommended_mode=EvolutionMode.INSTANCE,
                     core_feature_is_standalone_complete=False,
-                    rationale="La partie core/ dépend encore d'éléments privés instance/.",
+                    rationale="The core/ slice still depends on private instance/ files.",
                     rearchitecture_suggestion=(
-                        "Rendre la capacité dans core/ 100 % autonome avec valeurs par "
-                        "défaut et protocole d'extension avant d'ouvrir une PR upstream-pr."
+                        "Make the core/ capability 100% standalone with generic defaults "
+                        "and an extension protocol before opening an upstream-pr PR."
                     ),
                 )
             return UseCaseQualification(
                 architecture_kind=EvolutionArchitectureKind.HYBRID_CORE_AND_INSTANCE,
                 recommended_mode=EvolutionMode.UPSTREAM_PR,
                 core_feature_is_standalone_complete=True,
-                rationale="La brique core/ est autonome et complète sans dépendance instance/.",
+                rationale="The core/ component is standalone-complete without instance/ coupling.",
             )
 
         return UseCaseQualification(
             architecture_kind=EvolutionArchitectureKind.CORE_EVOLUTION,
             recommended_mode=EvolutionMode.UPSTREAM_PR,
             core_feature_is_standalone_complete=core_is_standalone_complete,
-            rationale="Évolution générique de core/ éligible à une PR mono-repo.",
+            rationale="Generic core/ evolution eligible for a mono-repo PR.",
         )
+
+    def validate_pr_metadata_english(self, title: str, body: str) -> str | None:
+        """Validate that Pull Request title and body contain strictly English prose.
+
+        Args:
+            title: Proposed Git commit / Pull Request title.
+            body: Proposed Pull Request Markdown description body.
+
+        Returns:
+            None when both title and body comply with the English-only policy.
+
+        Raises:
+            ValueError: If French prose is detected in title or body.
+        """
+        validate_english_text(title, label="PR title")
+        validate_english_text(body, label="PR body")
+        return None
 
     def validate_hybrid_completeness(
         self,

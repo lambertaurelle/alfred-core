@@ -1,21 +1,26 @@
-# 📬 Workspace `alfred-inbox` — Triage Sécurisé des Nouveaux E-mails à 3 Sorties Exclusives
+# 📬 Workspace `alfred-inbox` — Secure 3-Output New Email Triage
 
-> **Routage Modèle (Muscle)** : `gemini-4-hydrogen-medium` (Agent-Spawned via `alfred poll-inbox`, traces archivées en `gemini-4-hydrogen-low`)  
-> **Racine Alfred & CLI** : `/root/Alfred` (`${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`)  
-> **Pipeline Obligatoire** : **Pré-filtre 0-Token & Pare-Feu Injection/SPF-DKIM $\rightarrow$ 3 Sorties Exclusives $\rightarrow$ Gate `implementation_plan.md` $\rightarrow$ `plan-executor` (`Hydrogen`)**
+> **Model Routing (Muscle)**: `gemini-4-hydrogen-medium` (Agent-Spawned via `alfred poll-inbox`, silent traces archived in `gemini-4-hydrogen-low`)  
+> **Alfred Root & CLI**: `/root/Alfred` (`${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`)  
+> **Mandatory Pipeline**: **0-Token Pre-Filter & Injection/SPF-DKIM Firewall $\rightarrow$ 3 Exclusive Outputs $\rightarrow$ `implementation_plan.md` Gate $\rightarrow$ `plan-executor` (`Hydrogen`)**
 
-## 1. Pré-Filtrage Déterministe & Pare-Feu de Sécurité
-- Pré-filtrage à 0 token des invitations `.ics` automatiques, promotions/forums et expéditeurs denylistés avant tout appel cognitif — tout en laissant passer les **confirmations datées de billets, réservations, hôtels, transports ou rendez-vous** (`has_dated_booking_signal`) pour inscription sous Gate à l'agenda (sans limite d'horizon).
-- Pare-feu anti-injection de prompt sur `subject`/`body`/`HTML` et sur le texte/HTML des pièces jointes (`EmailSanitizer`) ; vérification `Authentication-Results` (SPF/DKIM) interdisant à tout e-mail non authentifié de déclencher `alfred-evolve`.
-- Exploration sécurisée en mémoire des pièces jointes Gmail (`list-attachments`, `read-attachment`) avec neutralisation des traversées de chemin et des archives ZIP/XML malveillantes.
+Secure 2-speed email triage combining zero-token pre-filtering, SPF/DKIM prompt-injection firewalling, and three exclusive outputs.
 
-## 2. Les 3 Sorties Exclusives (`InboxTriageService`)
-1. **`SILENT_NO_ACTION`** :
-   - Bruit, newsletters et notifications passives sans anomalie $\rightarrow$ **0 modification dans Gmail** (et trace optionnelle auto-archivée selon `silent_creates_agy_session`).
-   - **Coordination Agenda (`CONFIRM_EVENT`)** : si un e-mail valide un créneau ou confirme un billet/réservation datée sans nécessiter de réponse écrite, ouverture d'une Gate dans `alfred-calendar` (`confirm-event --location ... --description ... --no-send-invites --archive-trace` avec `attendees: []`, `send_invites: false` pour les marchands).
-2. **`DRAFT_REPLY` (Brouillon Gmail + `[HOLD]` éventuel)** :
-   - Création du brouillon Gmail (avec en-tête `From:` `default_send_as_email` si configuré), maintien de la session active et présentation dans **`implementation_plan.md`** (`RequestFeedback: true`).
-   - Après `Proceed`, **`plan-executor`** (`Hydrogen`) envoie le brouillon (`send-draft`, archivage Gmail par défaut sauf `--keep-in-inbox`) et applique l'action calendrier associée (surfaçage automatique dans `alfred-calendar`).
-3. **`USER_ACTION_REQUIRED` (Action utilisateur + escalade éventuelle `study-orchestrator`)** :
-   - Marquage automatique **`STARRED`** dans Gmail, défrichage complet (`research-drive`, `research-gmail-cal`, `research-web`, ou `study-orchestrator` si `needs_orchestrator_study=true`) incluant l'analyse des pièces jointes et la section Coordination Agenda éventuelle dans **`implementation_plan.md`**.
-   - Après `Proceed`, **`plan-executor`** transfère au besoin les pièces jointes validées (`save-attachment-to-drive --message-id <id> --parent-id <folder_id>`, ou délégation `alfred delegate --to drive --mode execute-approved` lorsque `features.drive_watcher: true`), exécute les actions Tasks/Contacts (`create-task`, `complete-task`, `update-task`, `delete-task`, `create-contact`) ou Calendar (`confirm-event` / `create-event`) avec surfaçage automatique inter-workspace, met à jour le référentiel `.md` et archive le fil (`archive-email --thread-id ... --unstar`, sauf `--keep-in-inbox`).
+## Bilingual FR/EN Runtime
+- Process incoming French and English emails natively (action-required signals, dated booking confirmations, calendar RSVPs, prompt-injection firewalling, and knowledge lookup), and always draft `DRAFT_REPLY` bodies and `implementation_plan.md` responses in the active language matching the incoming email or user preference (French or English).
+
+## 1. Deterministic Pre-Filtering & Security Firewall
+- 0-token pre-filtering of automated `.ics` invites, promotions/forums, and denylisted senders prior to any cognitive call — while admitting **dated ticket, booking, hotel, transport, or appointment confirmations** (`has_dated_booking_signal`) for gated calendar registration (across all future horizons).
+- Anti-prompt-injection firewall across `subject`/`body`/`HTML` and extracted attachment text/HTML (`EmailSanitizer`), plus `Authentication-Results` (SPF/DKIM) verification forbidding any unauthenticated email from triggering `alfred-evolve`.
+- In-memory Gmail attachment inspection (`list-attachments`, `read-attachment`) with path-traversal sanitization and ZIP/XML hardening.
+
+## 2. The 3 Exclusive Outputs (`InboxTriageService`)
+1. **`SILENT_NO_ACTION`**:
+   - Residual newsletters and benign passive notifications $\rightarrow$ **zero Gmail mutation** (optional auto-archived trace per `silent_creates_agy_session`).
+   - **Calendar Coordination (`CONFIRM_EVENT`)**: when an email confirms a scheduled slot or dated ticket/booking requiring no written reply, open a Gate in `alfred-calendar` (`confirm-event --location ... --description ... --no-send-invites --archive-trace` with `attendees: []`, `send_invites: false` for merchants).
+2. **`DRAFT_REPLY` (Gmail Draft + Optional `[HOLD]`)**:
+   - Create the Gmail draft (with configured `default_send_as_email` `From:` header), keep the session active, and present full details in **`implementation_plan.md`** (`RequestFeedback: true`).
+   - After `Proceed`, **`plan-executor`** (`Hydrogen`) sends the draft (`send-draft`, archiving the thread by default unless `--keep-in-inbox`) and applies any paired calendar `[HOLD]` (`CREATE_HOLD`, automatically surfaced in `alfred-calendar`).
+3. **`USER_ACTION_REQUIRED` (User Action + Optional `study-orchestrator` Escalation)**:
+   - Auto-apply Gmail **`STARRED`** label, assemble full groundwork (`research-drive`, `research-gmail-cal`, `research-web`, or `study-orchestrator` when `needs_orchestrator_study=true`) including attachment inspection and optional Calendar coordination inside **`implementation_plan.md`**.
+   - After `Proceed`, **`plan-executor`** files approved attachments (`save-attachment-to-drive --message-id <id> --parent-id <folder_id>`, or `alfred delegate --to drive --mode execute-approved` when `features.drive_watcher: true`), runs Tasks/Contacts (`create-task`, `complete-task`, `update-task`, `delete-task`, `create-contact`) or Calendar (`confirm-event` / `create-event`) actions with automatic cross-workspace surfacing, updates `.md` knowledge sheets, and archives the thread (`archive-email --thread-id ... --unstar`, unless `--keep-in-inbox`).

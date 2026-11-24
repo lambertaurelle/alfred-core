@@ -239,7 +239,7 @@ class DriveWatcherService:
             return classify_drive_batch_with_agy(
                 self._agy, self._settings, self._sanitizer, batch, sanitized_map, docs
             )
-        return (DriveWatcherOutputType.SILENT_NO_ACTION, "Indexé sans anomalie détectée", [])
+        return (DriveWatcherOutputType.SILENT_NO_ACTION, "Indexed with no anomalies detected", [])
 
     def _collect_silent_violations(
         self, out_type: DriveWatcherOutputType, ops: Sequence[DriveGovernanceOp]

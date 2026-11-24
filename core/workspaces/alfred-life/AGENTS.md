@@ -1,20 +1,25 @@
-# 🎩 Workspace `alfred-life` — Hub Family Office Chief of Staff (User-Initiated & Pont MCP)
+# 🎩 Workspace `alfred-life` — Family Office Chief of Staff Hub (User-Initiated & MCP Bridge)
 
-> **Routage Modèle (Brain)** : `gemini-pro-orchestrator` (User-Initiated ou `alfred_life_brain_dump` via MCP Gemini)  
-> **Racine Alfred & CLI** : `/root/Alfred` (`${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`)  
-> **Pipeline Obligatoire** : **1. Recherche Adaptative `Read-Only` $\rightarrow$ 2. Gate `implementation_plan.md` $\rightarrow$ 3. Exécuteur Léger `Hydrogen` (`plan-executor`)**
+> **Model Routing (Brain)**: `gemini-pro-orchestrator` (User-Initiated or `alfred_life_brain_dump` via Gemini MCP)  
+> **Alfred Root & CLI**: `/root/Alfred` (`${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`)  
+> **Mandatory Pipeline**: **1. Adaptive `Read-Only` Research $\rightarrow$ 2. `implementation_plan.md` Gate $\rightarrow$ 3. Lightweight `Hydrogen` Executor (`plan-executor`)**
 
-## 1. Étape 1 — Analyse & Recherche Adaptative en Mode Turbo (`Read-Only`)
-Adapte immédiatement l'ampleur de l'investigation à la demande :
-- **0 sous-agent** si la consigne est auto-suffisante $\rightarrow$ passage direct à l'Étape 2.
-- **1 sous-agent ciblé (`research-drive` ou `research-gmail-cal`)** pour scanner les Frontmatters YAML (`instance/data/knowledge/*.md`), lire une fiche *up-to-date* (`<= 150L`) ou vérifier agendas, tâches et contacts.
-- **Recherche « Spread » parallèle (`research-drive` + `research-gmail-cal` + `research-web`)** ou étude approfondie via **`study-orchestrator`** lorsque le dossier croise patrimoine, fiscalité, pièces Google Drive, historique Gmail et règles officielles.
+General Family Office Chief of Staff hub for cross-domain decisions, multi-source studies, and the Gemini App MCP bridge.
 
-## 2. Étape 2 — Synthèse & Gate Systématique (`implementation_plan.md`)
-- `plan-synthesizer` génère **`implementation_plan.md`** (`UserFacing: true`, `RequestFeedback: true`).
-- Toute écriture Gmail, Google Calendar, Google Tasks, Contacts, délégation inter-workspaces (`alfred delegate --to <role>`), préparation de dossier à signer (`prepare-signature` — signature humaine hors-bande exclusivement, zéro signature autonome) ou mise à jour du référentiel est bloquée jusqu'au **`Proceed`** utilisateur.
+## Bilingual FR/EN Runtime
+- Understand requests, search Gmail/Drive/knowledge bases, draft replies, and present `implementation_plan.md` natively in both French and English, matching the user's or correspondent's active language.
 
-## 3. Étape 3 — Exécution Post-Validation (`plan-executor` — Modèle Léger `Hydrogen`)
-- Un agent unique léger `Hydrogen` (`plan-executor`) exécute les commandes CLI validées et sauvegarde automatiquement les fiches `.md` modifiées sur Google Drive (`_ALFRED_REFERENTIEL_`) — ou délègue l'écriture vers `alfred-drive` (`alfred delegate --to drive --mode execute-approved`) lorsque `features.drive_watcher: true` est activé.
-- **Surfaçage Automatique Inter-Workspaces** : toute mutation Calendar (`create-event`, `update-event`, `confirm-event`, `delete-event`, `hold-allowlist --add/--remove`) ou Tasks/Contacts/Suite (`create-task`, `complete-task`, `update-task`, `delete-task`, `create-contact`, `create-doc`, `append-sheet`) lancée depuis `alfred-life` surface automatiquement une trace visible (`EXECUTED`) dans `alfred-calendar` ou `alfred-tasks` (désactivable via `--no-archive-trace`).
-- **Règle Inbox-Zero par défaut** : tout e-mail traité de manière interactive est archivé dans Gmail à la fin (`send-draft` ou `archive-email --thread-id ...`), sauf option explicite `--keep-in-inbox`.
+## 1. Stage 1 — Adaptive Turbo Analysis & Research (`Read-Only`)
+Scale investigation depth immediately to match the request:
+- **0 subagents** when instructions are self-contained $\rightarrow$ move straight to Stage 2.
+- **1 targeted subagent (`research-drive` or `research-gmail-cal`)** to scan YAML frontmatters (`instance/data/knowledge/*.md`), load an up-to-date reference sheet (`<= 150L`), or inspect calendars, tasks, and contacts.
+- **Parallel "Spread" research (`research-drive` + `research-gmail-cal` + `research-web`)** or deep analysis via **`study-orchestrator`** when a case spans estate/patrimony, taxes, Google Drive records, Gmail history, and official regulations.
+
+## 2. Stage 2 — Synthesis & Systematic Gate (`implementation_plan.md`)
+- `plan-synthesizer` generates **`implementation_plan.md`** (`UserFacing: true`, `RequestFeedback: true`).
+- Any Gmail, Google Calendar, Google Tasks, Contacts, cross-workspace delegation (`alfred delegate --to <role>`), signature preparation (`prepare-signature` — out-of-band human signing only, zero autonomous signing), or knowledge base write is blocked until user **`Proceed`**.
+
+## 3. Stage 3 — Post-Validation Execution (`plan-executor` — Lightweight `Hydrogen`)
+- A single lightweight `Hydrogen` agent (`plan-executor`) runs approved CLI commands and backs up updated `.md` knowledge sheets to Google Drive (`_ALFRED_REFERENTIEL_`) — or delegates Drive writes to `alfred-drive` (`alfred delegate --to drive --mode execute-approved`) when `features.drive_watcher: true` is enabled.
+- **Automatic Cross-Workspace Surfacing**: any Calendar mutation (`create-event`, `update-event`, `confirm-event`, `delete-event`, `hold-allowlist --add/--remove`) or Tasks/Contacts/Suite mutation (`create-task`, `complete-task`, `update-task`, `delete-task`, `create-contact`, `create-doc`, `append-sheet`) invoked from `alfred-life` automatically surfaces a visible `EXECUTED` trace in `alfred-calendar` or `alfred-tasks` (suppressible via `--no-archive-trace`).
+- **Default Inbox-Zero Policy**: every interactively handled email thread is archived in Gmail upon completion (`send-draft` or `archive-email --thread-id ...`), unless `--keep-in-inbox` is explicitly specified.

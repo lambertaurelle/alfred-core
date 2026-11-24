@@ -8,7 +8,7 @@ extensions:
   home_preventive_maintenance:
     lead_days: 30
     deadlines:
-      - label: "Révision pompe à chaleur"
+      - label: "Heat pump annual service"
         due_date: "2026-10-15"
-      - label: "Contrôle technique véhicule"
+      - label: "Vehicle inspection"
         due_date: "2026-11-20"

@@ -151,7 +151,7 @@ def load_upcoming_calendar_snapshot(
                 settings.primary_calendar_id, now_local.isoformat(), far_future
             )
     except Exception:
-        return (f"Maintenant ({settings.timezone}) : {now_local.isoformat()}", [])
+        return (f"Now ({settings.timezone}): {now_local.isoformat()}", [])
     return (
         format_unlimited_calendar_snapshot(now_local.isoformat(), settings.timezone, events),
         events,
@@ -198,17 +198,17 @@ def render_draft_calendar_section(
     """
     if action.intent == CalendarActionIntent.NONE or not action.slots:
         return ""
-    lines: list[str] = ["\n## Coordination Agenda (`alfred-calendar`)\n"]
+    lines: list[str] = ["\n## Calendar Coordination (`alfred-calendar`)\n"]
     cli_cmds: list[str] = []
     for slot in action.slots:
         allowed = [a for a in slot.attendees if a in allowlist]
         deferred = [a for a in slot.attendees if a not in allowlist]
         if action.intent == CalendarActionIntent.CREATE_HOLD:
-            ext_str = ", ".join(deferred) or "aucun"
+            ext_str = ", ".join(deferred) or "none"
             lines.extend([
-                f"- **`[HOLD] {slot.summary}`** : `{slot.start_iso}` -> `{slot.end_iso}`",
-                f"  - Invités immédiats (allowlist) : `{', '.join(allowed) or 'aucun'}`",
-                f"  - Externes différés jusqu'à confirmation : `{ext_str}`",
+                f"- **`[HOLD] {slot.summary}`**: `{slot.start_iso}` -> `{slot.end_iso}`",
+                f"  - Immediate attendees (allowlist): `{', '.join(allowed) or 'none'}`",
+                f"  - External guests deferred until confirmation: `{ext_str}`",
             ])
             att_flags = " ".join(f"--attendee {shlex.quote(a)}" for a in slot.attendees)
             meta_flags = _slot_meta_flags(slot)
@@ -221,13 +221,13 @@ def render_draft_calendar_section(
             ]
             cli_cmds.append(" ".join(parts))
         else:
-            att_str = ", ".join(slot.attendees) or "aucun"
+            att_str = ", ".join(slot.attendees) or "none"
             lines.extend([
-                f"- **Événement validé `{slot.summary}`** : `{slot.start_iso}` -> `{slot.end_iso}`",
-                f"  - **Invitation Google Calendar après `Proceed`** : `{att_str}`",
+                f"- **Confirmed event `{slot.summary}`**: `{slot.start_iso}` -> `{slot.end_iso}`",
+                f"  - **Google Calendar invite after `Proceed`**: `{att_str}`",
             ])
             cli_cmds.append(_build_confirm_cmd(slot, thread_id))
-    lines.append("\n### Commandes Agenda Post-Validation (`Proceed`)\n")
+    lines.append("\n### Post-Approval Calendar Commands (`Proceed`)\n")
     lines.extend(f"- `{cmd}`" for cmd in cli_cmds)
     return "\n".join(lines) + "\n"
 
@@ -251,43 +251,43 @@ def render_calendar_confirm_gate_plan(
         if ev.is_hold and ev.thread_id and ev.thread_id == msg.thread_id
     ]
     has_invites = any(s.send_invites and s.attendees for s in action.slots)
-    fallback_sender = parseaddr(msg.sender)[0].strip() or "(expéditeur sans invitation)"
+    fallback_sender = parseaddr(msg.sender)[0].strip() or "(sender without invite)"
     sender_display = msg.sender if has_invites else fallback_sender
     lines = [
-        "# Validation d'Événement & Envoi d'Invitation Google Calendar (`alfred-calendar`)\n",
+        "# Calendar Event Approval & Google Calendar Invitation (`alfred-calendar`)\n",
         "> [!IMPORTANT]",
-        "> **Gate Bloquante Obligatoire** : Aucune invitation Google Calendar n'a été envoyée.",
-        "> Vérifiez l'horaire et les destinataires ci-dessous puis cliquez sur **`Proceed`**.\n",
-        f"- **E-mail source** : `{msg.message_id}` (Fil `{msg.thread_id}`)",
-        f"- **De** : `{sender_display}` — **Objet** : {msg.subject}",
-        f"- **Motif détecté** : {reason}\n",
-        "## Créneau(x) Validé(s) & Destinataires de l'Invitation\n",
+        "> **Mandatory Blocking Gate**: Zero Google Calendar invitations have been sent.",
+        "> Review the time slot and recipients below, then click **`Proceed`**.\n",
+        f"- **Source email**: `{msg.message_id}` (Thread `{msg.thread_id}`)",
+        f"- **From**: `{sender_display}` — **Subject**: {msg.subject}",
+        f"- **Detected reason**: {reason}\n",
+        "## Confirmed Slot(s) & Invitation Recipients\n",
     ]
     cmds: list[str] = []
     for slot in action.slots:
-        guests = ", ".join(slot.attendees) if slot.attendees else "aucun invité externe"
+        guests = ", ".join(slot.attendees) if slot.attendees else "no external guests"
         inv_lbl = (
-            'Personnes invitées (`sendUpdates="all"`)'
-            if slot.send_invites and slot.attendees else "Invités externes (aucune notification)"
+            'Invited attendees (`sendUpdates="all"`)'
+            if slot.send_invites and slot.attendees else "External guests (no notifications)"
         )
         lines.extend([
-            f"- **Titre final** : `{slot.summary}`",
-            f"- **Horaire** : `{slot.start_iso}` -> `{slot.end_iso}`",
-            *([f"- **Lieu / Visio** : {slot.location}"] if slot.location else []),
-            f"- **{inv_lbl}** : `{guests}`",
+            f"- **Final title**: `{slot.summary}`",
+            f"- **Time**: `{slot.start_iso}` -> `{slot.end_iso}`",
+            *([f"- **Location / Video**: {slot.location}"] if slot.location else []),
+            f"- **{inv_lbl}**: `{guests}`",
         ])
         cmds.append(_build_confirm_cmd(slot, msg.thread_id))
     if thread_holds:
-        lines.append("\n## `[HOLD]` Existants sur ce Fil (Conversion & Libération Automatique)\n")
+        lines.append("\n## Existing `[HOLD]` Events on This Thread (Auto-Converted & Released)\n")
         for hold in thread_holds:
             lines.append(
-                f"- `{hold.event_id}` : {hold.summary} (`{hold.start_iso}` -> `{hold.end_iso}`)"
+                f"- `{hold.event_id}`: {hold.summary} (`{hold.start_iso}` -> `{hold.end_iso}`)"
             )
-    lines.append("\n## Exécution Post-Validation (`Proceed`)\n")
+    lines.append("\n## Post-Approval Execution (`Proceed`)\n")
     lines.extend(f"- `{cmd.strip()}`" for cmd in cmds)
     lines.append(
-        "- **Archivage Gmail par défaut** : retrait `INBOX` après validation "
-        "(commentez `--keep-in-inbox` pour le conserver)."
+        "- **Default Gmail archiving**: remove `INBOX` after approval "
+        "(comment `--keep-in-inbox` to keep it in inbox)."
     )
     return "\n".join(lines) + "\n"
 
@@ -299,16 +299,16 @@ def _security_and_orchestrator_banners(
     """Return optional security caution banner and 2-speed Orchestrator study block."""
     sec = (
         "\n> [!CAUTION]\n"
-        "> **Alerte Anti-Prompt-Injection (`EmailSanitizer`)** : éléments HTML cachés, Unicode "
-        "invisible ou motifs d'injection détectés et neutralisés. Vérifiez attentivement.\n"
+        "> **Anti-Prompt-Injection Alert (`EmailSanitizer`)**: hidden HTML elements, invisible "
+        "Unicode, or injection patterns detected and neutralized. Review carefully.\n"
         if suspicious_injection
         else ""
     )
     orch = (
-        "\n## Pipeline 2 Vitesses (`Orchestrator Carbon` -> `Hydrogen`)\n"
-        "- Dès validation **`Proceed`**, invoquer `study-orchestrator` (`Orchestrator Carbon`) "
-        "pour l'étude approfondie multi-sources (Drive Tier-3 / historique), puis appliquer "
-        "les actions validées avec `plan-executor` (`Hydrogen`).\n"
+        "\n## 2-Speed Pipeline (`Orchestrator Carbon` -> `Hydrogen`)\n"
+        "- After **`Proceed`**, invoke `study-orchestrator` (`Orchestrator Carbon`) "
+        "for deep multi-source research (Drive Tier-3 / history), then apply "
+        "approved actions with `plan-executor` (`Hydrogen`).\n"
         if needs_orchestrator_study
         else ""
     )
@@ -340,23 +340,23 @@ def render_draft_reply_plan(
     sec_banner, orch_block = _security_and_orchestrator_banners(
         needs_orchestrator_study, suspicious_injection
     )
-    th_line = f"- **Fil Gmail** : `{thread_id}`\n" if thread_id else ""
+    th_line = f"- **Gmail Thread**: `{thread_id}`\n" if thread_id else ""
     th_flag = f" --thread-id {shlex.quote(thread_id)}" if thread_id else ""
     send_cmd = f"alfred send-draft --draft-id {shlex.quote(draft_id)}{th_flag}"
     return (
-        f"# Brouillon de Réponse Gmail (`DRAFT_REPLY`)\n"
+        f"# Gmail Draft Reply (`DRAFT_REPLY`)\n"
         f"{sec_banner}\n"
-        f"- **À (épinglé)** : `{reply_to}`\n"
-        f"- **Objet** : {reply_subject}\n"
-        f"- **Gmail Draft ID** : `{draft_id}`\n"
+        f"- **To (pinned)**: `{reply_to}`\n"
+        f"- **Subject**: {reply_subject}\n"
+        f"- **Gmail Draft ID**: `{draft_id}`\n"
         f"{th_line}\n"
-        f"## Brouillon Proposé (Annotable par Commentaires Inline)\n\n"
+        f"## Proposed Draft (Editable via Inline Comments)\n\n"
         f"```text\n{draft_body}\n```\n"
         f"{cal_section}"
         f"{orch_block}\n"
-        f"## Exécution Post-Validation (`Proceed`)\n"
-        f"- Envoyer le brouillon et **archiver par défaut l'e-mail dans Gmail** : `{send_cmd}` "
-        f"(ajoutez un commentaire `--keep-in-inbox` pour le conserver en réception).\n"
+        f"## Post-Approval Execution (`Proceed`)\n"
+        f"- Send the draft and **archive the email in Gmail by default**: `{send_cmd}` "
+        f"(add a `--keep-in-inbox` comment to keep it in inbox).\n"
     )
 
 
@@ -393,29 +393,29 @@ def render_action_required_plan(
         if len(msg.attachment_filenames) > 1 else ""
     )
     att_line = (
-        f"- **Sauvegarde pièce(s) jointe(s) vers Drive** : "
+        f"- **Save attachment(s) to Drive**: "
         f"`alfred save-attachment-to-drive --message-id {shlex.quote(msg.message_id)}"
         f"{fn_hint} --parent-id <FOLDER_ID>`\n"
         if msg.attachment_filenames else ""
     )
     return (
-        f"# Action Utilisateur Requise (`USER_ACTION_REQUIRED`)\n"
+        f"# User Action Required (`USER_ACTION_REQUIRED`)\n"
         f"{sec_banner}\n"
-        f"- **E-mail étoilé (`STARRED`)** : `{msg.message_id}` (Fil `{msg.thread_id}`)\n"
-        f"- **Expéditeur** : `{msg.sender}`\n"
-        f"- **Destinataires** : `{msg.recipient}`\n"
-        f"- **Objet** : {msg.subject}\n"
-        f"- **Motif** : {reason}\n\n"
-        f"## Défrichage Complet & Contexte Rassemblé\n"
+        f"- **Starred email (`STARRED`)**: `{msg.message_id}` (Thread `{msg.thread_id}`)\n"
+        f"- **Sender**: `{msg.sender}`\n"
+        f"- **Recipients**: `{msg.recipient}`\n"
+        f"- **Subject**: {msg.subject}\n"
+        f"- **Reason**: {reason}\n\n"
+        f"## Full Research Brief & Gathered Context\n"
         f"{bullets}\n"
         f"{cal_section}"
         f"{orch_block}\n"
-        f"## Exécution Post-Validation (`Proceed`)\n"
-        f"- Fiche référentiel cible : `{target_doc_id}`\n"
+        f"## Post-Approval Execution (`Proceed`)\n"
+        f"- Target reference note: `{target_doc_id}`\n"
         f"{att_line}"
-        f"- **Archivage Gmail par défaut en fin de traitement** : "
+        f"- **Default Gmail archiving upon completion**: "
         f"`alfred archive-email {arch_target} --unstar` "
-        f"(indiquez `--keep-in-inbox` en commentaire si nécessaire).\n"
+        f"(specify `--keep-in-inbox` in a comment if needed).\n"
     )
 
 
@@ -427,12 +427,12 @@ def render_silent_trace_markdown(msg: EmailMessage, reason: str) -> str:
         reason: Classification rationale.
     """
     return (
-        f"### Trace Auto-Archivée `SILENT_NO_ACTION`\n"
-        f"- **Message ID** : `{msg.message_id}` (Fil `{msg.thread_id}`)\n"
-        f"- **De** : `{msg.sender}`\n"
-        f"- **Objet** : {msg.subject}\n"
-        f"- **Motif** : {reason}\n"
-        f"- **Action Gmail** : Aucune modification (`0` brouillon, `0` étoile).\n"
+        f"### Auto-Archived Trace `SILENT_NO_ACTION`\n"
+        f"- **Message ID**: `{msg.message_id}` (Thread `{msg.thread_id}`)\n"
+        f"- **From**: `{msg.sender}`\n"
+        f"- **Subject**: {msg.subject}\n"
+        f"- **Reason**: {reason}\n"
+        f"- **Gmail Action**: Zero modifications (`0` drafts, `0` stars).\n"
     )
 
 
@@ -472,7 +472,7 @@ def backfill_silent_inbox_records(
         fallback_msg = msg or EmailMessage(
             message_id=rec.source_message_id or rec.session_id,
             thread_id="",
-            sender="(historique)",
+            sender="(history)",
             subject=f"Message {rec.source_message_id or rec.session_id}",
         )
         created = agy_manager.create_and_archive_trace(

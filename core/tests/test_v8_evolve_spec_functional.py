@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -204,7 +205,7 @@ def test_mode_upstream_pr_detects_breaking_changes_and_tags_pr(tmp_path: Path) -
     assert captured
     pr_title, pr_body = captured[0]
     assert pr_title.startswith("[BREAKING] ")
-    assert "## ⚠️ BREAKING CORE CHANGE — Arbitrage Mainteneur Requis" in pr_body
+    assert "## ⚠️ BREAKING CORE CHANGE — Maintainer Approval Required" in pr_body
     persisted = store.evolution_ledger.load().proposals["drop_legacy"]
     assert persisted.is_breaking is True
     evolve.cleanup_worktree("drop_legacy")
@@ -307,3 +308,158 @@ def test_mode_local_fork_and_leak_guard_branch_isolation(tmp_path: Path) -> None
         check=False,
     )
     assert res.returncode == 0, res.stderr + res.stdout
+
+
+def _setup_leak_terms_root(tmp_path: Path, terms: list[str] | None = None) -> Path:
+    """Create an isolated ALFRED_ROOT_DIR containing private leak terms."""
+    alfred_root = tmp_path / "alfred_root"
+    secrets_dir = alfred_root / "instance" / "secrets"
+    secrets_dir.mkdir(parents=True)
+    lines = terms if terms is not None else ["ownerhandle"]
+    (secrets_dir / "leak_terms.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return alfred_root
+
+
+def _commit_as(
+    repo: Path,
+    filename: str,
+    content: str,
+    author_name: str,
+    author_email: str,
+    message: str,
+) -> None:
+    """Write a file, stage it, and create a commit with explicit author metadata."""
+    (repo / filename).write_text(content, encoding="utf-8")
+    _git(repo, "add", filename)
+    _git(
+        repo,
+        "-c",
+        f"user.name={author_name}",
+        "-c",
+        f"user.email={author_email}",
+        "commit",
+        "--author",
+        f"{author_name} <{author_email}>",
+        "-m",
+        message,
+    )
+
+
+def _run_leak_guard(repo: Path, alfred_root: Path) -> subprocess.CompletedProcess[str]:
+    """Execute check-upstream-leak.sh against repo using an isolated ALFRED_ROOT_DIR."""
+    leak_script = WORKTREE_ROOT / "core" / "scripts" / "check-upstream-leak.sh"
+    env = {**os.environ, "ALFRED_ROOT_DIR": str(alfred_root)}
+    return subprocess.run(
+        ["bash", str(leak_script), str(repo)],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+
+def _init_upstream_tracked_repo(
+    base_dir: Path,
+    author_name: str,
+    author_email: str,
+) -> Path:
+    """Initialize a bare origin remote, clone it, and push an initial main commit."""
+    origin_bare = base_dir / "origin.git"
+    _git(base_dir, "init", "--bare", "-b", "main", str(origin_bare))
+    repo = base_dir / "repo"
+    _git(base_dir, "clone", str(origin_bare), str(repo))
+    _git(repo, "checkout", "-B", "main")
+    _commit_as(repo, "README.md", "# Alfred\n", author_name, author_email, "chore: seed main")
+    _git(repo, "push", "-u", "origin", "main")
+    return repo
+
+
+def test_leak_guard_scopes_private_author_terms_to_unmerged_commits(tmp_path: Path) -> None:
+    """Verify leak_terms author checks ignore origin/main ancestors and scan unmerged HEAD."""
+    alfred_root = _setup_leak_terms_root(tmp_path)
+    repo = _init_upstream_tracked_repo(
+        tmp_path,
+        "Upstream Owner",
+        "12345+ownerhandle@users.noreply.github.com",
+    )
+    _git(repo, "checkout", "-b", "evolve/clean-feature")
+    _commit_as(
+        repo,
+        "clean_feature.py",
+        '"""Clean feature."""\n',
+        "Alfred Core Bot",
+        "bot@alfred.local",
+        "feat: add clean feature",
+    )
+
+    clean_res = _run_leak_guard(repo, alfred_root)
+    assert clean_res.returncode == 0, clean_res.stderr + clean_res.stdout
+
+    _commit_as(
+        repo,
+        "author_check.py",
+        '"""Author check."""\n',
+        "Owner Handle",
+        "ownerhandle@example.com",
+        "feat: commit with private author handle",
+    )
+    bad_author_res = _run_leak_guard(repo, alfred_root)
+    assert bad_author_res.returncode != 0
+    assert "Personal Identity Found in Git Commit Metadata" in bad_author_res.stderr
+    assert "ownerhandle" in bad_author_res.stderr
+
+    _git(repo, "reset", "--hard", "HEAD~1")
+    _commit_as(
+        repo,
+        "leaked_note.md",
+        "Private note mentioning ownerhandle in file body.\n",
+        "Alfred Core Bot",
+        "bot@alfred.local",
+        "docs: add note with private term",
+    )
+    bad_file_res = _run_leak_guard(repo, alfred_root)
+    assert bad_file_res.returncode != 0
+    assert "Sensitive Data in File" in bad_file_res.stderr
+
+
+def test_leak_guard_keeps_full_author_scan_without_upstream_remote(tmp_path: Path) -> None:
+    """Verify full HEAD author scan holds without upstream remote and for generic webmail."""
+    alfred_root = _setup_leak_terms_root(tmp_path)
+
+    local_repo = tmp_path / "local_only"
+    local_repo.mkdir()
+    _git(local_repo, "init", "-b", "main")
+    _commit_as(
+        local_repo,
+        "README.md",
+        "# Local repo\n",
+        "Owner Handle",
+        "ownerhandle@example.com",
+        "chore: local commit with private handle",
+    )
+    local_res = _run_leak_guard(local_repo, alfred_root)
+    assert local_res.returncode != 0
+    assert "Personal Identity Found in Git Commit Metadata" in local_res.stderr
+    assert "ownerhandle" in local_res.stderr
+
+    upstream_webmail = "contrib@" + "g" + "mail.com"
+    remote_case_dir = tmp_path / "with_origin"
+    remote_case_dir.mkdir()
+    webmail_repo = _init_upstream_tracked_repo(
+        remote_case_dir,
+        "Generic Contributor",
+        upstream_webmail,
+    )
+    _git(webmail_repo, "checkout", "-b", "evolve/clean-work")
+    _commit_as(
+        webmail_repo,
+        "clean.py",
+        '"""Clean."""\n',
+        "Alfred Core Bot",
+        "bot@alfred.local",
+        "feat: clean commit",
+    )
+    webmail_res = _run_leak_guard(webmail_repo, alfred_root)
+    assert webmail_res.returncode != 0
+    assert "Personal Identity Found in Git Commit Metadata" in webmail_res.stderr
+    assert upstream_webmail in webmail_res.stderr

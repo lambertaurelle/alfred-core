@@ -441,8 +441,8 @@ class AgySessionManager:
         if agy_bin is None:
             return None
         prompt = (
-            f"# {title}\n\nTrace automatique d'audit (zéro appel d'outil ; "
-            f"confirme l'archivage en une phrase) :\n\n{trace_markdown}"
+            f"# {title}\n\nAutomated audit trace (zero tool calls; "
+            f"confirm archival in one sentence):\n\n{trace_markdown}"
         )
         cmd = [
             agy_bin, "--project", self._settings.resolve_workspace_project(workspace),

@@ -291,7 +291,7 @@ def test_agy_error_and_malformed_json_fallbacks(tmp_path: Path) -> None:
 
 def test_subagent_manifests_and_readme_document_v8_cli_commands() -> None:
     """Verify subagent manifests and README.md document V8 CLI commands without Nounou."""
-    root = Path("/root/Alfred")
+    root = Path(__file__).resolve().parents[2]
     r_drive = (root / ".agents/agents/research-drive.md").read_text(encoding="utf-8")
     for expected in (
         "scan-knowledge",
