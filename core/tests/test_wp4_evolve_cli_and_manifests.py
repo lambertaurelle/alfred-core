@@ -28,14 +28,15 @@ def _cleanup_proposal_worktree(evolve: EvolveWorktreeService, proposal_id: str) 
 
 
 def test_wp4_subagent_and_workspace_manifests_exist() -> None:
-    """Verify subagent manifests and all 6 canonical V8 workspace AGENTS.md files exist."""
-    repo_root = Path("/root/Alfred")
+    """Verify subagent manifests and all 7 canonical V8 workspace AGENTS.md files exist."""
+    repo_root = Path(__file__).resolve().parents[2]
     expected_agents = [
         "research-drive.md",
         "research-gmail-cal.md",
         "research-web.md",
         "plan-synthesizer.md",
         "plan-executor.md",
+        "drive-custodian.md",
     ]
     for agent_file in expected_agents:
         path = repo_root / ".agents" / "agents" / agent_file
@@ -48,6 +49,7 @@ def test_wp4_subagent_and_workspace_manifests_exist() -> None:
         "alfred-inbox",
         "alfred-calendar",
         "alfred-tasks",
+        "alfred-drive",
         "alfred-evolve",
     ]
     for ws in expected_workspaces:

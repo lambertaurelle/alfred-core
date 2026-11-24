@@ -10,7 +10,9 @@ from alfred.services.agy_session_manager import AgySessionManager
 from alfred.services.calendar_service import CalendarService
 from alfred.services.contacts_service import ContactsService
 from alfred.services.delegation_service import DelegationService
+from alfred.services.drive_governance_service import DriveGovernanceService
 from alfred.services.drive_service import DriveService
+from alfred.services.drive_watcher_service import DriveWatcherService
 from alfred.services.evolve_worktree_service import EvolveWorktreeService
 from alfred.services.gmail_drive_bridge_service import GmailDriveBridgeService
 from alfred.services.gmail_service import GmailService
@@ -111,32 +113,30 @@ def _assemble_controller(
         paths=paths, settings=settings, agy_manager=agy
     )
     cal_for_inbox = calendar if isinstance(calendar, CalendarService) else None
-    attachment_bridge: GmailDriveBridgeService = overrides.get(
-        "attachment_bridge"
-    ) or GmailDriveBridgeService(settings, store, gmail, drive)
-    inbox: InboxTriageService = overrides.get("inbox_service") or InboxTriageService(
+    attachment_bridge = overrides.get("attachment_bridge") or GmailDriveBridgeService(
+        settings, store, gmail, drive
+    )
+    inbox = overrides.get("inbox_service") or InboxTriageService(
         store, gmail, knowledge, drive, agy, calendar_service=cal_for_inbox,
         settings=settings, attachment_bridge=attachment_bridge,
     )
-    routines: RoutineService = overrides.get("routine_service") or RoutineService(
-        paths=paths, settings=settings, state_store=store,
-        inbox_service=inbox, drive_service=drive, agy_manager=agy,
+    drive_gov = overrides.get("drive_governance_service") or DriveGovernanceService(
+        settings, store, drive
     )
-    evolve: EvolveWorktreeService = overrides.get("evolve_service") or EvolveWorktreeService(
-        paths=paths, settings=settings, state_store=store
+    drive_watcher = overrides.get("drive_watcher_service") or DriveWatcherService(
+        paths, settings, store, drive, drive_gov, knowledge, agy
     )
-    delegation: DelegationService = overrides.get("delegation_service") or DelegationService(
-        paths=paths, settings=settings, state_store=store, agy_manager=agy, gmail_service=gmail
+    routines = overrides.get("routine_service") or RoutineService(
+        paths, settings, store, inbox, drive, agy, drive_watcher_service=drive_watcher
     )
-    onboarding: OnboardingService = overrides.get("onboarding_service") or OnboardingService(
-        paths=paths, settings=settings, state_store=store
+    evolve = overrides.get("evolve_service") or EvolveWorktreeService(paths, settings, store)
+    delegation = overrides.get("delegation_service") or DelegationService(
+        paths, settings, store, agy, gmail
     )
-    signature: SignatureVaultService = overrides.get("signature_service") or SignatureVaultService(
-        paths=paths, settings=settings, state_store=store
-    )
-    mcp: McpBridgeService = overrides.get("mcp_service") or McpBridgeService(
-        paths=paths, settings=settings, state_store=store,
-        agy_manager=agy, knowledge_service=knowledge,
+    onboarding = overrides.get("onboarding_service") or OnboardingService(paths, settings, store)
+    signature = overrides.get("signature_service") or SignatureVaultService(paths, settings, store)
+    mcp = overrides.get("mcp_service") or McpBridgeService(
+        paths, settings, store, agy, knowledge
     )
     return controller_cls(
         knowledge_service=knowledge, drive_service=drive, inbox_service=inbox,
@@ -147,4 +147,6 @@ def _assemble_controller(
         delegation_service=delegation, onboarding_service=onboarding,
         signature_service=signature, mcp_service=mcp, paths=paths,
         attachment_bridge=overrides.get("attachment_bridge"),
+        drive_governance_service=overrides.get("drive_governance_service"),
+        drive_watcher_service=overrides.get("drive_watcher_service"),
     )

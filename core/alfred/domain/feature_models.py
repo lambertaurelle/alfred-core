@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 FEATURE_OAUTH_MAP: dict[str, tuple[str, ...]] = {
     "drive_knowledge_sync": ("https://www.googleapis.com/auth/drive",),
+    "drive_watcher": ("https://www.googleapis.com/auth/drive",),
     "gmail_drafts_and_send": (
         "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/gmail.compose",
@@ -35,6 +36,7 @@ FEATURE_OAUTH_MAP: dict[str, tuple[str, ...]] = {
 
 FEATURE_GCP_APIS_MAP: dict[str, tuple[str, ...]] = {
     "drive_knowledge_sync": ("drive.googleapis.com", "sheets.googleapis.com"),
+    "drive_watcher": ("drive.googleapis.com", "sheets.googleapis.com"),
     "gmail_drafts_and_send": ("gmail.googleapis.com",),
     "inbox_auto_triage": ("gmail.googleapis.com",),
     "calendar_management": ("calendar-json.googleapis.com",),
@@ -65,6 +67,7 @@ class FeatureFlagsConfig(BaseModel):
     google_docs_suite: bool = False
     signature_delegation: bool = False
     mcp_gemini_bridge: bool = False
+    drive_watcher: bool = False
 
     @classmethod
     def from_dict(cls, raw: object) -> FeatureFlagsConfig:
@@ -88,6 +91,7 @@ class FeatureFlagsConfig(BaseModel):
             google_docs_suite=bool(raw.get("google_docs_suite", False)),
             signature_delegation=bool(raw.get("signature_delegation", False)),
             mcp_gemini_bridge=bool(raw.get("mcp_gemini_bridge", False)),
+            drive_watcher=bool(raw.get("drive_watcher", False)),
         )
 
     def is_enabled(self, feature_name: str) -> bool:

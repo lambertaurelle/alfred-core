@@ -46,12 +46,13 @@ git clone https://github.com/<owner>/alfred-core.git ~/Alfred && cd ~/Alfred && 
 | `tasks_management` | `true` | `tasks` | `tasks` |
 | `contacts_lookup` | `true` | `people` | `contacts`, `contacts.other.readonly` |
 | `google_docs_suite` | `false` | `docs`, `sheets`, `slides`, `forms` | `documents`, `spreadsheets`, `presentations`, `forms.body`, `forms.responses.readonly` |
+| `drive_watcher` | `false` | `drive`, `sheets` | `drive` |
 | `signature_delegation` | `false` | Local (aperçu PDF seul) | Aucun (signature humaine hors-bande) |
 | `mcp_gemini_bridge` | `false` | Local (`127.0.0.1:8765`) | Aucun (OAuth 2.1 PKCE `S256` + PIN PBKDF2) |
 
 ---
 
-## Les 6 Workspaces & Usage Quotidien
+## Les 7 Workspaces & Usage Quotidien
 
 | Workspace | Rôle | Modèle | Exécution après validation (`Proceed`) |
 | :--- | :--- | :--- | :--- |
@@ -60,6 +61,7 @@ git clone https://github.com/<owner>/alfred-core.git ~/Alfred && cd ~/Alfred && 
 | `alfred-inbox` | Triage e-mails, pièces jointes Drive & brouillons `sendAs` | `gemini-4-hydrogen-medium` | `plan-executor` (`Hydrogen`) |
 | `alfred-calendar` | Multi-calendriers, `[HOLD]` allowlistés & FreeBusy | `gemini-4-hydrogen-medium` | `plan-executor` (`Hydrogen`) |
 | `alfred-tasks` | Google Tasks (RFC 3339) & Google Contacts | `gemini-4-hydrogen-medium` | `plan-executor` (`Hydrogen`) |
+| `alfred-drive` | Gouvernance Drive non-destructive & surveillance delta (`watch-drive`) | `gemini-4-hydrogen-medium` | `plan-executor` / `drive-custodian` (`Hydrogen`) |
 | `alfred-evolve` | Évolutions `instance/`, `local-fork` ou PR `upstream-pr` | `gemini-pro-orchestrator` | Triade `tdd-red` -> `tdd-green` -> `tdd-verifier` |
 
 ```bash

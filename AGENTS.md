@@ -6,7 +6,7 @@
 
 ---
 
-## 1. Les 6 Workspaces Spécialisés & Routage Modèles (Brain vs Muscle)
+## 1. Les 7 Workspaces Spécialisés & Routage Modèles (Brain vs Muscle)
 
 | Workspace | Rôle | Modèle Principal | Exécution Étape 3 |
 | :--- | :--- | :--- | :--- |
@@ -15,6 +15,7 @@
 | **`alfred-inbox`** | Triage nouveaux e-mails (pré-filtre 0-token + pare-feu SPF/DKIM + 3 sorties) | `gemini-4-hydrogen-medium` | `plan-executor` (`Hydrogen`) |
 | **`alfred-calendar`** | Multi-calendriers, `[HOLD]` allowlistés & exclusion d'auto-invitation | `gemini-4-hydrogen-medium` | `plan-executor` (`Hydrogen`) |
 | **`alfred-tasks`** | Google Tasks, échéances RFC 3339 & annuaire Google Contacts | `gemini-4-hydrogen-medium` | `plan-executor` (`Hydrogen`) |
+| **`alfred-drive`** | Gouvernance Drive non-destructive, surveillance delta 2 vitesses & `_ALFRED_REFERENTIEL_` | `gemini-4-hydrogen-medium` | `plan-executor` / `drive-custodian` (`Hydrogen`) |
 | **`alfred-evolve`** | Évolutivité Mono-Repo en `git worktree` isolé & extensions `instance/` | `gemini-pro-orchestrator` | Triade TDD `tdd-red` $\rightarrow$ `tdd-green` $\rightarrow$ `tdd-verifier` |
 
 *Note CLI `agy` : ne jamais passer `--effort` lorsque le modèle sélectionné contient `orchestrator`. Les traces d'audit auto-archivées utilisent `gemini-4-hydrogen-low`.*

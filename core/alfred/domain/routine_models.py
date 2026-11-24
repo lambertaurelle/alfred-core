@@ -18,6 +18,7 @@ class RoutinesConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     inbox_interval_sec: int = Field(default=120, ge=30)
+    drive_watcher_interval_sec: int = Field(default=900, ge=60)
     periodic_interval_sec: int = Field(default=1800, ge=60)
     spawn_agy: bool = True
     cognitive_agy: bool = True
@@ -37,6 +38,7 @@ class RoutinesConfig(BaseModel):
             return cls()
         return cls(
             inbox_interval_sec=int(raw.get("inbox_interval_sec", 120)),
+            drive_watcher_interval_sec=int(raw.get("drive_watcher_interval_sec", 900)),
             periodic_interval_sec=int(raw.get("periodic_interval_sec", 1800)),
             spawn_agy=bool(raw.get("spawn_agy", True)),
             cognitive_agy=bool(raw.get("cognitive_agy", True)),

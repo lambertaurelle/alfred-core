@@ -12,6 +12,7 @@ features:
   google_docs_suite: false
   signature_delegation: false
   mcp_gemini_bridge: false
+  drive_watcher: false
 
 identity:
   default_send_as_email: ""
@@ -63,6 +64,7 @@ antigravity:
     inbox: "alfred-inbox"
     calendar: "alfred-calendar"
     tasks: "alfred-tasks"
+    drive: "alfred-drive"
     evolve: "alfred-evolve"
 
 knowledge:
@@ -73,9 +75,28 @@ evolve:
 
 routines:
   inbox_interval_sec: 120
+  drive_watcher_interval_sec: 900
   periodic_interval_sec: 1800
   spawn_agy: true
   cognitive_agy: true
   backup_instance_config_to_drive: true
+
+drive_watcher:
+  coalesce_max_files_per_batch: 25
+  excluded_path_prefixes:
+    - "/Backups"
+    - "/Photos"
+    - "/Archives_Froides"
+    - "/node_modules"
+    - "/.git"
+  excluded_mime_prefixes:
+    - "image/"
+    - "video/"
+    - "audio/"
+    - "application/zip"
+    - "application/x-tar"
+    - "application/gzip"
+    - "application/x-7z-compressed"
+  max_extracted_chars_per_file: 12000
 
 extensions: {}

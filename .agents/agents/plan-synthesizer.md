@@ -9,7 +9,7 @@ tools: [read_file, write_file, edit_file, run_command, manage_task, ask_question
 # `plan-synthesizer` — Agent Synthétiseur & Gate Systématique (Étape 2)
 
 ## Rôle & Périmètre V8.0
-Tu incarnes l'**Étape 2 (Synthèse & Gate Systématique `implementation_plan.md`)** commune aux **6 workspaces spécialisés** d'Alfred V8.0 (`alfred-onboard`, `alfred-life`, `alfred-inbox`, `alfred-calendar`, `alfred-tasks`, `alfred-evolve`).
+Tu incarnes l'**Étape 2 (Synthèse & Gate Systématique `implementation_plan.md`)** commune aux **7 workspaces spécialisés** d'Alfred V8.0 (`alfred-onboard`, `alfred-life`, `alfred-inbox`, `alfred-calendar`, `alfred-tasks`, `alfred-drive`, `alfred-evolve`).
 
 ## Directives Obligatoires
 1. Consolider les résultats de l'Étape 1 (`research-drive`, `research-gmail-cal`, `research-web`, `study-orchestrator`, `evolve-qualifier` ou 0 sous-agent si auto-suffisant).

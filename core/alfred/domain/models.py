@@ -18,6 +18,7 @@ from alfred.domain.calendar_models import (
     HoldAllowlistState,
     PullRequestArtifact,
 )
+from alfred.domain.drive_watcher_models import DriveWatcherConfig
 from alfred.domain.feature_models import (
     FeatureFlagsConfig,
     IdentityConfig,
@@ -57,6 +58,7 @@ DEFAULT_WORKSPACES: dict[str, str] = {
     "inbox": "alfred-inbox",
     "calendar": "alfred-calendar",
     "tasks": "alfred-tasks",
+    "drive": "alfred-drive",
     "evolve": "alfred-evolve",
 }
 
@@ -221,13 +223,14 @@ class AlfredSettings(BaseModel):
     mcp: McpServerConfig = Field(default_factory=McpServerConfig)
     routines: RoutinesConfig = Field(default_factory=RoutinesConfig)
     calendar: CalendarConfig = Field(default_factory=CalendarConfig)
+    drive_watcher: DriveWatcherConfig = Field(default_factory=DriveWatcherConfig)
     extensions_config: dict[str, dict[str, object]] = Field(default_factory=dict)
 
     def resolve_workspace_project(self, workspace: str) -> str:
         """Resolve a workspace role or slug into its configured Antigravity project name.
 
         Args:
-            workspace: Logical role ('inbox', 'calendar', 'tasks', 'life', 'evolve', 'onboard').
+            workspace: Logical role ('inbox', 'calendar', 'tasks', 'drive', 'life', 'evolve'...).
 
         Returns:
             Target Antigravity project name.
@@ -309,6 +312,7 @@ class AlfredSettings(BaseModel):
             mcp=McpServerConfig.from_dict(raw.get("mcp")),
             routines=RoutinesConfig.from_dict(raw.get("routines")),
             calendar=CalendarConfig.from_dict(raw.get("calendar")),
+            drive_watcher=DriveWatcherConfig.from_dict(raw.get("drive_watcher")),
             extensions_config=ext_cfg,
         )
 

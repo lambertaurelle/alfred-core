@@ -291,7 +291,7 @@ def test_cli_auth_google_and_apply_onboarding(
     _ = capsys.readouterr()
     assert rc == 0
     reloaded = AlfredSettings.load(paths)
-    assert len(reloaded.features.enabled_feature_names()) == 9
+    assert len(reloaded.features.enabled_feature_names()) == 10
     assert all(bool(v) for v in reloaded.features.model_dump().values())
     assert reloaded.referentiel_drive_folder_name == "00 - Alfred"
     assert reloaded.identity.default_send_as_email == "contact@domaine-perso.example"

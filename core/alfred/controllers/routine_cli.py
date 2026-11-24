@@ -24,7 +24,7 @@ def register_routine_and_gmail_parsers(sub: Any) -> None:
         sub: Argparse subparsers collection attached to top-level alfred parser.
     """
     p_run = sub.add_parser("run-routines")
-    p_run.add_argument("--only", choices=["all", "inbox", "periodic"], default="all")
+    p_run.add_argument("--only", choices=["all", "inbox", "drive", "periodic"], default="all")
     p_run.add_argument("--today", default="")
 
     p_inst = sub.add_parser("install-routines")

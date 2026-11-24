@@ -23,7 +23,7 @@ from alfred.domain.models import (
 from alfred.domain.tasks_models import ContactSummary, GoogleTaskItem, GoogleTaskListItem
 from alfred.repositories.state_store import StateStore
 
-REPO_ROOT = Path("/root/Alfred")
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _run_main(argv: list[str]) -> int:
@@ -372,13 +372,14 @@ def test_subagent_manifests_exist_with_yaml_frontmatter() -> None:
 
 
 def test_six_workspace_agents_md_exist_and_purge_legacy_terms() -> None:
-    """Verify all 6 specialist workspace AGENTS.md exist and contain zero legacy childcare terms."""
+    """Verify all 7 specialist workspace AGENTS.md exist and contain zero legacy childcare terms."""
     workspaces = (
         "alfred-onboard",
         "alfred-life",
         "alfred-inbox",
         "alfred-calendar",
         "alfred-tasks",
+        "alfred-drive",
         "alfred-evolve",
     )
     forbidden_terms = ("nou" + "nou", "pajem" + "ploi")

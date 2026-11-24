@@ -20,6 +20,11 @@ from alfred.controllers.calendar_cli import (
     print_skipped_disabled,
     register_calendar_parsers,
 )
+from alfred.controllers.drive_cli import (
+    DRIVE_GOVERNANCE_COMMANDS,
+    dispatch_drive_governance_command,
+    register_drive_governance_parsers,
+)
 from alfred.controllers.evolve_cli import (
     EVOLVE_COMMANDS,
     dispatch_evolve_command,
@@ -59,7 +64,9 @@ from alfred.repositories.state_store import StateStore
 from alfred.services.agy_daemon_sync import DaemonSyncStatus
 from alfred.services.agy_session_manager import AgySessionManager
 from alfred.services.delegation_service import DelegationService
+from alfred.services.drive_governance_service import DriveGovernanceService
 from alfred.services.drive_service import DriveService
+from alfred.services.drive_watcher_service import DriveWatcherService
 from alfred.services.evolve_worktree_service import EvolveWorktreeService
 from alfred.services.gmail_drive_bridge_service import GmailDriveBridgeService
 from alfred.services.gmail_service import GmailService
@@ -109,6 +116,8 @@ class CliController:
         mcp_service: McpBridgeService | None = None,
         paths: AlfredPaths | None = None,
         attachment_bridge: GmailDriveBridgeService | None = None,
+        drive_governance_service: DriveGovernanceService | None = None,
+        drive_watcher_service: DriveWatcherService | None = None,
     ) -> None:
         """Initialize the V8 CLI controller with injected domain services.
 
@@ -123,7 +132,7 @@ class CliController:
             oauth_service: Optional GoogleOAuthService for interactive OAuth2 bootstrap.
             timezone: Configured local timezone string (default 'Europe/Paris').
             settings: Optional AlfredSettings instance.
-            workspace_service: Optional Antigravity 6-workspace provisioner.
+            workspace_service: Optional Antigravity 7-workspace provisioner.
             agy_manager: Optional Antigravity session manager for live Gate spawning.
             routine_service: Optional RoutineService orchestrating systemd & periodic jobs.
             tasks_service: Optional Google Tasks v1 service.
@@ -135,6 +144,8 @@ class CliController:
             mcp_service: Optional McpBridgeService for OAuth 2.1 Gemini App bridge.
             paths: Optional resolved AlfredPaths layout.
             attachment_bridge: Optional GmailDriveBridgeService for attachment CLI commands.
+            drive_governance_service: Optional non-destructive DriveGovernanceService.
+            drive_watcher_service: Optional 2-speed DriveWatcherService.
         """
         self._knowledge = knowledge_service
         self._drive = drive_service
@@ -158,6 +169,8 @@ class CliController:
         self._mcp = mcp_service
         self._paths = paths
         self._attachment_bridge = attachment_bridge
+        self._drive_governance = drive_governance_service
+        self._drive_watcher = drive_watcher_service
 
     def run(self, argv: list[str]) -> int:
         """Parse CLI arguments and execute the requested Alfred V8 workflow.
@@ -189,6 +202,8 @@ class CliController:
                 else None
             )
             return dispatch_attachment_command(cmd, bridge, self._settings, args)
+        if cmd in DRIVE_GOVERNANCE_COMMANDS:
+            return self._dispatch_drive_governance(cmd, args)
         if cmd in ONBOARDING_AND_BRIDGE_COMMANDS:
             return self._dispatch_onboarding_bridge(cmd, args)
         if cmd in EVOLVE_COMMANDS:
@@ -202,6 +217,18 @@ class CliController:
             )
         handler = self._core_handlers().get(cmd)
         return handler(args) if handler is not None else 1
+
+    def _dispatch_drive_governance(self, cmd: str, args: argparse.Namespace) -> int:
+        """Ensure lazy DriveGovernanceService and DriveWatcherService exist and dispatch."""
+        paths = self._paths or AlfredPaths.from_env()
+        gov = self._drive_governance or DriveGovernanceService(
+            self._settings, self._store, self._drive
+        )
+        agy = self._agy or AgySessionManager(paths, self._settings, self._store)
+        watcher = self._drive_watcher or DriveWatcherService(
+            paths, self._settings, self._store, self._drive, gov, self._knowledge, agy
+        )
+        return dispatch_drive_governance_command(cmd, gov, watcher, self._agy, self._settings, args)
 
     def _dispatch_onboarding_bridge(self, cmd: str, args: argparse.Namespace) -> int:
         """Ensure lazy fallback services exist and dispatch onboarding/bridge commands."""
@@ -267,6 +294,7 @@ class CliController:
         register_onboarding_and_bridge_parsers(sub)
         register_routine_and_gmail_parsers(sub)
         register_attachment_parsers(sub)
+        register_drive_governance_parsers(sub)
         return parser
 
     def _register_knowledge_and_drive_parsers(self, sub: Any) -> None:
