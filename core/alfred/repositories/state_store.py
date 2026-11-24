@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 from alfred.domain.calendar_models import HoldAllowlistState
+from alfred.domain.drive_watcher_models import DriveWatcherLedger
 from alfred.domain.models import (
     ActiveConversationsState,
     AlfredPaths,
@@ -76,6 +77,14 @@ class StateStore:
         self.drive_read_cache = JsonStateRepository(
             paths.drive_read_cache_path,
             DriveReadCache,
+        )
+        self.drive_watcher_ledger = JsonStateRepository(
+            paths.state_dir / "processed_drive_events.json",
+            DriveWatcherLedger,
+        )
+        self.drive_governance_audit = JsonlEventLog(
+            paths.state_dir / "drive_governance_audit.jsonl",
+            ProcessedItemEvent,
         )
 
     @contextmanager

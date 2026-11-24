@@ -1,4 +1,4 @@
-"""Provision and verify the 6 distinct Antigravity specialist projects for Alfred V8.0."""
+"""Provision and verify the 7 distinct Antigravity specialist projects for Alfred V8.0."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ CANONICAL_WORKSPACE_ROLES: tuple[str, ...] = (
     "inbox",
     "calendar",
     "tasks",
+    "drive",
     "evolve",
 )
 LEGACY_PRUNABLE_NAMES: frozenset[str] = frozenset({"Alfred", "CLI Project"})

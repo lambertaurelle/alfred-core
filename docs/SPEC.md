@@ -50,6 +50,7 @@ domain  <--  repositories  <--  services  <--  controllers  <--  main.py
 | Workspace | Description |
 | :--- | :--- |
 | `alfred-calendar` | - Inspecte les agendas et créneaux occupés sans limite d'horizon via `list-calendars`, `query-freebusy --from "<ISO>" --to "<ISO>"`, `list-events` et `hold-allowlist --list` (couvrant événements futurs lointains et séries récurrentes `RRULE`). |
+| `alfred-drive` | Gouvernance documentaire non-destructive de Google Drive, classement automatique ou sous Gate, raccourcis multi-domaines et synthèse concise vers `_ALFRED_REFERENTIEL_`. |
 | `alfred-evolve` | - **`evolve-qualifier`** inspecte `docs/SPEC.md`, `core/` et `instance/` pour trancher entre les 3 modes : |
 | `alfred-inbox` | - Pré-filtrage à 0 token des invitations `.ics` automatiques, promotions/forums et expéditeurs denylistés avant tout appel cognitif — tout en laissant passer les **confirmations datées de billets, réservations, hôtels, transports ou rendez-vous** (`has_dated_booking_signal`) pour inscription sous Gate à l'agenda (sans limite d'horizon). |
 | `alfred-life` | Adapte immédiatement l'ampleur de l'investigation à la demande : |
@@ -68,12 +69,14 @@ domain  <--  repositories  <--  services  <--  controllers  <--  main.py
 | `google_docs_suite` | `false` | `docs.googleapis.com`, `sheets.googleapis.com`, `slides.googleapis.com`, `forms.googleapis.com` | `documents`, `spreadsheets`, `presentations`, `forms.body`, `forms.responses.readonly` |
 | `signature_delegation` | `false` | — | — |
 | `mcp_gemini_bridge` | `false` | — | — |
+| `drive_watcher` | `false` | `drive.googleapis.com`, `sheets.googleapis.com` | `drive` |
 
 ### Modules Clean Architecture (`core/alfred/`)
 | Couche | Module | Rôle |
 | :--- | :--- | :--- |
 | `domain` | `core/alfred/domain/attachment_models.py` | Pure domain models for Gmail MIME attachments and Gmail-to-Drive transfers. |
 | `domain` | `core/alfred/domain/calendar_models.py` | Domain models for generic multi-calendar HOLDs, FreeBusy windows, invitations, and PRs. |
+| `domain` | `core/alfred/domain/drive_watcher_models.py` | Domain models and configuration schemas for Google Drive governance and 2-speed watcher. |
 | `domain` | `core/alfred/domain/evolve_models.py` | Domain schemas for V8 evolution qualification, living SPEC snapshots, and breaking reports. |
 | `domain` | `core/alfred/domain/extension_protocol.py` | Standardized protocol for user-specific instance/extensions plugins enforced by alfred-evolve. |
 | `domain` | `core/alfred/domain/feature_models.py` | Modular feature flags, OAuth2 scope mapping, identity aliases, and model routing schemas. |
@@ -95,7 +98,12 @@ domain  <--  repositories  <--  services  <--  controllers  <--  main.py
 | `services` | `core/alfred/services/core_spec_ast.py` | Pure-AST extraction helpers for living specification generation and leak checks. |
 | `services` | `core/alfred/services/core_spec_service.py` | AST-driven living specification generator and zero-leak validator for docs/SPEC.md. |
 | `services` | `core/alfred/services/delegation_service.py` | Cross-project specialist delegation service with model routing and inbox-to-evolve firewall. |
+| `services` | `core/alfred/services/drive_governance_service.py` | Non-destructive Google Drive governance service with protected ID and anti-loop guards. |
+| `services` | `core/alfred/services/drive_security_sanitizer.py` | Anti-prompt-injection sanitizer, nonce spotlighting, and silent op validator for Drive. |
 | `services` | `core/alfred/services/drive_service.py` | Google Drive v3 connector, First-Run exhaustive scaffolder (init-drive), and 0-OCR reader. |
+| `services` | `core/alfred/services/drive_speed1_filter.py` | Speed-1 zero-token Google Drive delta index updater and eligibility filter. |
+| `services` | `core/alfred/services/drive_watcher_helpers.py` | Cognitive prompt/schema helpers and Markdown plan/trace renderers for DriveWatcherService. |
+| `services` | `core/alfred/services/drive_watcher_service.py` | 2-speed Google Drive watcher service with 0-token pre-filters, coalescing, and anti-loop. |
 | `services` | `core/alfred/services/email_security_service.py` | Four-layer anti-prompt-injection sanitizer, nonce spotlighting, and inbox firewall. |
 | `services` | `core/alfred/services/evolve_gate_runner.py` | Deterministic leak, AST architecture, ruff, mypy, pytest, and SPEC gate runners. |
 | `services` | `core/alfred/services/evolve_governance_service.py` | Governance, qualification, isolation, and breaking-change detection for alfred-evolve. |
@@ -120,12 +128,14 @@ domain  <--  repositories  <--  services  <--  controllers  <--  main.py
 | `services` | `core/alfred/services/routine_service.py` | Unified V8 periodic routine runner and systemd --user timer installer (0-token idle). |
 | `services` | `core/alfred/services/signature_vault_service.py` | Handwritten signature vault with SHA-256 pinning, one-shot tickets, and human consent. |
 | `services` | `core/alfred/services/specialist_trace_service.py` | Cross-workspace specialist trace surfacing, sandbox guard, and deduplication. |
+| `services` | `core/alfred/services/systemd_unit_renderer.py` | Render systemd --user service/timer units and compute stale unit pruning targets. |
 | `services` | `core/alfred/services/tasks_service.py` | Google Tasks v1 connector supporting tasklists, subtasks, due dates, and feature flags. |
-| `services` | `core/alfred/services/workspace_service.py` | Provision and verify the 6 distinct Antigravity specialist projects for Alfred V8.0. |
+| `services` | `core/alfred/services/workspace_service.py` | Provision and verify the 7 distinct Antigravity specialist projects for Alfred V8.0. |
 | `controllers` | `core/alfred/controllers/app_factory.py` | Dependency injection factory wiring Alfred V8.0 repositories, services, and CLI controller. |
 | `controllers` | `core/alfred/controllers/attachment_cli.py` | CLI subcommand registration and handlers for Gmail MIME attachments and Drive transfer. |
 | `controllers` | `core/alfred/controllers/calendar_cli.py` | CLI subcommand registration and handlers for alfred-calendar [HOLD]s, FreeBusy, and events. |
 | `controllers` | `core/alfred/controllers/cli_controller.py` | Command-line controller exposing Alfred V8.0 Family Office Chief of Staff workflows. |
+| `controllers` | `core/alfred/controllers/drive_cli.py` | CLI subcommands for non-destructive Google Drive governance and 2-speed watcher. |
 | `controllers` | `core/alfred/controllers/evolve_cli.py` | CLI subcommand registration and handlers for alfred evolve and sync-spec. |
 | `controllers` | `core/alfred/controllers/gcp_cli.py` | CLI subcommand registration and handler for automated Google Cloud SDK & OAuth bootstrap. |
 | `controllers` | `core/alfred/controllers/onboarding_cli.py` | CLI subcommands for Family Office onboarding, delegation, signature vault, and MCP bridge. |
@@ -147,6 +157,8 @@ domain  <--  repositories  <--  services  <--  controllers  <--  main.py
 | `confirm-event` | `--calendar`, `--summary`, `--from`, `--to`, `--attendee`, `--send-invites`, `--no-send-invites`, `--hold-event-id`, `--thread-id`, `--no-release-holds`, `--location`, `--description`, `--archive-trace`, `--no-archive-trace`, `--keep-in-inbox` | `core/alfred/controllers/calendar_cli.py` |
 | `create-contact` | `--given-name`, `--family-name`, `--email`, `--phone`, `--organization`, `--archive-trace`, `--no-archive-trace` | `core/alfred/controllers/tasks_cli.py` |
 | `create-doc` | `--title`, `--text`, `--archive-trace`, `--no-archive-trace` | `core/alfred/controllers/tasks_cli.py` |
+| `create-drive-folder` | `--name`, `--parent-id` | `core/alfred/controllers/drive_cli.py` |
+| `create-drive-shortcut` | `--target-id`, `--parent-id`, `--name` | `core/alfred/controllers/drive_cli.py` |
 | `create-event` | `--calendar`, `--summary`, `--from`, `--to`, `--hold`, `--attendee`, `--rrule`, `--no-send-invites`, `--location`, `--description`, `--thread-id`, `--message-id`, `--archive-trace`, `--no-archive-trace` | `core/alfred/controllers/calendar_cli.py` |
 | `create-task` | `--title`, `--notes`, `--due`, `--tasklist`, `--parent`, `--archive-trace`, `--no-archive-trace` | `core/alfred/controllers/tasks_cli.py` |
 | `delegate` | `--to`, `--title`, `--brief`, `--mode`, `--parent-session`, `--source-workspace`, `--source-message-id` | `core/alfred/controllers/onboarding_cli.py` |
@@ -166,6 +178,7 @@ domain  <--  repositories  <--  services  <--  controllers  <--  main.py
 | `list-tasklists` | `--max-results` | `core/alfred/controllers/tasks_cli.py` |
 | `list-tasks` | `--tasklist`, `--include-completed`, `--max-results` | `core/alfred/controllers/tasks_cli.py` |
 | `load-knowledge` | `--doc` | `core/alfred/controllers/cli_controller.py` |
+| `move-drive` | `--file-id`, `--target-parent-id`, `--parent-id` | `core/alfred/controllers/drive_cli.py` |
 | `oauth-guide` | — | `core/alfred/controllers/onboarding_cli.py` |
 | `poll-inbox` | `--spawn-agy`, `--cognitive-agy` | `core/alfred/controllers/cli_controller.py` |
 | `prepare-signature` | `--pdf`, `--reason`, `--workspace`, `--page`, `--x`, `--y`, `--width`, `--height` | `core/alfred/controllers/onboarding_cli.py` |
@@ -174,6 +187,7 @@ domain  <--  repositories  <--  services  <--  controllers  <--  main.py
 | `read-drive` | `--file-id` | `core/alfred/controllers/cli_controller.py` |
 | `read-sheet` | `--spreadsheet-id`, `--range` | `core/alfred/controllers/tasks_cli.py` |
 | `read-thread` | `--thread-id` | `core/alfred/controllers/routine_cli.py` |
+| `rename-drive` | `--file-id`, `--name` | `core/alfred/controllers/drive_cli.py` |
 | `repair-session-titles` | — | `core/alfred/controllers/onboarding_cli.py` |
 | `run-routines` | `--only`, `--today` | `core/alfred/controllers/routine_cli.py` |
 | `save-attachment-to-drive` | `--message-id`, `--parent-id`, `--folder-id`, `--filename`, `--attachment`, `--index`, `--attachment-id`, `--name`, `--rename`, `--overwrite` | `core/alfred/controllers/attachment_cli.py` |
@@ -192,4 +206,5 @@ domain  <--  repositories  <--  services  <--  controllers  <--  main.py
 | `update-event` | `--calendar`, `--event-id`, `--summary`, `--from`, `--to`, `--location`, `--description`, `--attendee`, `--rrule`, `--no-send-invites`, `--archive-trace`, `--no-archive-trace` | `core/alfred/controllers/calendar_cli.py` |
 | `update-task` | `--task-id`, `--title`, `--notes`, `--due`, `--status`, `--tasklist`, `--archive-trace`, `--no-archive-trace` | `core/alfred/controllers/tasks_cli.py` |
 | `upsert-knowledge` | `--file`, `--id`, `--title`, `--domain`, `--summary`, `--body-file`, `--keyword`, `--drive-source-id` | `core/alfred/controllers/cli_controller.py` |
+| `watch-drive` | `--spawn-agy`, `--cognitive-agy` | `core/alfred/controllers/drive_cli.py` |
 <!-- END ALFRED_CORE_GENERATED_SPEC -->

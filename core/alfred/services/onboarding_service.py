@@ -224,5 +224,6 @@ class OnboardingService:
             "knowledge": {"max_body_lines": cfg.max_knowledge_body_lines},
             "evolve": {"core_base_branch": cfg.core_base_branch},
             "routines": cfg.routines.model_dump(mode="json"),
+            "drive_watcher": cfg.drive_watcher.model_dump(mode="json"),
             "extensions": dict(cfg.extensions_config),
         }

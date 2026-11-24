@@ -26,9 +26,16 @@ from alfred.repositories.json_repository import atomic_write_text
 from alfred.repositories.state_store import StateStore
 from alfred.services.agy_daemon_sync import DaemonSyncStatus
 from alfred.services.agy_session_manager import AgySessionManager
+from alfred.services.drive_governance_service import DriveGovernanceService
 from alfred.services.drive_service import DriveService
+from alfred.services.drive_watcher_service import DriveWatcherService
 from alfred.services.extension_loader import ExtensionLoaderService
 from alfred.services.inbox_triage_service import InboxTriageService
+from alfred.services.knowledge_service import KnowledgeService
+from alfred.services.systemd_unit_renderer import (
+    compute_stale_systemd_specs,
+    render_alfred_systemd_units,
+)
 
 ALL_SYSTEMD_TIMERS: tuple[str, ...] = ("alfred-inbox.timer", "alfred-periodic.timer")
 
@@ -45,6 +52,7 @@ class RoutineService:
         drive_service: DriveService,
         agy_manager: AgySessionManager | None = None,
         systemctl_runner: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
+        drive_watcher_service: DriveWatcherService | None = None,
     ) -> None:
         """Initialize the V8 periodic routine orchestrator.
 
@@ -56,6 +64,7 @@ class RoutineService:
             drive_service: Google Drive incremental delta sync and backup service.
             agy_manager: Optional Antigravity Web session manager for daemon reconciliation.
             systemctl_runner: Optional subprocess override for systemctl --user invocations.
+            drive_watcher_service: Optional 2-speed DriveWatcherService for scope 'drive'.
         """
         self._paths = paths
         self._settings = settings
@@ -64,16 +73,17 @@ class RoutineService:
         self._drive = drive_service
         self._agy = agy_manager
         self._systemctl_runner = systemctl_runner
+        self._drive_watcher = drive_watcher_service
 
     def run_routines(
         self,
         scope: str = "all",
         today: date | None = None,
     ) -> RoutineTickReport:
-        """Execute inbox and/or periodic routines under a non-blocking flock.
+        """Execute inbox, drive, and/or periodic routines under a non-blocking flock.
 
         Args:
-            scope: Execution scope ('all', 'inbox', or 'periodic').
+            scope: Execution scope ('all', 'inbox', 'drive', or 'periodic').
             today: Optional reference date override (defaults to configured timezone today).
 
         Returns:
@@ -93,6 +103,8 @@ class RoutineService:
             jobs: list[RoutineJobRun] = []
             if scope in {"all", "inbox"}:
                 jobs.append(self._run_guarded("inbox_poll", self._job_inbox_poll))
+            if scope in {"all", "drive"}:
+                jobs.append(self._run_guarded("drive_watcher", self._job_drive_watcher))
             if scope in {"all", "periodic"}:
                 jobs.append(self._run_guarded("drive_delta_sync", self._job_drive_delta_sync))
                 jobs.append(
@@ -109,64 +121,12 @@ class RoutineService:
             return RoutineTickReport(scope=scope, jobs=jobs)
 
     def render_systemd_units(self) -> dict[str, str]:
-        """Render systemd --user unit files (periodic always; inbox and mcp when enabled).
+        """Render systemd --user unit files for periodic, inbox, drive, and mcp services.
 
         Returns:
             Mapping from unit file name to UTF-8 systemd unit text.
         """
-        cfg = self._settings.routines
-        alfred_bin = self._paths.root_dir / ".venv" / "bin" / "alfred"
-        local_bin = Path.home() / ".local" / "bin"
-        env_path = f"{local_bin}:/usr/local/bin:/usr/bin:/bin"
-        common_env = (
-            f"WorkingDirectory={self._paths.root_dir}\n"
-            f'Environment="ALFRED_ROOT_DIR={self._paths.root_dir}"\n'
-            f'Environment="PATH={env_path}"\n'
-        )
-        common_svc = f"Type=oneshot\n{common_env}"
-        units: dict[str, str] = {}
-        if self._settings.features.inbox_auto_triage:
-            units["alfred-inbox.service"] = (
-                "[Unit]\nDescription=Alfred V8.0 — Incremental Gmail Inbox Routine\n\n"
-                f"[Service]\n{common_svc}"
-                f"ExecStart={alfred_bin} run-routines --only inbox\n"
-            )
-            units["alfred-inbox.timer"] = (
-                "[Unit]\nDescription=Alfred V8.0 — Poll Gmail Inbox Timer\n\n"
-                f"[Timer]\nOnBootSec=45s\nOnUnitActiveSec={cfg.inbox_interval_sec}s\n"
-                "Persistent=true\nUnit=alfred-inbox.service\n\n"
-                "[Install]\nWantedBy=timers.target\n"
-            )
-        units["alfred-periodic.service"] = (
-            "[Unit]\nDescription=Alfred V8.0 — Periodic Drive & Extensions Routine\n\n"
-            f"[Service]\n{common_svc}"
-            f"ExecStart={alfred_bin} run-routines --only periodic\n"
-        )
-        units["alfred-periodic.timer"] = (
-            "[Unit]\nDescription=Alfred V8.0 — Periodic Drive & Extensions Timer\n\n"
-            f"[Timer]\nOnBootSec=90s\nOnUnitActiveSec={cfg.periodic_interval_sec}s\n"
-            "Persistent=true\nUnit=alfred-periodic.service\n\n"
-            "[Install]\nWantedBy=timers.target\n"
-        )
-        if self._settings.features.mcp_gemini_bridge:
-            units["alfred-mcp.service"] = self._render_mcp_service_unit(common_env, alfred_bin)
-        return units
-
-    def _render_mcp_service_unit(self, common_env: str, alfred_bin: Path) -> str:
-        """Render the permanent systemd --user service unit for the MCP OAuth 2.1 bridge."""
-        return (
-            "[Unit]\n"
-            "Description=Alfred V8.0 — MCP OAuth 2.1 Bridge for Gemini App\n"
-            "After=network-online.target\n\n"
-            "[Service]\n"
-            "Type=simple\n"
-            f"{common_env}"
-            f"ExecStart={alfred_bin} serve-mcp\n"
-            "Restart=always\n"
-            "RestartSec=5\n\n"
-            "[Install]\n"
-            "WantedBy=default.target\n"
-        )
+        return render_alfred_systemd_units(self._paths, self._settings)
 
     def install_systemd_timers(
         self,
@@ -207,17 +167,7 @@ class RoutineService:
 
     def _prune_stale_systemd_units(self, target_dir: Path, enable_now: bool) -> None:
         """Disable and unlink legacy V7 routine units and disabled optional feature units."""
-        stale_specs: list[tuple[str, tuple[str, ...]]] = [
-            ("alfred-routines.timer", ("alfred-routines.service", "alfred-routines.timer")),
-        ]
-        if not self._settings.features.inbox_auto_triage:
-            stale_specs.append(
-                ("alfred-inbox.timer", ("alfred-inbox.service", "alfred-inbox.timer"))
-            )
-        if not self._settings.features.mcp_gemini_bridge:
-            stale_specs.append(("alfred-mcp.service", ("alfred-mcp.service",)))
-
-        for disable_unit, filenames in stale_specs:
+        for disable_unit, filenames in compute_stale_systemd_specs(self._settings):
             if any(
                 (target_dir / fname).exists() or (target_dir / fname).is_symlink()
                 for fname in filenames
@@ -242,6 +192,8 @@ class RoutineService:
             bookmarks.drive_page_token or ""
         )
         units_to_check = list(ALL_SYSTEMD_TIMERS)
+        if self._settings.features.drive_watcher:
+            units_to_check.append("alfred-drive.timer")
         if self._settings.features.mcp_gemini_bridge:
             units_to_check.append("alfred-mcp.service")
         installed = [u for u in units_to_check if (unit_dir / u).is_file()]
@@ -296,6 +248,40 @@ class RoutineService:
             status=status,
             items_processed=len(decisions),
             details=summary or "0 new incoming emails",
+        )
+
+    def _job_drive_watcher(self) -> RoutineJobRun:
+        """Poll incremental Google Drive changes with 2-speed governance when enabled."""
+        if not self._settings.features.drive_watcher:
+            return RoutineJobRun(
+                job_name="drive_watcher",
+                status="SKIPPED_DISABLED",
+                details="features.drive_watcher is disabled.",
+            )
+        watcher = self._drive_watcher or self._build_fallback_watcher()
+        cfg = self._settings.routines
+        decisions = watcher.poll_and_process(
+            spawn_live_agy=cfg.spawn_agy,
+            use_cognitive_agy=cfg.cognitive_agy,
+        )
+        status = "OK" if decisions else "NO_CHANGES"
+        summary = ", ".join(f"{d.batch_id}:{d.output_type}" for d in decisions)
+        return RoutineJobRun(
+            job_name="drive_watcher",
+            status=status,
+            items_processed=len(decisions),
+            details=summary or "0 eligible Drive changes",
+        )
+
+    def _build_fallback_watcher(self) -> DriveWatcherService:
+        """Construct a lazy DriveWatcherService when not explicitly injected."""
+        agy = self._agy or AgySessionManager(self._paths, self._settings, self._store)
+        gov = DriveGovernanceService(self._settings, self._store, self._drive)
+        know = KnowledgeService(
+            self._paths, self._settings, self._store, backup_fn=self._drive.backup_markdown_file
+        )
+        return DriveWatcherService(
+            self._paths, self._settings, self._store, self._drive, gov, know, agy
         )
 
     def _job_drive_delta_sync(self) -> RoutineJobRun:

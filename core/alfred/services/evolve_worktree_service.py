@@ -22,6 +22,7 @@ from alfred.services.core_spec_service import CoreSpecService
 from alfred.services.evolve_gate_runner import run_leak_and_ext_checks, run_tdd_and_leak_gates
 from alfred.services.evolve_governance_service import (
     EvolveGovernanceService,
+    _resolve_freshest_base_ref,
     _sanitized_git_env,
 )
 from alfred.services.gh_pr_publisher import publish_github_pr
@@ -161,10 +162,14 @@ class EvolveWorktreeService:
         if wt_dir.exists():
             self.cleanup_worktree(safe_id)
         self._paths.worktrees_dir.mkdir(parents=True, exist_ok=True)
+        git_env = _sanitized_git_env(self._paths.root_dir)
+        start_ref = _resolve_freshest_base_ref(
+            self._paths.root_dir, self._settings.core_base_branch, git_env
+        )
         subprocess.run(
-            ["git", "worktree", "add", "-B", branch, str(wt_dir), self._settings.core_base_branch],
+            ["git", "worktree", "add", "-B", branch, str(wt_dir), start_ref],
             cwd=self._paths.root_dir,
-            env=_sanitized_git_env(self._paths.root_dir),
+            env=git_env,
             check=True,
             capture_output=True,
             text=True,
@@ -429,8 +434,9 @@ class EvolveWorktreeService:
                 ["git", "commit", "-m", title],
                 cwd=worktree, env=git_env, check=True, capture_output=True, text=True,
             )
+        diff_base = _resolve_freshest_base_ref(worktree, base_branch, git_env, fetch=False)
         diff_out = subprocess.run(
-            ["git", "diff", "--name-only", f"{base_branch}..{branch}"],
+            ["git", "diff", "--name-only", f"{diff_base}..{branch}"],
             cwd=worktree, env=git_env, check=True, capture_output=True, text=True,
         ).stdout.splitlines()
         return [line.strip() for line in diff_out if line.strip()]

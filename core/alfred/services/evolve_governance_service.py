@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import os
 import re
 import subprocess
@@ -56,6 +57,52 @@ def _git_show_text(worktree: Path, spec: str) -> str | None:
         check=False,
     )
     return res.stdout if res.returncode == 0 else None
+
+
+def _resolve_freshest_base_ref(
+    repo_root: Path,
+    base_branch: str,
+    git_env: dict[str, str],
+    *,
+    fetch: bool = True,
+) -> str:
+    """Resolve origin/<base_branch> after optional quiet fetch when ahead of local base_branch."""
+    env = {**git_env, "GIT_TERMINAL_PROMPT": "0"}
+    if fetch:
+        has_origin = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=repo_root, env=env, capture_output=True, text=True, check=False,
+        )
+        if has_origin.returncode == 0:
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                subprocess.run(
+                    ["git", "fetch", "--quiet", "origin", base_branch],
+                    cwd=repo_root, env=env, capture_output=True,
+                    text=True, check=False, timeout=15,
+                )
+    remote_ref = f"origin/{base_branch}"
+    if (
+        subprocess.run(
+            ["git", "rev-parse", "--verify", remote_ref],
+            cwd=repo_root, env=env, capture_output=True, text=True, check=False,
+        ).returncode
+        != 0
+    ):
+        return base_branch
+    local_exists = (
+        subprocess.run(
+            ["git", "rev-parse", "--verify", base_branch],
+            cwd=repo_root, env=env, capture_output=True, text=True, check=False,
+        ).returncode
+        == 0
+    )
+    if not local_exists:
+        return remote_ref
+    is_anc = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", base_branch, remote_ref],
+        cwd=repo_root, env=env, capture_output=True, text=True, check=False,
+    )
+    return remote_ref if is_anc.returncode == 0 else base_branch
 
 
 def _has_instance_import_ast(py_file: Path) -> list[str]:
@@ -241,10 +288,12 @@ class EvolveGovernanceService:
             BreakingChangeReport detailing removed modules, CLI commands, and feature flags.
         """
         root = worktree.resolve()
+        git_env = _sanitized_git_env(root)
+        base_ref = _resolve_freshest_base_ref(root, base_branch, git_env, fetch=False)
         ls_res = subprocess.run(
-            ["git", "ls-tree", "-r", "--name-only", base_branch, "--", "core/alfred"],
+            ["git", "ls-tree", "-r", "--name-only", base_ref, "--", "core/alfred"],
             cwd=root,
-            env=_sanitized_git_env(root),
+            env=git_env,
             capture_output=True,
             text=True,
             check=False,
@@ -263,8 +312,8 @@ class EvolveGovernanceService:
             for path in base_files
             if not path.endswith("/__init__.py") and path not in cur_modules
         )
-        removed_cmds = self._diff_base_cli_commands(root, base_branch, base_files, cur_cmds)
-        removed_flags = self._diff_base_feature_flags(root, base_branch, base_files, cur_flags)
+        removed_cmds = self._diff_base_cli_commands(root, base_ref, base_files, cur_cmds)
+        removed_flags = self._diff_base_feature_flags(root, base_ref, base_files, cur_flags)
         is_breaking = bool(removed_modules or removed_cmds or removed_flags)
         summary = self._render_breaking_summary(removed_modules, removed_cmds, removed_flags)
         return BreakingChangeReport(

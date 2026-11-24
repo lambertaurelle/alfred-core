@@ -82,9 +82,27 @@ class DelegationTarget(StrEnum):
     CALENDAR = "calendar"
     TASKS = "tasks"
     INBOX = "inbox"
+    DRIVE = "drive"
     EVOLVE = "evolve"
     LIFE = "life"
     ONBOARD = "onboard"
+
+    def __eq__(self, other: object) -> bool:
+        """Compare DelegationTarget equal to matching string values under strict typing.
+
+        Args:
+            other: Candidate string or enum member to compare.
+
+        Returns:
+            True when string values match.
+        """
+        if isinstance(other, str):
+            return str.__eq__(self, other)
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        """Return string hash consistent with __eq__."""
+        return str.__hash__(self)
 
 
 class DelegationMode(StrEnum):

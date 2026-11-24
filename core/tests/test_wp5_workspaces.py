@@ -1,4 +1,4 @@
-"""WP5 TDD test suite for the 6 canonical V8 Antigravity specialist workspaces."""
+"""WP5 TDD test suite for the 7 canonical V8 Antigravity specialist workspaces."""
 
 from __future__ import annotations
 
@@ -23,7 +23,15 @@ from alfred.services.inbox_triage_service import InboxTriageService
 from alfred.services.knowledge_service import KnowledgeService
 from alfred.services.workspace_service import WorkspaceService
 
-CANONICAL_ROLES: tuple[str, ...] = ("onboard", "life", "inbox", "calendar", "tasks", "evolve")
+CANONICAL_ROLES: tuple[str, ...] = (
+    "onboard",
+    "life",
+    "inbox",
+    "calendar",
+    "tasks",
+    "drive",
+    "evolve",
+)
 
 
 def _seed_legacy_projects_and_db(projects_dir: Path, conv_db: Path) -> None:
@@ -90,7 +98,7 @@ def _build_ws_cli(
 
 
 def test_settings_load_workspaces_and_resolve_six_projects(tmp_path: Path) -> None:
-    """Verify AlfredSettings loads all 6 workspace roles and resolves aliases."""
+    """Verify AlfredSettings loads all 7 workspace roles and resolves aliases."""
     paths = AlfredPaths.from_env(tmp_path)
     paths.settings_path.parent.mkdir(parents=True, exist_ok=True)
     paths.settings_path.write_text(
@@ -102,6 +110,7 @@ def test_settings_load_workspaces_and_resolve_six_projects(tmp_path: Path) -> No
         "    inbox: custom-inbox\n"
         "    calendar: alfred-calendar\n"
         "    tasks: custom-tasks\n"
+        "    drive: custom-drive\n"
         "    evolve: alfred-evolve\n",
         encoding="utf-8",
     )
@@ -115,6 +124,8 @@ def test_settings_load_workspaces_and_resolve_six_projects(tmp_path: Path) -> No
     assert settings.resolve_workspace_project("calendar") == "alfred-calendar"
     assert settings.resolve_workspace_project("tasks") == "custom-tasks"
     assert settings.resolve_workspace_project("alfred-tasks") == "custom-tasks"
+    assert settings.resolve_workspace_project("drive") == "custom-drive"
+    assert settings.resolve_workspace_project("alfred-drive") == "custom-drive"
     assert settings.resolve_workspace_project("evolve") == "alfred-evolve"
     assert settings.resolve_workspace_project("   ") == "custom-life"
     assert settings.resolve_workspace_project("explicit-proj") == "explicit-proj"
@@ -123,7 +134,7 @@ def test_settings_load_workspaces_and_resolve_six_projects(tmp_path: Path) -> No
 def test_workspace_service_provisions_six_roles_and_prunes_empty_legacy(
     tmp_path: Path,
 ) -> None:
-    """Verify WorkspaceService links .agents, provisions all 6 projects, and prunes safely."""
+    """Verify WorkspaceService links .agents, provisions all 7 projects, and prunes safely."""
     paths = AlfredPaths.from_env(tmp_path)
     (paths.root_dir / ".agents" / "agents").mkdir(parents=True)
     for role in CANONICAL_ROLES:
@@ -168,11 +179,11 @@ def test_workspace_service_provisions_six_roles_and_prunes_empty_legacy(
     assert (projects_dir / "keep-busy.json").exists()
 
     second = svc.init_workspaces(prune_legacy=False)
-    assert all(not s.created for s in second) and counter == 6
+    assert all(not s.created for s in second) and counter == 7
 
 
 def test_workspace_service_offline_fallback_without_agy_binary(tmp_path: Path) -> None:
-    """Verify WorkspaceService writes native project JSON cleanly for 6 roles offline."""
+    """Verify WorkspaceService writes native project JSON cleanly for 7 roles offline."""
     paths = AlfredPaths.from_env(tmp_path)
     settings = AlfredSettings.load(paths).model_copy(
         update={
@@ -182,6 +193,7 @@ def test_workspace_service_offline_fallback_without_agy_binary(tmp_path: Path) -
                 "inbox": "alfred-inbox",
                 "calendar": "alfred-calendar",
                 "tasks": "alfred-tasks",
+                "drive": "alfred-drive",
                 "evolve": "alfred-evolve",
             }
         }
@@ -191,7 +203,7 @@ def test_workspace_service_offline_fallback_without_agy_binary(tmp_path: Path) -
     projects_dir = tmp_path / "offline_projects"
     svc = WorkspaceService(paths, settings, agy, projects_dir=projects_dir)
     statuses = svc.init_workspaces(prune_legacy=False)
-    assert len(statuses) == 6
+    assert len(statuses) == 7
     life_status = next(s for s in statuses if s.role == "life")
     assert life_status.project_name == "mon-life" and life_status.created is True
     saved = json.loads((projects_dir / f"{life_status.project_id}.json").read_text("utf-8"))
@@ -201,13 +213,13 @@ def test_workspace_service_offline_fallback_without_agy_binary(tmp_path: Path) -
 def test_cli_init_workspaces_and_evolve_spawn_agy(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Verify CLI init-workspaces returns 6 specialist projects and evolve routes to evolve."""
+    """Verify CLI init-workspaces returns 7 specialist projects and evolve routes to evolve."""
     spawned_cmds: list[list[str]] = []
     cli, _ = _build_ws_cli(tmp_path, spawned_cmds)
 
     assert cli.run(["init-workspaces", "--prune-legacy"]) == 0
     provisioned = json.loads(capsys.readouterr().out)
-    assert len(provisioned) == 6
+    assert len(provisioned) == 7
     assert {item["role"] for item in provisioned} == set(CANONICAL_ROLES)
 
     ev_argv = ["evolve", "--id", "f1", "--title", "WS", "--description", "Spec", "--spawn-agy"]
