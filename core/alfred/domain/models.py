@@ -11,6 +11,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from alfred.domain.attachment_models import AttachmentFilingTarget
 from alfred.domain.calendar_models import (
     CalendarConfig,
     EvolutionProposalRecord,
@@ -30,10 +31,10 @@ from alfred.domain.feature_models import (
 from alfred.domain.routine_models import RoutinesConfig, WorkspaceProjectStatus
 
 __all__ = [
-    "CalendarConfig", "EvolutionProposalRecord", "EvolutionProposalsLedger",
-    "FeatureFlagsConfig", "HoldAllowlistState", "IdentityConfig", "InboxFilterConfig",
-    "McpServerConfig", "ModelRoutingConfig", "PullRequestArtifact", "RoutinesConfig",
-    "SecurityConfig", "WorkspaceProjectStatus",
+    "AttachmentFilingTarget", "CalendarConfig", "EvolutionProposalRecord",
+    "EvolutionProposalsLedger", "FeatureFlagsConfig", "HoldAllowlistState", "IdentityConfig",
+    "InboxFilterConfig", "McpServerConfig", "ModelRoutingConfig", "PullRequestArtifact",
+    "RoutinesConfig", "SecurityConfig", "WorkspaceProjectStatus",
 ]
 
 
@@ -53,13 +54,9 @@ DEFAULT_OAUTH_SCOPES: tuple[str, ...] = (
     "https://www.googleapis.com/auth/contacts.other.readonly",
 )
 DEFAULT_WORKSPACES: dict[str, str] = {
-    "onboard": "alfred-onboard",
-    "life": "alfred-life",
-    "inbox": "alfred-inbox",
-    "calendar": "alfred-calendar",
-    "tasks": "alfred-tasks",
-    "drive": "alfred-drive",
-    "evolve": "alfred-evolve",
+    "onboard": "alfred-onboard", "life": "alfred-life", "inbox": "alfred-inbox",
+    "calendar": "alfred-calendar", "tasks": "alfred-tasks",
+    "drive": "alfred-drive", "evolve": "alfred-evolve",
 }
 
 
@@ -384,6 +381,8 @@ class GoogleSyncBookmarks(BaseModel):
     gmail_last_polled_at: str = ""
     drive_page_token: str | None = None
     drive_last_synced_at: str = ""
+    drive_watcher_page_token: str | None = None
+    drive_watcher_last_polled_at: str = ""
     referentiel_folder_id: str | None = None
 
 
@@ -473,6 +472,8 @@ class InboxTriageDecision(BaseModel):
     needs_orchestrator_study: bool = False
     suspicious_injection: bool = False
     skipped_pre_filter: bool = False
+    keep_in_inbox: bool = False
+    attachments_to_save: list[AttachmentFilingTarget] = Field(default_factory=list)
 
 
 class CalendarEventItem(BaseModel):

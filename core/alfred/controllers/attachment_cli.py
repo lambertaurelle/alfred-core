@@ -62,7 +62,9 @@ def dispatch_attachment_command(
     Returns:
         POSIX exit status code (0 on success).
     """
-    if cmd == "save-attachment-to-drive" and not settings.features.drive_knowledge_sync:
+    if cmd == "save-attachment-to-drive" and not (
+        settings.features.drive_knowledge_sync or settings.features.drive_watcher
+    ):
         return print_skipped_disabled("drive_knowledge_sync", "save-attachment-to-drive")
     if bridge is None:
         raise RuntimeError("GmailDriveBridgeService is not wired on CliController.")

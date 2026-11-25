@@ -188,8 +188,10 @@ class RoutineService:
         """
         unit_dir = systemd_user_dir or (Path.home() / ".config" / "systemd" / "user")
         bookmarks = self._store.bookmarks.load()
-        drive_token = self._store.drive_index.load().start_page_token or (
-            bookmarks.drive_page_token or ""
+        drive_token = (
+            (self._store.drive_index.load().start_page_token or "").strip()
+            or (bookmarks.drive_page_token or "").strip()
+            or (bookmarks.drive_watcher_page_token or "").strip()
         )
         units_to_check = list(ALL_SYSTEMD_TIMERS)
         if self._settings.features.drive_watcher:
@@ -292,8 +294,17 @@ class RoutineService:
                 status="SKIPPED_DISABLED",
                 details="features.drive_knowledge_sync is disabled.",
             )
-        token = self._store.drive_index.load().start_page_token or (
-            self._store.bookmarks.load().drive_page_token or ""
+        if self._settings.features.drive_watcher:
+            return RoutineJobRun(
+                job_name="drive_delta_sync",
+                status="SKIPPED_DELEGATED_TO_WATCHER",
+                details="Delegated to 2-speed drive_watcher (features.drive_watcher is true).",
+            )
+        bm = self._store.bookmarks.load()
+        token = (
+            (self._store.drive_index.load().start_page_token or "").strip()
+            or (bm.drive_page_token or "").strip()
+            or (bm.drive_watcher_page_token or "").strip()
         )
         if not token:
             return RoutineJobRun(

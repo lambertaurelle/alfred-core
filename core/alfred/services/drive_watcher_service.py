@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
 from alfred.domain.drive_watcher_models import (
@@ -20,7 +21,6 @@ from alfred.domain.drive_watcher_models import (
 from alfred.domain.models import (
     AlfredPaths,
     AlfredSettings,
-    DriveEntry,
     DriveMetadataIndex,
     FrontmatterSchema,
     KnowledgeDocument,
@@ -95,50 +95,51 @@ class DriveWatcherService:
         self._spawn_live_agy = spawn_live_agy
         self._sanitizer = sanitizer or DriveSecuritySanitizer()
 
+    def _acquire_sync_lock(self) -> AbstractContextManager[None]:
+        """Acquire reentrant Drive sync lock when supported by the StateStore."""
+        if hasattr(self._state_store, "acquire_drive_sync_lock"):
+            return self._state_store.acquire_drive_sync_lock()
+        return nullcontext()
+
     def collect_delta_report(self) -> DriveDeltaReport:
         """Execute Speed-1 zero-token delta scan, update DriveMetadataIndex, and filter items.
 
         Returns:
             DriveDeltaReport containing eligible DriveDeltaItems and deterministic skip reasons.
         """
-        index = self._state_store.drive_index.load()
-        start_token = index.start_page_token or (
-            self._state_store.bookmarks.load().drive_page_token or ""
-        )
-        if not start_token:
-            synced, _ = self._drive.init_drive()
-            return DriveDeltaReport(
-                start_page_token_before="",
-                new_start_page_token=synced.start_page_token,
+        with self._acquire_sync_lock():
+            index = self._state_store.drive_index.load()
+            bookmarks = self._state_store.bookmarks.load()
+            start_token = (
+                (bookmarks.drive_watcher_page_token or "").strip()
+                or index.start_page_token
+                or (bookmarks.drive_page_token or "")
             )
-
-        raw_changes, new_start_token = self._fetch_all_delta_changes(start_token)
-        coalesced: dict[str, dict[str, Any]] = {}
-        for change in raw_changes:
-            fid = str(change.get("fileId", "")).strip()
-            if fid:
-                coalesced[fid] = change
-
-        prev_entries = dict(index.entries)
-        entries = apply_coalesced_changes_to_entries(prev_entries, coalesced)
-        eligible, skipped = filter_speed1_delta_items(
-            coalesced=coalesced,
-            prev_entries=prev_entries,
-            entries=entries,
-            ledger=self._state_store.drive_watcher_ledger.load(),
-            watcher_cfg=self._settings.drive_watcher,
-            protected_ids=set(self._settings.security.protected_signature_drive_ids),
-            ref_id=self._governance.resolve_referentiel_folder_id(),
-            ref_name=self._settings.referentiel_drive_folder_name,
-        )
-        self._save_updated_index(entries, new_start_token)
-        return DriveDeltaReport(
-            start_page_token_before=start_token,
-            new_start_page_token=new_start_token,
-            total_raw_changes=len(raw_changes),
-            eligible_items=eligible,
-            skipped_reasons=skipped,
-        )
+            if not start_token:
+                synced, _ = self._drive.init_drive()
+                return DriveDeltaReport(
+                    start_page_token_before="", new_start_page_token=synced.start_page_token,
+                )
+            raw_changes, new_start_token = self._fetch_all_delta_changes(start_token)
+            coalesced = {
+                fid: ch for ch in raw_changes if (fid := str(ch.get("fileId", "")).strip())
+            }
+            prev_entries = dict(index.entries)
+            entries = apply_coalesced_changes_to_entries(prev_entries, coalesced)
+            eligible, skipped = filter_speed1_delta_items(
+                coalesced=coalesced, prev_entries=prev_entries, entries=entries,
+                ledger=self._state_store.drive_watcher_ledger.load(),
+                watcher_cfg=self._settings.drive_watcher,
+                protected_ids=set(self._settings.security.protected_signature_drive_ids),
+                ref_id=self._governance.resolve_referentiel_folder_id(),
+                ref_name=self._settings.referentiel_drive_folder_name,
+            )
+            self._save_updated_index(coalesced, new_start_token)
+            return DriveDeltaReport(
+                start_page_token_before=start_token, new_start_page_token=new_start_token,
+                total_raw_changes=len(raw_changes), eligible_items=eligible,
+                skipped_reasons=skipped,
+            )
 
     def poll_and_process(
         self,
@@ -156,18 +157,18 @@ class DriveWatcherService:
         """
         if not self._settings.features.drive_watcher:
             return []
-        report = self.collect_delta_report()
-        if not report.eligible_items:
-            return []
-
-        eff_spawn = self._spawn_live_agy if spawn_live_agy is None else spawn_live_agy
-        cap = self._settings.drive_watcher.coalesce_max_files_per_batch
-        items = report.eligible_items
-        batches = [items[idx : idx + cap] for idx in range(0, len(items), cap)]
-        return [
-            self._process_batch(batch, eff_spawn=eff_spawn, use_cognitive_agy=use_cognitive_agy)
-            for batch in batches
-        ]
+        with self._acquire_sync_lock():
+            report = self.collect_delta_report()
+            if not report.eligible_items:
+                return []
+            eff_spawn = self._spawn_live_agy if spawn_live_agy is None else spawn_live_agy
+            cap = self._settings.drive_watcher.coalesce_max_files_per_batch
+            items = report.eligible_items
+            batches = [items[idx : idx + cap] for idx in range(0, len(items), cap)]
+            return [
+                self._process_batch(b, eff_spawn=eff_spawn, use_cognitive_agy=use_cognitive_agy)
+                for b in batches
+            ]
 
     def _fetch_all_delta_changes(self, start_token: str) -> tuple[list[dict[str, Any]], str]:
         """Fetch all paginated changes from Google Drive before mutating local bookmarks."""
@@ -441,29 +442,41 @@ class DriveWatcherService:
                 seen.add(fname)
         return docs
 
-    def _save_updated_index(self, entries: dict[str, DriveEntry], token: str) -> None:
+    def _save_updated_index(
+        self, coalesced: Mapping[str, dict[str, Any]], token: str
+    ) -> None:
         """Persist updated DriveMetadataIndex and GoogleSyncBookmarks atomically."""
-        folders = [e for e in entries.values() if e.is_folder]
-        files = [e for e in entries.values() if not e.is_folder]
-        top_folders = sorted(
-            {
-                e.path.strip("/").split("/")[0]
-                for e in folders
-                if e.path and len(e.path.strip("/").split("/")) == 1
-            }
-        )
         now = utc_now_iso()
-        updated = DriveMetadataIndex(
-            start_page_token=token,
-            last_synced_at=now,
-            folder_count=len(folders),
-            file_count=len(files),
-            top_level_folders=top_folders,
-            entries=entries,
-        )
-        self._state_store.drive_index.save(updated)
+
+        def _apply(cur: DriveMetadataIndex) -> DriveMetadataIndex:
+            """Apply coalesced deltas onto latest drive_index entries under file lock."""
+            merged = apply_coalesced_changes_to_entries(cur.entries, coalesced)
+            folders = [e for e in merged.values() if e.is_folder]
+            files = [e for e in merged.values() if not e.is_folder]
+            top_folders = sorted(
+                {
+                    e.path.strip("/").split("/")[0]
+                    for e in folders
+                    if e.path and len(e.path.strip("/").split("/")) == 1
+                }
+            )
+            return DriveMetadataIndex(
+                start_page_token=token,
+                last_synced_at=now,
+                folder_count=len(folders),
+                file_count=len(files),
+                top_level_folders=top_folders,
+                entries=merged,
+            )
+
+        self._state_store.drive_index.update(_apply)
         self._state_store.bookmarks.update(
             lambda b: b.model_copy(
-                update={"drive_page_token": token, "drive_last_synced_at": now}
+                update={
+                    "drive_watcher_page_token": token,
+                    "drive_watcher_last_polled_at": now,
+                    "drive_page_token": token,
+                    "drive_last_synced_at": now,
+                }
             )
         )

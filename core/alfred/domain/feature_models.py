@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from email.utils import formataddr
+from email.utils import formataddr, parseaddr
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -285,6 +285,8 @@ class InboxFilterConfig(BaseModel):
     silent_creates_agy_session: bool = False
     denylist_senders: list[str] = Field(default_factory=list)
     denylist_domains: list[str] = Field(default_factory=list)
+    allowlist_automated_senders: list[str] = Field(default_factory=list)
+    allowlist_automated_domains: list[str] = Field(default_factory=list)
 
     @classmethod
     def from_dict(cls, raw: object) -> InboxFilterConfig:
@@ -298,8 +300,20 @@ class InboxFilterConfig(BaseModel):
         """
         if not isinstance(raw, dict):
             return cls()
-        raw_s = raw.get("denylist_senders", [])
-        raw_d = raw.get("denylist_domains", [])
+        raw_s, raw_d = raw.get("denylist_senders", []), raw.get("denylist_domains", [])
+        raw_as = raw.get("allowlist_automated_senders", [])
+        raw_ad = raw.get("allowlist_automated_domains", [])
+        allow_senders = [
+            addr
+            for x in (raw_as if isinstance(raw_as, list) else [])
+            if str(x).strip()
+            and (addr := (parseaddr(str(x))[1] or str(x)).strip().lower())
+        ]
+        allow_domains = [
+            dom
+            for x in (raw_ad if isinstance(raw_ad, list) else [])
+            if (dom := str(x).strip().lower().lstrip("@."))
+        ]
         return cls(
             bypass_calendar_invites=bool(raw.get("bypass_calendar_invites", True)),
             skip_promotions_social_forums=bool(raw.get("skip_promotions_social_forums", True)),
@@ -314,6 +328,8 @@ class InboxFilterConfig(BaseModel):
                 if isinstance(raw_d, list)
                 else []
             ),
+            allowlist_automated_senders=allow_senders,
+            allowlist_automated_domains=allow_domains,
         )
 
 

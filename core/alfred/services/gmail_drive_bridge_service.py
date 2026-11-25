@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from alfred.domain.attachment_models import (
@@ -22,6 +23,7 @@ from alfred.services.attachment_extractor import (
 from alfred.services.drive_service import FOLDER_MIME, DriveService, _escape_drive_query_literal
 from alfred.services.email_security_service import EmailSanitizer
 from alfred.services.gmail_service import GmailService
+from alfred.services.inbox_eligibility import DOCUMENT_ATTACHMENT_EXTENSIONS
 
 MAX_ENRICHED_ATTACHMENTS = 5
 
@@ -118,25 +120,70 @@ class GmailDriveBridgeService:
         Returns:
             Tuple of (enriched_email, brief_bullets, any_suspicious_injection).
         """
+        enriched, bullets, suspicious, _, _ = self.enrich_email_with_attachments_and_status(
+            msg, sanitizer, max_chars_per_file=max_chars_per_file
+        )
+        return (enriched, bullets, suspicious)
+
+    def enrich_email_with_attachments_and_status(
+        self,
+        msg: EmailMessage,
+        sanitizer: EmailSanitizer,
+        max_chars_per_file: int = 3000,
+    ) -> tuple[EmailMessage, list[str], bool, bool | None, bool | None]:
+        """Enrich EmailMessage from non-inline attachments and return doc/non-inline flags.
+
+        Args:
+            msg: Sanitized incoming EmailMessage.
+            sanitizer: EmailSanitizer used to scan extracted attachment text/HTML for injections.
+            max_chars_per_file: Maximum extracted text characters retained per attachment.
+
+        Returns:
+            Tuple of (enriched_email, brief_bullets, any_suspicious, has_doc, has_non_inline).
+        """
         if not msg.attachment_filenames or not msg.message_id:
-            return (msg, [], False)
+            return (msg, [], False, None, None)
         try:
             payload = self._fetch_message_payload(msg.message_id)
         except Exception:
-            return (msg, [], False)
+            return (msg, [], False, None, None)
         if payload is None:
-            return (msg, [], False)
+            return (msg, [], False, None, None)
         parts = collect_attachment_parts(msg.message_id, payload)
-        non_inline = [(m, b64) for m, b64 in parts if not m.is_inline][:MAX_ENRICHED_ATTACHMENTS]
-        if not non_inline:
-            return (msg, [], False)
+        all_non_inline = [(m, b64) for m, b64 in parts if not m.is_inline]
+        if not all_non_inline:
+            return (msg, [], False, False, False)
+        has_doc = any(
+            Path(m.filename).suffix.lower() in DOCUMENT_ATTACHMENT_EXTENSIONS
+            for m, _ in all_non_inline
+        )
+        body_sections, brief_bullets, any_suspicious = self._extract_enriched_sections(
+            msg.message_id, all_non_inline[:MAX_ENRICHED_ATTACHMENTS], sanitizer, max_chars_per_file
+        )
+        if not body_sections:
+            return (msg, brief_bullets, any_suspicious, has_doc, True)
+        base_body = msg.body_text.rstrip()
+        combined = "\n\n".join(body_sections)
+        new_body = f"{base_body}\n\n{combined}" if base_body else combined
+        return (
+            msg.model_copy(update={"body_text": new_body}), brief_bullets, any_suspicious,
+            has_doc, True,
+        )
 
+    def _extract_enriched_sections(
+        self,
+        message_id: str,
+        non_inline: list[tuple[GmailAttachmentMeta, str]],
+        sanitizer: EmailSanitizer,
+        max_chars_per_file: int,
+    ) -> tuple[list[str], list[str], bool]:
+        """Extract and sanitize text previews for selected non-inline attachment parts."""
         body_sections: list[str] = []
         brief_bullets: list[str] = []
         any_suspicious = False
         for meta, inline_b64 in non_inline:
             try:
-                raw_bytes = self._download_part_bytes(msg.message_id, meta, inline_b64)
+                raw_bytes = self._download_part_bytes(message_id, meta, inline_b64)
             except Exception:
                 continue
             method, extracted, _ = extract_attachment_text(
@@ -161,13 +208,7 @@ class GmailDriveBridgeService:
                 )
             else:
                 brief_bullets.append(f"Attachment `{meta.filename}` ({meta.mime_type}, {method})")
-
-        if not body_sections:
-            return (msg, brief_bullets, any_suspicious)
-        base_body = msg.body_text.rstrip()
-        combined = "\n\n".join(body_sections)
-        new_body = f"{base_body}\n\n{combined}" if base_body else combined
-        return (msg.model_copy(update={"body_text": new_body}), brief_bullets, any_suspicious)
+        return (body_sections, brief_bullets, any_suspicious)
 
     def transfer_attachment_to_drive(
         self,
@@ -294,21 +335,13 @@ class GmailDriveBridgeService:
         raise ValueError(f"Attachment filename '{needle}' did not uniquely match any part.")
 
     def _download_part_bytes(
-        self,
-        message_id: str,
-        meta: GmailAttachmentMeta,
-        inline_b64: str,
+        self, message_id: str, meta: GmailAttachmentMeta, inline_b64: str
     ) -> bytes:
         """Retrieve raw attachment bytes via Gmail attachments().get() or inline body data."""
         if meta.attachment_id:
             client = self._gmail.get_raw_client()
-            resp = (
-                client.users()
-                .messages()
-                .attachments()
-                .get(userId="me", messageId=message_id, id=meta.attachment_id)
-                .execute()
-            )
+            atts = client.users().messages().attachments()
+            resp = atts.get(userId="me", messageId=message_id, id=meta.attachment_id).execute()
             b64_data = str(resp.get("data", "") or "") if isinstance(resp, Mapping) else ""
             return decode_base64url_bytes(b64_data)
         return decode_base64url_bytes(inline_b64)
@@ -317,11 +350,9 @@ class GmailDriveBridgeService:
         self, drive_client: Any, parent_id: str, protected: set[str]
     ) -> str:
         """Verify parent_id is an active Drive folder outside protected signature ancestry."""
-        meta = (
-            drive_client.files()
-            .get(fileId=parent_id, fields="id,name,mimeType,parents,trashed")
-            .execute()
-        )
+        meta = drive_client.files().get(
+            fileId=parent_id, fields="id,name,mimeType,parents,trashed"
+        ).execute()
         if (
             not isinstance(meta, Mapping)
             or meta.get("mimeType") != FOLDER_MIME
@@ -336,11 +367,7 @@ class GmailDriveBridgeService:
         return str(meta.get("name", "") or "")
 
     def _find_existing_drive_file(
-        self,
-        drive_client: Any,
-        parent_id: str,
-        final_name: str,
-        protected: set[str],
+        self, drive_client: Any, parent_id: str, final_name: str, protected: set[str]
     ) -> Mapping[str, Any] | None:
         """Look up a non-trashed non-folder file named final_name inside parent_id."""
         safe_parent = _escape_drive_query_literal(parent_id)
@@ -349,11 +376,9 @@ class GmailDriveBridgeService:
             f"'{safe_parent}' in parents and name = '{safe_name}' "
             f"and mimeType != '{FOLDER_MIME}' and trashed = false"
         )
-        resp = (
-            drive_client.files()
-            .list(q=query, fields="files(id,name,mimeType,size,webViewLink,modifiedTime)")
-            .execute()
-        )
+        resp = drive_client.files().list(
+            q=query, fields="files(id,name,mimeType,size,webViewLink,modifiedTime)"
+        ).execute()
         files = resp.get("files", []) if isinstance(resp, Mapping) else []
         non_folders: list[Mapping[str, Any]] = []
         for item in files:
@@ -366,15 +391,8 @@ class GmailDriveBridgeService:
         return non_folders[0] if non_folders else None
 
     def _upload_or_dedup_drive(
-        self,
-        drive_client: Any,
-        protected: set[str],
-        existing: Mapping[str, Any] | None,
-        overwrite: bool,
-        raw_bytes: bytes,
-        upload_mime: str,
-        parent_id: str,
-        final_name: str,
+        self, drive_client: Any, protected: set[str], existing: Mapping[str, Any] | None,
+        overwrite: bool, raw_bytes: bytes, upload_mime: str, parent_id: str, final_name: str,
     ) -> tuple[Mapping[str, Any], bool, bool]:
         """Deduplicate, overwrite, or create a file on Google Drive."""
         from googleapiclient.http import MediaIoBaseUpload
@@ -391,24 +409,15 @@ class GmailDriveBridgeService:
                 fileId=existing_id, body={"name": final_name}, media_body=media, fields=fields,
             )
             return upd.execute(), False, True
-
         media = MediaIoBaseUpload(io.BytesIO(raw_bytes), mimetype=upload_mime, resumable=False)
         body = {"name": final_name, "parents": [parent_id], "mimeType": upload_mime}
         created = drive_client.files().create(body=body, media_body=media, fields=fields).execute()
         return created, False, False
 
     def _execute_drive_transfer(
-        self,
-        drive_client: Any,
-        protected: set[str],
-        existing: Mapping[str, Any] | None,
-        overwrite: bool,
-        message_id: str,
-        meta: GmailAttachmentMeta,
-        raw_bytes: bytes,
-        parent_id: str,
-        parent_name: str,
-        final_name: str,
+        self, drive_client: Any, protected: set[str], existing: Mapping[str, Any] | None,
+        overwrite: bool, message_id: str, meta: GmailAttachmentMeta, raw_bytes: bytes,
+        parent_id: str, parent_name: str, final_name: str,
     ) -> DriveAttachmentTransferResult:
         """Perform deduplication, overwrite update, or creation and sync DriveMetadataIndex."""
         upload_mime = meta.mime_type or "application/octet-stream"
@@ -442,13 +451,8 @@ class GmailDriveBridgeService:
         )
 
     def _upsert_drive_index_entry(
-        self,
-        drive_file_id: str,
-        drive_name: str,
-        parent_id: str,
-        parent_name: str,
-        drive_mime: str,
-        modified_time: str = "",
+        self, drive_file_id: str, drive_name: str, parent_id: str,
+        parent_name: str, drive_mime: str, modified_time: str = "",
     ) -> str:
         """Insert or update a transferred file in StateStore.drive_index and return its path."""
         resolved_path = ""
@@ -464,14 +468,9 @@ class GmailDriveBridgeService:
             else:
                 resolved_path = f"/{drive_name}"
             entry = DriveEntry(
-                file_id=drive_file_id,
-                name=drive_name,
-                mime_type=drive_mime,
-                parents=[parent_id],
-                modified_time=modified_time,
-                path=resolved_path,
-                is_folder=False,
-                trashed=False,
+                file_id=drive_file_id, name=drive_name, mime_type=drive_mime,
+                parents=[parent_id], modified_time=modified_time, path=resolved_path,
+                is_folder=False, trashed=False,
             )
             entries = {**cur.entries, drive_file_id: entry}
             folders = sum(1 for e in entries.values() if e.is_folder)

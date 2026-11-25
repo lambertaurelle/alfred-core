@@ -39,6 +39,8 @@ inbox:
   silent_creates_agy_session: false
   denylist_senders: []
   denylist_domains: []
+  allowlist_automated_senders: []
+  allowlist_automated_domains: []
 
 calendar:
   include_authenticated_owners_in_hold_allowlist: false

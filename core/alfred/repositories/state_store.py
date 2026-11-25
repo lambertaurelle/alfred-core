@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
+from typing import IO
 
 from alfred.domain.calendar_models import HoldAllowlistState
 from alfred.domain.drive_watcher_models import DriveWatcherLedger
@@ -22,6 +25,10 @@ from alfred.domain.models import (
 from alfred.domain.routine_models import RoutineExecutionState
 from alfred.domain.security_models import SignatureAuditEvent, SignatureRequestsState
 from alfred.repositories.json_repository import JsonlEventLog, JsonStateRepository
+
+_DRIVE_SYNC_LOCK_GUARD = threading.Lock()
+_DRIVE_SYNC_RLOCKS: dict[Path, threading.RLock] = {}
+_DRIVE_SYNC_HANDLES: dict[tuple[Path, int], tuple[IO[str], int]] = {}
 
 
 class StateStore:
@@ -113,6 +120,50 @@ class StateStore:
             if acquired:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
             handle.close()
+
+    @contextmanager
+    def acquire_drive_sync_lock(self) -> Iterator[None]:
+        """Acquire a reentrant thread-and-process exclusive lock for Drive index sync."""
+        locks_dir = self._paths.state_dir / "locks"
+        locks_dir.mkdir(parents=True, exist_ok=True)
+        lock_file = (locks_dir / "alfred_drive_sync.lock").resolve()
+        with _DRIVE_SYNC_LOCK_GUARD:
+            rlock = _DRIVE_SYNC_RLOCKS.setdefault(lock_file, threading.RLock())
+        rlock.acquire()
+        key = (lock_file, threading.get_ident())
+        try:
+            with _DRIVE_SYNC_LOCK_GUARD:
+                entry = _DRIVE_SYNC_HANDLES.get(key)
+            if entry is None:
+                handle = lock_file.open("a+", encoding="utf-8")
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+                except Exception:
+                    handle.close()
+                    raise
+                with _DRIVE_SYNC_LOCK_GUARD:
+                    _DRIVE_SYNC_HANDLES[key] = (handle, 1)
+            else:
+                with _DRIVE_SYNC_LOCK_GUARD:
+                    _DRIVE_SYNC_HANDLES[key] = (entry[0], entry[1] + 1)
+            try:
+                yield
+            finally:
+                closing_handle: IO[str] | None = None
+                with _DRIVE_SYNC_LOCK_GUARD:
+                    cur_handle, cur_depth = _DRIVE_SYNC_HANDLES[key]
+                    if cur_depth > 1:
+                        _DRIVE_SYNC_HANDLES[key] = (cur_handle, cur_depth - 1)
+                    else:
+                        _DRIVE_SYNC_HANDLES.pop(key, None)
+                        closing_handle = cur_handle
+                if closing_handle is not None:
+                    try:
+                        fcntl.flock(closing_handle.fileno(), fcntl.LOCK_UN)
+                    finally:
+                        closing_handle.close()
+        finally:
+            rlock.release()
 
     def has_processed_item(self, item_type: str, item_id: str) -> bool:
         """Check whether an incoming item ID has already been recorded in the JSONL history.

@@ -9,6 +9,9 @@ Analyze the incoming email below and produce a JSON decision strictly conforming
   - **Merchant / Ticketing Privacy**: for any confirmation from a merchant, ticketing provider, hotel, or carrier, strictly set `attendees: []` and `send_invites: false` (never invite a merchant or an automated address).
   - **Metadata & Default Duration**: populate `location` (venue, street address, station, video link) and `description` (ticket number, booking reference) whenever present; if end time is missing on a timed event, default to **+1 hour** after `start_iso`.
 - **`CREATE_HOLD` Rule**: when proposing a meeting slot with a human correspondent, use `CREATE_HOLD` with `send_invites: true`.
+- **Optional Directives (`keep_in_inbox`, `attachments_to_save`)**:
+  - `keep_in_inbox` (`boolean`, default `false`): set `true` ONLY when Section 4 custom rules explicitly instruct keeping the email in `INBOX` after execution (`--keep-in-inbox`).
+  - `attachments_to_save` (`array`): list ONLY exact filenames from the email `Attachments:` header that should be archived to Google Drive (omit non-document images or unwanted terms/conditions). Include `parent_id` and `target_name` when specified by Section 4 custom rules or Tier-1 knowledge context.
 
 ## 2. Two-Speed Escalation Pipeline (`needs_orchestrator_study`)
 - Set `needs_orchestrator_study: true` ONLY when the matter is complex (tax, legal, estate/patrimony, multi-document Drive cross-referencing, delicate negotiation) and warrants a deep study by `study-orchestrator` (`Orchestrator Carbon`) after Gate approval prior to lightweight `Hydrogen` execution.
@@ -17,7 +20,8 @@ Analyze the incoming email below and produce a JSON decision strictly conforming
 ## 3. Available Tier-1 Truth Sheets (YAML Frontmatters)
 {{knowledge_frontmatters}}
 
-## 4. Custom Instance Rules (Optional)
+## 4. Custom Instance Rules (Priority Over Default Archival & Filing)
+Explicit user preferences below take precedence over default `output_type`, `keep_in_inbox`, and selective `attachments_to_save` choices, while never overriding security isolation or emitting `DRAFT_REPLY` for automated/no-reply addresses:
 {{custom_inbox_rules}}
 
 ## 5. Primary Calendar Snapshot (All Future Events — No Horizon)

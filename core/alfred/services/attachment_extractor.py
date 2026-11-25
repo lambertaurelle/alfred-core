@@ -155,6 +155,44 @@ def _extract_part_headers(part: Mapping[str, Any]) -> dict[str, str]:
     }
 
 
+def _is_inline_mime_part(part: Mapping[str, Any], mime_type: str) -> bool:
+    """Return True when a MIME part is marked inline or is an inline CID image."""
+    headers = _extract_part_headers(part)
+    disp = headers.get("content-disposition", "").strip().lower()
+    has_cid = bool(headers.get("content-id", "").strip())
+    return disp.startswith("inline") or (
+        mime_type.startswith("image/") and has_cid and not disp.startswith("attachment")
+    )
+
+
+def collect_message_mime_summary(payload: Mapping[str, Any]) -> tuple[list[str], list[str]]:
+    """Collect deduplicated lowercase MIME types and non-inline attachment filenames.
+
+    Args:
+        payload: Raw Gmail message payload dictionary.
+
+    Returns:
+        Tuple of (ordered_mime_types, ordered_non_inline_filenames).
+    """
+    mimes: list[str] = []
+    filenames: list[str] = []
+    stack: list[Mapping[str, Any]] = [payload]
+    while stack:
+        part = stack.pop()
+        mt = str(part.get("mimeType", "") or "").strip().lower()
+        if mt and mt not in mimes:
+            mimes.append(mt)
+        fname = str(part.get("filename", "") or "").strip()
+        if fname and not _is_inline_mime_part(part, mt):
+            safe_name = sanitize_attachment_filename(fname, index=len(filenames), mime_type=mt)
+            if safe_name and safe_name not in filenames:
+                filenames.append(safe_name)
+        subparts = part.get("parts", [])
+        if isinstance(subparts, list):
+            stack.extend(reversed([c for c in subparts if isinstance(c, Mapping)]))
+    return mimes, filenames
+
+
 def collect_attachment_parts(
     message_id: str,
     payload: Mapping[str, Any],
@@ -187,12 +225,7 @@ def collect_attachment_parts(
         attachment_id = str(body.get("attachmentId", "") or "").strip()
         if raw_filename or attachment_id:
             idx = len(collected)
-            headers = _extract_part_headers(node)
-            disp = headers.get("content-disposition", "").strip().lower()
-            has_cid = bool(headers.get("content-id", "").strip())
-            is_inline = disp.startswith("inline") or (
-                mime_type.startswith("image/") and has_cid and not disp.startswith("attachment")
-            )
+            is_inline = _is_inline_mime_part(node, mime_type)
             meta = GmailAttachmentMeta(
                 index=idx,
                 message_id=message_id,
