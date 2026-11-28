@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from alfred.domain.attachment_models import AttachmentFilingTarget, CognitiveTriageDirectives
 from alfred.domain.calendar_models import (
     CalendarActionIntent,
     CalendarSlotProposal,
     CalendarTriageAction,
 )
 from alfred.domain.models import AlfredPaths, EmailMessage, InboxOutputType, KnowledgeDocument
-from alfred.services.attachment_extractor import split_attachment_body
-from alfred.services.email_security_service import wrap_untrusted_email_block
+from alfred.services.attachment_extractor import sanitize_attachment_filename, split_attachment_body
+from alfred.services.email_security_service import INVISIBLE_UNICODE_RE, wrap_untrusted_email_block
 from alfred.services.prompt_loader import PromptTemplateLoader
 
 ERROR_ENVELOPE_STATUSES = frozenset(
@@ -33,6 +36,21 @@ COGNITIVE_TRIAGE_SCHEMA: dict[str, object] = {
         "reason": {"type": "string"},
         "draft_body": {"type": "string"},
         "needs_orchestrator_study": {"type": "boolean"},
+        "keep_in_inbox": {"type": "boolean"},
+        "research_brief": {"type": "array", "items": {"type": "string"}},
+        "attachments_to_save": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string"},
+                    "parent_id": {"type": "string"},
+                    "target_name": {"type": "string"},
+                },
+                "required": ["filename"],
+                "additionalProperties": False,
+            },
+        },
         "calendar_action": {
             "type": "object",
             "properties": {
@@ -71,22 +89,12 @@ COGNITIVE_TRIAGE_SCHEMA: dict[str, object] = {
 }
 
 
-def build_cognitive_triage_prompt(
+def _prepare_triage_prompt_inputs(
     msg: EmailMessage,
     docs: list[KnowledgeDocument],
-    user_addresses: frozenset[str] = frozenset(),
-    calendar_context: str = "",
-    paths: AlfredPaths | None = None,
-) -> str:
-    """Build a nonce-spotlighted cognitive triage prompt for agy --print (Hydrogen).
-
-    Args:
-        msg: Sanitized incoming Gmail message.
-        docs: Loaded Tier-2 reference KnowledgeDocument list.
-        user_addresses: Optional authenticated owner email addresses.
-        calendar_context: Optional full-horizon primary calendar and [HOLD] snapshot.
-        paths: Optional AlfredPaths enabling Markdown prompt template & custom rule loading.
-    """
+    user_addresses: frozenset[str],
+) -> tuple[str, str, str]:
+    """Format Tier-2 knowledge context, owner identity line, and spotlighted email."""
     doc_blocks = [
         f"### {d.file_name} ({d.frontmatter.title})\n{d.frontmatter.summary}\n{d.body}"
         for d in docs
@@ -105,6 +113,28 @@ def build_cognitive_triage_prompt(
     else:
         clipped_body = msg.body_text[:4000]
     spotlighted, _ = wrap_untrusted_email_block(msg, clipped_body)
+    return ref_context, identity_line, spotlighted
+
+
+def build_cognitive_triage_prompt(
+    msg: EmailMessage,
+    docs: list[KnowledgeDocument],
+    user_addresses: frozenset[str] = frozenset(),
+    calendar_context: str = "",
+    paths: AlfredPaths | None = None,
+) -> str:
+    """Build a nonce-spotlighted cognitive triage prompt for agy --print (Hydrogen).
+
+    Args:
+        msg: Sanitized incoming Gmail message.
+        docs: Loaded Tier-2 reference KnowledgeDocument list.
+        user_addresses: Optional authenticated owner email addresses.
+        calendar_context: Optional full-horizon primary calendar and [HOLD] snapshot.
+        paths: Optional AlfredPaths enabling Markdown prompt template & custom rule loading.
+    """
+    ref_context, identity_line, spotlighted = _prepare_triage_prompt_inputs(
+        msg, docs, user_addresses
+    )
     if paths is not None:
         loader = PromptTemplateLoader(paths)
         custom_rules = loader.load_custom_inbox_rules() or "(No custom rules)"
@@ -273,3 +303,93 @@ def parse_calendar_action(unwrapped: dict[str, object]) -> CalendarTriageAction:
                 )
             )
     return CalendarTriageAction(intent=intent, slots=slots) if slots else CalendarTriageAction()
+
+
+def _strip_control_chars(raw: str) -> str:
+    """Remove C0, C1, and CR/LF/NUL control characters and strip surrounding whitespace."""
+    return "".join(ch for ch in raw if ord(ch) >= 32 and not (0x7F <= ord(ch) <= 0x9F)).strip()
+
+
+def _sanitize_directive_target_name(raw_name: str) -> str:
+    """Sanitize optional Drive target_name, returning empty string for pure traversal."""
+    no_ctrl = _strip_control_chars(raw_name)
+    no_inv = INVISIBLE_UNICODE_RE.sub("", no_ctrl).replace("`", "")
+    slashed = re.sub(r"[\uff0f\u2215\\]", "/", no_inv).strip()
+    segments = [seg.strip() for seg in slashed.split("/") if seg.strip()]
+    if not segments or segments[-1] in {".", ".."}:
+        return ""
+    return sanitize_attachment_filename(raw_name)
+
+
+def _resolve_directive_filename(
+    raw_fn: str,
+    available_filenames: Sequence[str],
+    canonical_map: dict[str, str],
+) -> str | None:
+    """Validate and resolve a directive attachment filename against known or safe names."""
+    if available_filenames:
+        return canonical_map.get(raw_fn.lower())
+    bad_tokens = ("..", "/", "\\", "\uff0f", "\u2215", "\x00", "\n", "\r", "`")
+    if (
+        sanitize_attachment_filename(raw_fn) != raw_fn
+        or any(tok in raw_fn for tok in bad_tokens)
+        or INVISIBLE_UNICODE_RE.search(raw_fn) is not None
+    ):
+        return None
+    return raw_fn
+
+
+def parse_triage_directives(
+    unwrapped: Mapping[str, object],
+    available_filenames: Sequence[str] = (),
+) -> CognitiveTriageDirectives:
+    """Validate and sanitize optional triage directives from an Agy cognitive output.
+
+    Args:
+        unwrapped: Unwrapped triage dictionary returned by agy CLI.
+        available_filenames: Canonical non-inline attachment filenames present on the email.
+
+    Returns:
+        Validated CognitiveTriageDirectives value object.
+    """
+    raw_brief = unwrapped.get("research_brief")
+    brief = (
+        [item.strip() for item in raw_brief if isinstance(item, str) and item.strip()][:8]
+        if isinstance(raw_brief, list)
+        else []
+    )
+    raw_atts = unwrapped.get("attachments_to_save")
+    att_specified = isinstance(raw_atts, list)
+    canonical_map = {fn.strip().lower(): fn.strip() for fn in available_filenames if fn.strip()}
+    targets: list[AttachmentFilingTarget] = []
+    seen: set[str] = set()
+    if isinstance(raw_atts, list):
+        for item in raw_atts:
+            if not isinstance(item, Mapping):
+                continue
+            raw_fn = str(item.get("filename") or "").strip()
+            if not raw_fn:
+                continue
+            canon_fn = _resolve_directive_filename(raw_fn, available_filenames, canonical_map)
+            if canon_fn is None:
+                continue
+            key = canon_fn.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            raw_pid = _strip_control_chars(str(item.get("parent_id") or ""))
+            parent_id = raw_pid.replace("`", "").strip()
+            raw_target = str(item.get("target_name") or "").strip()
+            target_name = _sanitize_directive_target_name(raw_target) if raw_target else ""
+            targets.append(
+                AttachmentFilingTarget(
+                    filename=canon_fn, parent_id=parent_id, target_name=target_name
+                )
+            )
+    return CognitiveTriageDirectives(
+        keep_in_inbox=bool(unwrapped.get("keep_in_inbox", False)),
+        needs_orchestrator_study=bool(unwrapped.get("needs_orchestrator_study", False)),
+        research_brief=brief,
+        attachments_specified=att_specified,
+        attachments_to_save=targets,
+    )

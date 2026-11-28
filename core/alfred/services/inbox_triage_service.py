@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
-from alfred.domain.calendar_models import CalendarActionIntent, CalendarTriageAction
+from alfred.domain.attachment_models import CognitiveTriageDirectives
+from alfred.domain.calendar_models import CalendarTriageAction
 from alfred.domain.models import (
     AlfredSettings,
     CalendarEventItem,
@@ -32,14 +33,17 @@ from alfred.services.inbox_calendar_bridge import (
     backfill_silent_inbox_records,
     enrich_calendar_action_attendees,
     load_upcoming_calendar_snapshot,
-    render_action_required_plan,
-    render_calendar_confirm_gate_plan,
+    materialize_draft_reply_decision,
+    materialize_silent_triage_decision,
     render_draft_calendar_section,
-    render_draft_reply_plan,
-    render_silent_trace_markdown,
     resolve_self_email_context,
 )
 from alfred.services.inbox_eligibility import InboxEligibilityPolicy
+from alfred.services.inbox_plan_renderer import (
+    build_action_research_brief,
+    finalize_cognitive_triage_decision,
+    render_action_required_plan,
+)
 from alfred.services.knowledge_service import KnowledgeService
 
 ACTION_REQUIRED_PATTERNS = (
@@ -66,18 +70,13 @@ class InboxTriageService:
     """Process newly arrived Gmail messages with surgical pre-filters and 2-speed routing."""
 
     def __init__(
-        self,
-        state_store: StateStore,
-        gmail_service: GmailService,
-        knowledge_service: KnowledgeService,
-        drive_service: DriveService,
+        self, state_store: StateStore, gmail_service: GmailService,
+        knowledge_service: KnowledgeService, drive_service: DriveService,
         agy_manager: AgySessionManager,
         cognitive_fn: Callable[
             [EmailMessage, list[KnowledgeDocument]], tuple[InboxOutputType, str, str | None]
-        ]
-        | None = None,
-        spawn_live_agy: bool = False,
-        calendar_service: CalendarService | None = None,
+        ] | None = None,
+        spawn_live_agy: bool = False, calendar_service: CalendarService | None = None,
         settings: AlfredSettings | None = None,
         attachment_bridge: GmailDriveBridgeService | None = None,
     ) -> None:
@@ -130,9 +129,8 @@ class InboxTriageService:
         except GmailHistoryExpiredError:
             return self._reset_history_bookmark()
 
-        unseen = [
-            m for m in messages if not self._state_store.has_processed_item("gmail", m.message_id)
-        ]
+        has_seen = self._state_store.has_processed_item
+        unseen = [m for m in messages if not has_seen("gmail", m.message_id)]
         selected, coalesced = self._eligibility.coalesce_by_thread(unseen)
         for older in coalesced:
             self._state_store.record_processed_item(
@@ -147,11 +145,9 @@ class InboxTriageService:
             self.process_message(m, spawn_live_agy, use_cognitive_agy, cal_snapshot)
             for m in selected
         ]
-        self._state_store.bookmarks.update(
-            lambda b: b.model_copy(
-                update={"gmail_history_id": latest_id, "gmail_last_polled_at": utc_now_iso()}
-            )
-        )
+        self._state_store.bookmarks.update(lambda b: b.model_copy(update={
+            "gmail_history_id": latest_id, "gmail_last_polled_at": utc_now_iso(),
+        }))
         return decisions
 
     def backfill_silent_archives(self) -> list[str]:
@@ -169,9 +165,7 @@ class InboxTriageService:
         return []
 
     def process_message(
-        self,
-        msg: EmailMessage,
-        spawn_live_agy: bool | None = None,
+        self, msg: EmailMessage, spawn_live_agy: bool | None = None,
         use_cognitive_agy: bool = False,
         calendar_snapshot: tuple[str, list[CalendarEventItem]] | None = None,
     ) -> InboxTriageDecision:
@@ -193,18 +187,17 @@ class InboxTriageService:
 
         sanitized = self._sanitizer.sanitize(msg.raw_html, msg.body_text)
         clean_msg = msg.model_copy(update={"body_text": sanitized.clean_text})
-        clean_msg, att_brief, att_inj = self._attachment_bridge.enrich_email_with_attachments(
-            clean_msg, self._sanitizer
-        )
+        clean_msg, att_brief, att_inj, has_verified = self._enrich_and_verify_attachments(clean_msg)
         suspicious_inj = sanitized.suspicious_injection or att_inj
         relevant_docs = self._load_relevant_knowledge(clean_msg)
         cal_ctx, upcoming_events = (
             (calendar_snapshot or load_upcoming_calendar_snapshot(self._calendar, self._settings))
             if use_cognitive_agy else ("", [])
         )
-        out_t, rsn, draft, cal_act, cls_id, needs_orch = self._classify_message(
+        out_t, rsn, draft, cal_act, cls_id, needs_orch, directives = self._classify_message(
             clean_msg, relevant_docs, use_cognitive_agy,
             is_from_self, is_self_only, user_addrs, cal_ctx,
+            has_doc_attachment_override=has_verified,
         )
         allowlist = (
             self._calendar.get_effective_hold_allowlist(user_addrs)
@@ -218,13 +211,32 @@ class InboxTriageService:
         decision = self._dispatch_triage_output(
             clean_msg, out_t, is_from_self, rsn, relevant_docs, draft, enriched_cal,
             upcoming_events, allowlist, cls_id, effective_spawn, needs_orch,
-            suspicious_inj, attachment_brief=att_brief,
+            suspicious_inj, attachment_brief=att_brief, directives=directives,
         )
         self._state_store.record_processed_item(
             "gmail", msg.message_id, f"{msg.message_id}:{msg.subject}:{decision.output_type}",
             str(decision.output_type), decision.reason,
         )
         return decision
+
+    def _enrich_and_verify_attachments(
+        self, clean_msg: EmailMessage
+    ) -> tuple[EmailMessage, list[str], bool, bool | None]:
+        """Enrich attachments and clear attachment_filenames only when payload is inline-only."""
+        if hasattr(self._attachment_bridge, "enrich_email_with_attachments_and_status"):
+            res = self._attachment_bridge.enrich_email_with_attachments_and_status(
+                clean_msg, self._sanitizer
+            )
+            enriched, att_brief, att_inj, has_doc = res[0], res[1], res[2], res[3]
+            has_non_inline = res[4] if len(res) >= 5 else res[3]
+        else:
+            enriched, att_brief, att_inj = self._attachment_bridge.enrich_email_with_attachments(
+                clean_msg, self._sanitizer
+            )
+            has_doc, has_non_inline = None, None
+        if has_non_inline is False:
+            enriched = enriched.model_copy(update={"attachment_filenames": []})
+        return (enriched, att_brief, att_inj, has_doc)
 
     def _record_pre_filtered_skip(
         self, msg: EmailMessage, skip_reason: str, spawn_live: bool = False
@@ -247,36 +259,29 @@ class InboxTriageService:
         return decision
 
     def _dispatch_triage_output(
-        self,
-        msg: EmailMessage,
-        output_type: InboxOutputType,
-        is_from_self: bool,
-        reason: str,
-        docs: list[KnowledgeDocument],
-        custom_draft: str | None,
-        cal_action: CalendarTriageAction,
-        upcoming_events: list[CalendarEventItem],
-        allowlist: frozenset[str],
-        cls_conv_id: str | None,
-        spawn_live: bool,
-        needs_orch: bool,
-        suspicious_injection: bool,
+        self, msg: EmailMessage, output_type: InboxOutputType, is_from_self: bool, reason: str,
+        docs: list[KnowledgeDocument], custom_draft: str | None, cal_action: CalendarTriageAction,
+        upcoming_events: list[CalendarEventItem], allowlist: frozenset[str],
+        cls_conv_id: str | None, spawn_live: bool, needs_orch: bool, suspicious_injection: bool,
         attachment_brief: list[str] | None = None,
+        directives: CognitiveTriageDirectives | None = None,
     ) -> InboxTriageDecision:
         """Route classified output to silent, action-required, or draft-reply handler."""
+        eff_dir = directives or CognitiveTriageDirectives()
         if output_type == InboxOutputType.SILENT_NO_ACTION:
             return self._handle_silent(
-                msg, reason, cal_action, upcoming_events, cls_conv_id, spawn_live
+                msg, reason, cal_action, upcoming_events,
+                cls_conv_id, spawn_live, directives=eff_dir,
             )
         self._agy.purge_classifier_session(cls_conv_id)
         if output_type == InboxOutputType.USER_ACTION_REQUIRED or is_from_self:
             return self._handle_action_required(
                 msg, reason, docs, spawn_live, needs_orch, suspicious_injection,
-                attachment_brief, cal_action=cal_action, allowlist=allowlist,
+                attachment_brief, cal_action=cal_action, allowlist=allowlist, directives=eff_dir,
             )
         return self._handle_draft_reply(
             msg, reason, docs, custom_draft, cal_action, allowlist,
-            spawn_live, needs_orch, suspicious_injection,
+            spawn_live, needs_orch, suspicious_injection, directives=eff_dir,
         )
 
     def _load_relevant_knowledge(self, msg: EmailMessage) -> list[KnowledgeDocument]:
@@ -286,45 +291,65 @@ class InboxTriageService:
         return [self._knowledge.load_document(file_name) for file_name, _ in matches]
 
     def _classify_message(
-        self,
-        msg: EmailMessage,
-        docs: list[KnowledgeDocument],
-        use_cognitive_agy: bool = False,
-        is_from_self: bool = False,
-        is_self_only: bool = False,
-        user_addrs: frozenset[str] = frozenset(),
-        calendar_context: str = "",
-    ) -> tuple[InboxOutputType, str, str | None, CalendarTriageAction, str | None, bool]:
+        self, msg: EmailMessage, docs: list[KnowledgeDocument],
+        use_cognitive_agy: bool = False, is_from_self: bool = False, is_self_only: bool = False,
+        user_addrs: frozenset[str] = frozenset(), calendar_context: str = "",
+        *, has_doc_attachment_override: bool | None = None,
+    ) -> tuple[
+        InboxOutputType, str, str | None, CalendarTriageAction, str | None, bool,
+        CognitiveTriageDirectives,
+    ]:
         """Classify an email deterministically first, delegating to cognitive_fn or agy CLI."""
         combined = fold_accents(f"{msg.subject}\n{msg.snippet}\n{msg.body_text}")
         needs_orch = any(re.search(p, combined) for p in COMPLEX_STUDY_PATTERNS)
-        no_cal = CalendarTriageAction()
-        for pat in ACTION_REQUIRED_PATTERNS:
-            if re.search(pat, combined):
-                rsn = f"Matched user-action signal: '{pat}'"
-                return (InboxOutputType.USER_ACTION_REQUIRED, rsn, None, no_cal, None, needs_orch)
+        no_cal, empty_dir = CalendarTriageAction(), CognitiveTriageDirectives()
+        matched_pat = next((p for p in ACTION_REQUIRED_PATTERNS if re.search(p, combined)), None)
+        if matched_pat is not None and not use_cognitive_agy and self._cognitive_fn is None:
+            rsn = f"Matched user-action signal: '{matched_pat}'"
+            return (
+                InboxOutputType.USER_ACTION_REQUIRED, rsn, None, no_cal, None, needs_orch, empty_dir
+            )
         if is_self_only:
             rsn = "Self-sent memo or personal reminder requiring user follow-up"
-            return (InboxOutputType.USER_ACTION_REQUIRED, rsn, None, no_cal, None, needs_orch)
+            return (
+                InboxOutputType.USER_ACTION_REQUIRED, rsn, None, no_cal, None, needs_orch, empty_dir
+            )
         email_body, _, _ = split_attachment_body(msg.body_text)
         passive_corpus = fold_accents(f"{msg.subject}\n{msg.snippet}\n{email_body}")
-        if not is_from_self and self._is_passive_or_automated(msg, passive_corpus):
+        if (
+            matched_pat is None and not is_from_self
+            and self._is_passive_or_automated(
+                msg, passive_corpus, has_doc_attachment_override=has_doc_attachment_override
+            )
+        ):
             rsn = "Passive portal or automated bulk notification without action signal"
-            return (InboxOutputType.SILENT_NO_ACTION, rsn, None, no_cal, None, False)
-
+            return (InboxOutputType.SILENT_NO_ACTION, rsn, None, no_cal, None, False, empty_dir)
         out_type, reason, draft, cal_action, conv_id = self._run_cognitive_or_default(
             msg, docs, use_cognitive_agy, user_addrs, calendar_context
         )
-        needs_orch = needs_orch or self._agy.last_needs_orchestrator_study
-        if is_from_self and out_type == InboxOutputType.DRAFT_REPLY:
-            rsn = "Self-authored email requiring personal follow-up (no self-reply draft)"
-            act_out = InboxOutputType.USER_ACTION_REQUIRED
-            return (act_out, rsn, None, cal_action, conv_id, needs_orch)
-        return (out_type, reason, draft, cal_action, conv_id, needs_orch)
+        return finalize_cognitive_triage_decision(
+            msg=msg, out_type=out_type, reason=reason, draft=draft, cal_action=cal_action,
+            conv_id=conv_id, needs_orch=needs_orch, matched_pat=matched_pat,
+            is_from_self=is_from_self, use_cognitive_agy=use_cognitive_agy,
+            has_cognitive_fn=self._cognitive_fn is not None,
+            directives=self._agy.last_triage_directives,
+            last_needs_orch=self._agy.last_needs_orchestrator_study,
+            pinned_recipient=self._firewall.pin_draft_recipient(msg),
+        )
 
-    def _is_passive_or_automated(self, msg: EmailMessage, combined_folded: str) -> bool:
+    def _is_passive_or_automated(
+        self,
+        msg: EmailMessage,
+        combined_folded: str,
+        has_doc_attachment_override: bool | None = None,
+    ) -> bool:
         """Return True for passive portal notices, newsletters, or non-booking bulk mails."""
-        return is_passive_or_automated_email(msg, combined_folded)
+        return is_passive_or_automated_email(
+            msg,
+            combined_folded,
+            inbox_filters=self._settings.inbox_filters,
+            has_doc_attachment_override=has_doc_attachment_override,
+        )
 
     def _run_cognitive_or_default(
         self,
@@ -346,129 +371,70 @@ class InboxTriageService:
         return (InboxOutputType.DRAFT_REPLY, rsn, None, CalendarTriageAction(), None)
 
     def _handle_silent(
-        self,
-        msg: EmailMessage,
-        reason: str,
+        self, msg: EmailMessage, reason: str,
         cal_action: CalendarTriageAction | None = None,
         upcoming_events: list[CalendarEventItem] | None = None,
-        classifier_conv_id: str | None = None,
-        spawn_live: bool = False,
+        classifier_conv_id: str | None = None, spawn_live: bool = False,
+        *, directives: CognitiveTriageDirectives | None = None,
     ) -> InboxTriageDecision:
         """Handle SILENT_NO_ACTION (0 live sessions unless silent_creates_agy_session)."""
-        allow_live_silent = spawn_live and self._settings.inbox_filters.silent_creates_agy_session
-        if not spawn_live and classifier_conv_id:
-            self._agy.purge_classifier_session(classifier_conv_id)
-            classifier_conv_id = None
-        session = self._agy.create_and_archive_trace(
-            workspace="alfred-inbox", title=f"[SILENT] {msg.subject}",
-            trace_markdown=render_silent_trace_markdown(msg, reason),
-            source_message_id=msg.message_id, outcome=f"SILENT_NO_ACTION: {reason}",
-            existing_conv_id=classifier_conv_id, spawn_live=allow_live_silent,
-        )
-        cal_session_id: str | None = None
-        eff_action = cal_action or CalendarTriageAction()
-        if (
-            eff_action.intent == CalendarActionIntent.CONFIRM_EVENT
-            and eff_action.slots and self._settings.features.calendar_management
-        ):
-            ev_list = upcoming_events or []
-            gate_md = render_calendar_confirm_gate_plan(msg, reason, eff_action, ev_list)
-            cal_session = self._agy.create_session(
-                workspace="alfred-calendar", source_message_id=msg.message_id,
-                implementation_plan_md=gate_md, spawn_live=spawn_live,
-                title=f"[Calendar] {eff_action.slots[0].summary}",
-            )
-            cal_session_id = cal_session.session_id
-        return InboxTriageDecision(
-            message_id=msg.message_id, output_type=InboxOutputType.SILENT_NO_ACTION,
-            reason=reason, starred=False, session_id=session.session_id, session_archived=True,
-            calendar_session_id=cal_session_id, calendar_action_intent=eff_action.intent.value,
+        return materialize_silent_triage_decision(
+            self._settings, self._agy, msg, reason, cal_action, upcoming_events,
+            classifier_conv_id, spawn_live, directives or CognitiveTriageDirectives(),
         )
 
     def _handle_draft_reply(
-        self,
-        msg: EmailMessage,
-        reason: str,
-        docs: list[KnowledgeDocument],
-        custom_draft: str | None,
-        cal_action: CalendarTriageAction | None = None,
-        allowlist: frozenset[str] = frozenset(),
-        spawn_live: bool = False,
-        needs_orch: bool = False,
-        suspicious_injection: bool = False,
+        self, msg: EmailMessage, reason: str, docs: list[KnowledgeDocument],
+        custom_draft: str | None, cal_action: CalendarTriageAction | None = None,
+        allowlist: frozenset[str] = frozenset(), spawn_live: bool = False,
+        needs_orch: bool = False, suspicious_injection: bool = False,
+        *, directives: CognitiveTriageDirectives | None = None,
     ) -> InboxTriageDecision:
         """Execute DRAFT_REPLY with pinned recipient, sendAs alias, and clean Gate title."""
-        reply_subj = msg.subject if msg.subject.lower().startswith("re:") else f"Re: {msg.subject}"
-        reply_to = self._firewall.pin_draft_recipient(msg)
-        parent_id, refs = msg.headers.get("message-id", ""), msg.headers.get("references", "")
-        chain = f"{refs} {parent_id}".strip() if parent_id else refs
-        draft_body = custom_draft or self._synthesize_default_draft(msg, docs)
-        draft_id = (
-            self._gmail.create_draft(
-                msg.thread_id, reply_to, reply_subj, draft_body, parent_id, chain
-            )
-            if self._settings.features.gmail_drafts_and_send
-            else "SKIPPED_DISABLED"
-        )
-        eff_action = cal_action or CalendarTriageAction()
-        cal_sec = (
-            render_draft_calendar_section(eff_action, msg.thread_id, msg.message_id, allowlist)
-            if self._settings.features.calendar_management
-            else ""
-        )
-        plan_md = render_draft_reply_plan(
-            reply_to, reply_subj, draft_id, draft_body, cal_sec,
-            msg.thread_id, needs_orch, suspicious_injection,
-        )
-        session = self._agy.create_session(
-            "alfred-inbox", msg.message_id, plan_md, spawn_live, title=f"[Draft] {msg.subject}"
-        )
-        return InboxTriageDecision(
-            message_id=msg.message_id, output_type=InboxOutputType.DRAFT_REPLY,
-            reason=reason, draft_id=draft_id, draft_body=draft_body, starred=False,
-            session_id=session.session_id, session_archived=False,
-            implementation_plan_markdown=plan_md,
-            calendar_action_intent=eff_action.intent.value,
-            needs_orchestrator_study=needs_orch, suspicious_injection=suspicious_injection,
+        return materialize_draft_reply_decision(
+            self._settings, self._gmail, self._agy, msg, reason,
+            self._firewall.pin_draft_recipient(msg),
+            custom_draft or self._synthesize_default_draft(msg, docs),
+            cal_action, allowlist, spawn_live, needs_orch, suspicious_injection,
+            directives or CognitiveTriageDirectives(),
         )
 
     def _handle_action_required(
-        self,
-        msg: EmailMessage,
-        reason: str,
-        docs: list[KnowledgeDocument],
-        spawn_live: bool = False,
-        needs_orch: bool = False,
-        suspicious_injection: bool = False,
-        attachment_brief: list[str] | None = None,
+        self, msg: EmailMessage, reason: str, docs: list[KnowledgeDocument],
+        spawn_live: bool = False, needs_orch: bool = False,
+        suspicious_injection: bool = False, attachment_brief: list[str] | None = None,
         cal_action: CalendarTriageAction | None = None,
         allowlist: frozenset[str] = frozenset(),
+        *, directives: CognitiveTriageDirectives | None = None,
     ) -> InboxTriageDecision:
         """Execute USER_ACTION_REQUIRED: STARRED in Gmail + clean Gate session + brief."""
+        eff_dir = directives or CognitiveTriageDirectives()
         if self._settings.features.gmail_drafts_and_send:
             self._gmail.star_message(msg.message_id)
-        brief_items = [
-            *(attachment_brief or []),
-            *(f"Reference note `{d.file_name}`: {d.frontmatter.summary}" for d in docs),
-        ]
-        folded_words = re.findall(r"[a-z0-9]{4,}", fold_accents(msg.subject))
-        tokens = [tok for tok in folded_words if tok not in DRIVE_SEARCH_STOPWORDS][:4]
-        seen_ids: set[str] = set()
-        for tok in tokens:
-            for hit in self._drive.search_index(tok)[:2]:
-                if hit.file_id not in seen_ids:
-                    seen_ids.add(hit.file_id)
-                    brief_items.append(f"Google Drive file: `{hit.path}` (`{hit.file_id}`)")
-        if not brief_items:
-            brief_items.append("Review `01_profil_et_contacts_cles.md` recommended.")
+        sel_names = (
+            {t.filename.lower() for t in eff_dir.attachments_to_save}
+            if eff_dir.attachments_specified else None
+        )
+        brief_items = build_action_research_brief(
+            msg, docs, self._drive, DRIVE_SEARCH_STOPWORDS,
+            attachment_brief=attachment_brief, cognitive_brief=eff_dir.research_brief,
+            selected_filenames=sel_names,
+        )
         target_doc_id = docs[0].frontmatter.id if docs else "profil_et_contacts_cles"
         eff_action = cal_action or CalendarTriageAction()
         cal_sec = (
-            render_draft_calendar_section(eff_action, msg.thread_id, msg.message_id, allowlist)
-            if self._settings.features.calendar_management else ""
+            render_draft_calendar_section(
+                eff_action, msg.thread_id, msg.message_id, allowlist,
+                keep_in_inbox=eff_dir.keep_in_inbox,
+            ) if self._settings.features.calendar_management else ""
         )
+        sel_atts = eff_dir.attachments_to_save if eff_dir.attachments_specified else None
         plan_md = render_action_required_plan(
-            msg, reason, brief_items, target_doc_id, needs_orch, suspicious_injection, cal_sec
+            msg, reason, brief_items, target_doc_id, needs_orch, suspicious_injection, cal_sec,
+            keep_in_inbox=eff_dir.keep_in_inbox,
+            drive_watcher_enabled=self._settings.features.drive_watcher,
+            attachments_to_save=sel_atts,
+            archive_by_default=self._settings.archive_processed_emails_by_default,
         )
         prefix = "[Action · Carbon Study]" if needs_orch else "[Action]"
         session = self._agy.create_session(
@@ -482,6 +448,8 @@ class InboxTriageService:
             suggested_knowledge_update_id=target_doc_id,
             calendar_action_intent=eff_action.intent.value,
             needs_orchestrator_study=needs_orch, suspicious_injection=suspicious_injection,
+            keep_in_inbox=eff_dir.keep_in_inbox,
+            attachments_to_save=list(eff_dir.attachments_to_save),
         )
 
     def _synthesize_default_draft(self, msg: EmailMessage, docs: list[KnowledgeDocument]) -> str:

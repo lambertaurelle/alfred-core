@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import re
-from email.utils import parseaddr
+from email.utils import getaddresses
 
+from alfred.domain.feature_models import InboxFilterConfig
 from alfred.domain.models import EmailMessage, fold_accents
 from alfred.services.attachment_extractor import split_attachment_body
 
@@ -26,24 +27,32 @@ _AUTOMATED_EXACT_LOCALS: frozenset[str] = frozenset(
         "noreply",
         "no-reply",
         "no_reply",
+        "no.reply",
         "donotreply",
         "do-not-reply",
         "do_not_reply",
+        "do.not.reply",
         "ne-pas-repondre",
         "ne_pas_repondre",
         "nepasrepondre",
+        "ne.pas.repondre",
         "mailer-daemon",
+        "daemon",
         "postmaster",
         "feedback",
         "notification",
         "notifications",
+        "alert",
+        "alerts",
         "bounce",
         "bounces",
     }
 )
 _AUTOMATED_LOCAL_RE = re.compile(
-    r"(?:^|[._+-])(?:no[-_]?reply|do[-_]?not[-_]?reply|"
-    r"ne[-_]?pas[-_]?repondre|mailer[-_]?daemon|bounces?)(?:$|[._+-])"
+    r"(?:^|[._+-])(?:"
+    r"no[._-]?reply\d*|do[._-]?not[._-]?reply\d*|ne[._-]?pas[._-]?repondre\d*|"
+    r"mailer[._-]?daemon|bounces?|notifications?|alerts?"
+    r")(?:$|[._+-])"
 )
 
 _SUBJECT_DISQUALIFY_RE = re.compile(
@@ -119,19 +128,48 @@ _STAY_OR_DEPART_RE = re.compile(
 
 
 def is_automated_correspondent_address(email_addr: str) -> bool:
-    """Return True when email_addr belongs to an automated/no-reply/bounce address.
+    """Return True when any address in email_addr belongs to an automated/no-reply/bounce address.
 
     Args:
-        email_addr: Raw RFC 2822 address header or bare email string.
+        email_addr: Raw RFC 2822 address header or comma-separated email list.
     """
-    _, bare = parseaddr(email_addr)
-    cleaned = (bare or email_addr).strip().lower()
-    if "@" not in cleaned:
+    extracted = [addr.strip().lower() for _, addr in getaddresses([email_addr]) if "@" in addr]
+    if not extracted and "@" in email_addr:
+        extracted = [email_addr.strip().lower()]
+    for cleaned in extracted:
+        local = cleaned.partition("@")[0]
+        if local in _AUTOMATED_EXACT_LOCALS or _AUTOMATED_LOCAL_RE.search(local):
+            return True
+    return False
+
+
+def has_automated_bulk_headers_without_human_reply_to(msg: EmailMessage) -> bool:
+    """Return True when bulk/auto headers exist without a distinct human Reply-To address.
+
+    Args:
+        msg: Normalized EmailMessage to inspect.
+    """
+    lower_hdrs = {k.strip().lower(): v.strip() for k, v in msg.headers.items()}
+    precedence = lower_hdrs.get("precedence", "").lower()
+    auto_sub = lower_hdrs.get("auto-submitted", "").lower()
+    has_bulk = (
+        precedence in {"bulk", "list", "junk", "auto_reply"}
+        or (bool(auto_sub) and auto_sub != "no")
+        or bool(lower_hdrs.get("list-unsubscribe") or lower_hdrs.get("list-id"))
+    )
+    if not has_bulk:
         return False
-    local = cleaned.partition("@")[0]
-    if local in _AUTOMATED_EXACT_LOCALS:
+    rt_addrs = [
+        addr.strip().lower()
+        for _, addr in getaddresses([lower_hdrs.get("reply-to", "")])
+        if "@" in addr and not any(ch.isspace() for ch in addr.strip())
+    ]
+    if not rt_addrs:
         return True
-    return bool(_AUTOMATED_LOCAL_RE.search(local))
+    sender_addrs = {addr.strip().lower() for _, addr in getaddresses([msg.sender]) if "@" in addr}
+    if all(addr in sender_addrs for addr in rt_addrs):
+        return True
+    return any(is_automated_correspondent_address(addr) for addr in rt_addrs)
 
 
 def has_dated_booking_signal(msg: EmailMessage) -> bool:
@@ -153,15 +191,37 @@ def has_dated_booking_signal(msg: EmailMessage) -> bool:
     return bool(_TIME_RE.search(corpus) or _STAY_OR_DEPART_RE.search(corpus))
 
 
-def is_passive_or_automated_email(msg: EmailMessage, combined_folded: str) -> bool:
+def is_passive_or_automated_email(
+    msg: EmailMessage,
+    combined_folded: str,
+    inbox_filters: InboxFilterConfig | None = None,
+    *,
+    has_doc_attachment_override: bool | None = None,
+) -> bool:
     """Return True for passive portal notices, newsletters, or non-booking automated senders.
 
     Args:
         msg: Normalized EmailMessage to inspect.
         combined_folded: Pre-folded subject + snippet + body text for pattern checks.
+        inbox_filters: Optional InboxFilterConfig enabling automated-sender allowlist exemption.
+        has_doc_attachment_override: Optional override replacing attachment extension check.
     """
     if has_dated_booking_signal(msg):
         return False
+    if inbox_filters is not None:
+        from alfred.services.inbox_eligibility import (
+            has_eligible_document_attachment,
+            is_allowlisted_automated_sender,
+        )
+
+        if is_allowlisted_automated_sender(msg.sender, inbox_filters):
+            has_doc = (
+                has_doc_attachment_override
+                if has_doc_attachment_override is not None
+                else has_eligible_document_attachment(msg)
+            )
+            if has_doc:
+                return False
     if any(re.search(pat, combined_folded) for pat in PASSIVE_PORTAL_PATTERNS):
         return True
     lower_hdrs = {k.strip().lower(): v.strip().lower() for k, v in msg.headers.items()}

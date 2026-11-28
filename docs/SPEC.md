@@ -122,6 +122,7 @@ domain  <--  repositories  <--  services  <--  controllers  <--  main.py
 | `services` | `core/alfred/services/inbox_booking_detector.py` | Generic FR/EN dated booking confirmation and automated correspondent detectors. |
 | `services` | `core/alfred/services/inbox_calendar_bridge.py` | Bridge between alfred-inbox email triage, 2-speed Gate plans, and alfred-calendar. |
 | `services` | `core/alfred/services/inbox_eligibility.py` | Deterministic 0-token pre-filtering and thread coalescence for alfred-inbox. |
+| `services` | `core/alfred/services/inbox_plan_renderer.py` | Markdown Gate plan and silent-trace renderers for alfred-inbox triage outputs. |
 | `services` | `core/alfred/services/inbox_triage_service.py` | alfred-inbox 2-speed routine with 0-token pre-filters, sanitizer, and calendar bridge. |
 | `services` | `core/alfred/services/knowledge_service.py` | 3-Tier Progressive Knowledge loader (YAML Frontmatter -> Reference .md -> Drive backup). |
 | `services` | `core/alfred/services/mcp_bridge_service.py` | OAuth 2.1 PKCE + Streamable HTTP /mcp bridge service for Gemini App integration. |

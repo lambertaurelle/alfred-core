@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
+from alfred.domain.attachment_models import CognitiveTriageDirectives
 from alfred.domain.calendar_models import CalendarTriageAction
 from alfred.domain.models import (
     ActiveSessionRecord,
@@ -34,6 +35,7 @@ from alfred.services.agy_archive_store import (
     unwrap_triage_payload,
 )
 from alfred.services.agy_daemon_sync import AgyDaemonSyncService
+from alfred.services.agy_triage_parser import parse_triage_directives
 
 
 class AgySessionManager:
@@ -80,6 +82,7 @@ class AgySessionManager:
         self._plans_dir = self._paths.state_dir / "plans"
         self._plans_dir.mkdir(parents=True, exist_ok=True)
         self._last_needs_orchestrator_study: bool = False
+        self._last_triage_directives = CognitiveTriageDirectives()
 
     @property
     def archive_store(self) -> AgyArchiveStore:
@@ -110,6 +113,11 @@ class AgySessionManager:
     def last_needs_orchestrator_study(self) -> bool:
         """Return whether the most recent cognitive triage requested Orchestrator study."""
         return self._last_needs_orchestrator_study
+
+    @property
+    def last_triage_directives(self) -> CognitiveTriageDirectives:
+        """Return structured triage directives from the most recent cognitive triage."""
+        return self._last_triage_directives
 
     def build_model_cli_flags(self, workspace: str, trace: bool = False) -> list[str]:
         """Build --model (and --effort ONLY on non-orchestrator models) CLI flags.
@@ -147,13 +155,9 @@ class AgySessionManager:
         return self._paths.root_dir
 
     def create_session(
-        self,
-        workspace: str,
-        source_message_id: str = "",
-        implementation_plan_md: str | None = None,
-        spawn_live: bool = False,
-        title: str = "",
-        parent_session_id: str = "",
+        self, workspace: str, source_message_id: str = "",
+        implementation_plan_md: str | None = None, spawn_live: bool = False,
+        title: str = "", parent_session_id: str = "",
     ) -> ActiveSessionRecord:
         """Spawn a tracked Antigravity Web conversation with a clean sidebar title and Gate plan.
 
@@ -198,14 +202,8 @@ class AgySessionManager:
         return record
 
     def create_and_archive_trace(
-        self,
-        workspace: str,
-        title: str,
-        trace_markdown: str,
-        source_message_id: str = "",
-        outcome: str = "",
-        existing_conv_id: str | None = None,
-        spawn_live: bool = False,
+        self, workspace: str, title: str, trace_markdown: str, source_message_id: str = "",
+        outcome: str = "", existing_conv_id: str | None = None, spawn_live: bool = False,
         archived_at: str | None = None,
     ) -> ActiveSessionRecord:
         """Materialize and auto-archive a real Antigravity trace conversation in workspace.
@@ -241,9 +239,7 @@ class AgySessionManager:
         return record
 
     def classify_email_with_agy(
-        self,
-        msg: EmailMessage,
-        docs: list[KnowledgeDocument],
+        self, msg: EmailMessage, docs: list[KnowledgeDocument],
         user_addresses: frozenset[str] = frozenset(),
     ) -> tuple[InboxOutputType, str, str | None]:
         """Classify an ambiguous email and draft a reply via agy CLI (3-tuple API).
@@ -260,11 +256,8 @@ class AgySessionManager:
         return (out_type, reason, draft_body)
 
     def classify_email_full(
-        self,
-        msg: EmailMessage,
-        docs: list[KnowledgeDocument],
-        user_addresses: frozenset[str] = frozenset(),
-        calendar_context: str = "",
+        self, msg: EmailMessage, docs: list[KnowledgeDocument],
+        user_addresses: frozenset[str] = frozenset(), calendar_context: str = "",
     ) -> tuple[InboxOutputType, str, str | None, CalendarTriageAction, str | None]:
         """Classify an email inside project alfred-inbox using Hydrogen light model routing.
 
@@ -275,6 +268,7 @@ class AgySessionManager:
             calendar_context: Optional upcoming primary calendar & [HOLD] context block.
         """
         self._last_needs_orchestrator_study = False
+        self._last_triage_directives = CognitiveTriageDirectives()
         agy_bin = self._locate_agy_binary()
         if agy_bin is None:
             return self._fallback_triage("agy unavailable")
@@ -301,7 +295,11 @@ class AgySessionManager:
         except ValueError:
             self.purge_classifier_session(conv_id)
             return self._fallback_triage("unknown agy output_type")
-        self._last_needs_orchestrator_study = bool(unwrapped.get("needs_orchestrator_study", False))
+        directives = parse_triage_directives(unwrapped, msg.attachment_filenames)
+        if not msg.attachment_filenames and directives.attachments_to_save:
+            directives = directives.model_copy(update={"attachments_to_save": []})
+        self._last_triage_directives = directives
+        self._last_needs_orchestrator_study = directives.needs_orchestrator_study
         reason = str(unwrapped.get("reason") or "Classified via agy cognitive triage")
         raw_draft = unwrapped.get("draft_body")
         draft_body = raw_draft.strip() if isinstance(raw_draft, str) and raw_draft.strip() else None
@@ -334,16 +332,12 @@ class AgySessionManager:
         session_dir.mkdir(parents=True, exist_ok=True)
         plan_file = session_dir / "implementation_plan.md"
         atomic_write_text(plan_file, implementation_plan_md)
+        p_str = str(plan_file)
         self._state_store.conversations.update(
-            lambda cur: (
-                cur.model_copy(update={"sessions": {
-                    **cur.sessions,
-                    session_id: cur.sessions[session_id].model_copy(
-                        update={"plan_path": str(plan_file)}
-                    ),
-                }})
-                if session_id in cur.sessions else cur
-            )
+            lambda cur: cur.model_copy(update={"sessions": {
+                **cur.sessions,
+                session_id: cur.sessions[session_id].model_copy(update={"plan_path": p_str}),
+            }}) if session_id in cur.sessions else cur
         )
         return plan_file
 

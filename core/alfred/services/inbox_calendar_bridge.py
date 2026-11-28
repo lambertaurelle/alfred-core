@@ -8,6 +8,7 @@ from datetime import datetime
 from email.utils import getaddresses, parseaddr
 from zoneinfo import ZoneInfo
 
+from alfred.domain.attachment_models import CognitiveTriageDirectives
 from alfred.domain.calendar_models import (
     CalendarActionIntent,
     CalendarSlotProposal,
@@ -18,6 +19,8 @@ from alfred.domain.models import (
     AlfredSettings,
     CalendarEventItem,
     EmailMessage,
+    InboxOutputType,
+    InboxTriageDecision,
 )
 from alfred.repositories.state_store import StateStore
 from alfred.services.agy_session_manager import AgySessionManager
@@ -25,6 +28,15 @@ from alfred.services.calendar_helpers import format_unlimited_calendar_snapshot
 from alfred.services.calendar_service import CalendarService
 from alfred.services.gmail_service import GmailService
 from alfred.services.inbox_booking_detector import is_automated_correspondent_address
+from alfred.services.inbox_plan_renderer import (
+    render_action_required_plan as render_action_required_plan,
+)
+from alfred.services.inbox_plan_renderer import (
+    render_draft_reply_plan as render_draft_reply_plan,
+)
+from alfred.services.inbox_plan_renderer import (
+    render_silent_trace_markdown as render_silent_trace_markdown,
+)
 
 
 def _extract_email_set(raw_header: str) -> set[str]:
@@ -168,16 +180,19 @@ def _slot_meta_flags(slot: CalendarSlotProposal) -> str:
     return " ".join(parts)
 
 
-def _build_confirm_cmd(slot: CalendarSlotProposal, thread_id: str) -> str:
+def _build_confirm_cmd(
+    slot: CalendarSlotProposal, thread_id: str, keep_in_inbox: bool = False
+) -> str:
     """Build a shlex-quoted 'alfred confirm-event' CLI command with --archive-trace."""
     att_flags = " ".join(f"--attendee {shlex.quote(a)}" for a in slot.attendees)
     meta_flags = _slot_meta_flags(slot)
     inv_flag = "--send-invites" if slot.send_invites and slot.attendees else "--no-send-invites"
+    keep_flag = "--keep-in-inbox" if keep_in_inbox else ""
     parts = [
         f"alfred confirm-event --calendar primary --summary {shlex.quote(slot.summary)}",
         f"--from {shlex.quote(slot.start_iso)} --to {shlex.quote(slot.end_iso)}",
         f"--thread-id {shlex.quote(thread_id)}",
-        *(p for p in (meta_flags, att_flags, inv_flag, "--archive-trace") if p),
+        *(p for p in (meta_flags, att_flags, inv_flag, keep_flag, "--archive-trace") if p),
     ]
     return " ".join(parts)
 
@@ -187,6 +202,8 @@ def render_draft_calendar_section(
     thread_id: str,
     message_id: str,
     allowlist: frozenset[str],
+    *,
+    keep_in_inbox: bool = False,
 ) -> str:
     """Render the [HOLD] or confirmation CLI execution block inside a Gate plan.
 
@@ -195,6 +212,7 @@ def render_draft_calendar_section(
         thread_id: Gmail threadId for [HOLD] correlation.
         message_id: Gmail messageId for [HOLD] correlation.
         allowlist: Effective [HOLD] allowlist emails.
+        keep_in_inbox: When True, append --keep-in-inbox to confirm-event commands.
     """
     if action.intent == CalendarActionIntent.NONE or not action.slots:
         return ""
@@ -226,7 +244,7 @@ def render_draft_calendar_section(
                 f"- **Confirmed event `{slot.summary}`**: `{slot.start_iso}` -> `{slot.end_iso}`",
                 f"  - **Google Calendar invite after `Proceed`**: `{att_str}`",
             ])
-            cli_cmds.append(_build_confirm_cmd(slot, thread_id))
+            cli_cmds.append(_build_confirm_cmd(slot, thread_id, keep_in_inbox=keep_in_inbox))
     lines.append("\n### Post-Approval Calendar Commands (`Proceed`)\n")
     lines.extend(f"- `{cmd}`" for cmd in cli_cmds)
     return "\n".join(lines) + "\n"
@@ -237,6 +255,8 @@ def render_calendar_confirm_gate_plan(
     reason: str,
     action: CalendarTriageAction,
     upcoming_events: list[CalendarEventItem],
+    *,
+    keep_in_inbox: bool = False,
 ) -> str:
     """Render the mandatory Blocking Gate implementation_plan.md for project alfred-calendar.
 
@@ -245,6 +265,7 @@ def render_calendar_confirm_gate_plan(
         reason: Cognitive rationale explaining why the event is confirmed.
         action: Enriched CalendarTriageAction with CONFIRM_EVENT slots.
         upcoming_events: Upcoming primary CalendarEventItem list to surface matching [HOLD]s.
+        keep_in_inbox: When True, append --keep-in-inbox to confirm-event commands.
     """
     thread_holds = [
         ev for ev in upcoming_events
@@ -276,7 +297,7 @@ def render_calendar_confirm_gate_plan(
             *([f"- **Location / Video**: {slot.location}"] if slot.location else []),
             f"- **{inv_lbl}**: `{guests}`",
         ])
-        cmds.append(_build_confirm_cmd(slot, msg.thread_id))
+        cmds.append(_build_confirm_cmd(slot, msg.thread_id, keep_in_inbox=keep_in_inbox))
     if thread_holds:
         lines.append("\n## Existing `[HOLD]` Events on This Thread (Auto-Converted & Released)\n")
         for hold in thread_holds:
@@ -286,154 +307,14 @@ def render_calendar_confirm_gate_plan(
     lines.append("\n## Post-Approval Execution (`Proceed`)\n")
     lines.extend(f"- `{cmd.strip()}`" for cmd in cmds)
     lines.append(
-        "- **Default Gmail archiving**: remove `INBOX` after approval "
-        "(comment `--keep-in-inbox` to keep it in inbox)."
+        "- **Keep in Gmail inbox (`--keep-in-inbox`)**: retain thread in `INBOX` after approval."
+        if keep_in_inbox
+        else (
+            "- **Default Gmail archiving**: remove `INBOX` after approval "
+            "(comment `--keep-in-inbox` to keep it in inbox)."
+        )
     )
     return "\n".join(lines) + "\n"
-
-
-def _security_and_orchestrator_banners(
-    needs_orchestrator_study: bool,
-    suspicious_injection: bool,
-) -> tuple[str, str]:
-    """Return optional security caution banner and 2-speed Orchestrator study block."""
-    sec = (
-        "\n> [!CAUTION]\n"
-        "> **Anti-Prompt-Injection Alert (`EmailSanitizer`)**: hidden HTML elements, invisible "
-        "Unicode, or injection patterns detected and neutralized. Review carefully.\n"
-        if suspicious_injection
-        else ""
-    )
-    orch = (
-        "\n## 2-Speed Pipeline (`Orchestrator Carbon` -> `Hydrogen`)\n"
-        "- After **`Proceed`**, invoke `study-orchestrator` (`Orchestrator Carbon`) "
-        "for deep multi-source research (Drive Tier-3 / history), then apply "
-        "approved actions with `plan-executor` (`Hydrogen`).\n"
-        if needs_orchestrator_study
-        else ""
-    )
-    return sec, orch
-
-
-def render_draft_reply_plan(
-    reply_to: str,
-    reply_subject: str,
-    draft_id: str,
-    draft_body: str,
-    cal_section: str,
-    thread_id: str = "",
-    needs_orchestrator_study: bool = False,
-    suspicious_injection: bool = False,
-) -> str:
-    """Render the Blocking Gate implementation_plan.md for DRAFT_REPLY.
-
-    Args:
-        reply_to: Pinned recipient header for the draft reply.
-        reply_subject: Subject line for the draft reply.
-        draft_id: Created Gmail draft identifier.
-        draft_body: Proposed plain-text body.
-        cal_section: Optional rendered alfred-calendar [HOLD]/confirmation section.
-        thread_id: Optional Gmail threadId archived by default on send-draft.
-        needs_orchestrator_study: Whether post-Proceed triggers Orchestrator Carbon study.
-        suspicious_injection: Whether EmailSanitizer flagged prompt-injection cues.
-    """
-    sec_banner, orch_block = _security_and_orchestrator_banners(
-        needs_orchestrator_study, suspicious_injection
-    )
-    th_line = f"- **Gmail Thread**: `{thread_id}`\n" if thread_id else ""
-    th_flag = f" --thread-id {shlex.quote(thread_id)}" if thread_id else ""
-    send_cmd = f"alfred send-draft --draft-id {shlex.quote(draft_id)}{th_flag}"
-    return (
-        f"# Gmail Draft Reply (`DRAFT_REPLY`)\n"
-        f"{sec_banner}\n"
-        f"- **To (pinned)**: `{reply_to}`\n"
-        f"- **Subject**: {reply_subject}\n"
-        f"- **Gmail Draft ID**: `{draft_id}`\n"
-        f"{th_line}\n"
-        f"## Proposed Draft (Editable via Inline Comments)\n\n"
-        f"```text\n{draft_body}\n```\n"
-        f"{cal_section}"
-        f"{orch_block}\n"
-        f"## Post-Approval Execution (`Proceed`)\n"
-        f"- Send the draft and **archive the email in Gmail by default**: `{send_cmd}` "
-        f"(add a `--keep-in-inbox` comment to keep it in inbox).\n"
-    )
-
-
-def render_action_required_plan(
-    msg: EmailMessage,
-    reason: str,
-    brief_items: list[str],
-    target_doc_id: str,
-    needs_orchestrator_study: bool = False,
-    suspicious_injection: bool = False,
-    cal_section: str = "",
-) -> str:
-    """Render the Blocking Gate implementation_plan.md for USER_ACTION_REQUIRED.
-
-    Args:
-        msg: Incoming starred EmailMessage.
-        reason: Classification rationale.
-        brief_items: Gathered Tier-2 and Google Drive context bullets.
-        target_doc_id: Suggested Tier-2 reference document ID for post-action update.
-        needs_orchestrator_study: Whether post-Proceed triggers Orchestrator Carbon study.
-        suspicious_injection: Whether EmailSanitizer flagged prompt-injection cues.
-        cal_section: Optional rendered alfred-calendar [HOLD]/confirmation section.
-    """
-    sec_banner, orch_block = _security_and_orchestrator_banners(
-        needs_orchestrator_study, suspicious_injection
-    )
-    bullets = "\n".join(f"- {item}" for item in brief_items)
-    arch_target = (
-        f"--thread-id {shlex.quote(msg.thread_id)}" if msg.thread_id
-        else f"--message-id {shlex.quote(msg.message_id)}"
-    )
-    fn_hint = (
-        f" --filename {shlex.quote(msg.attachment_filenames[0])}"
-        if len(msg.attachment_filenames) > 1 else ""
-    )
-    att_line = (
-        f"- **Save attachment(s) to Drive**: "
-        f"`alfred save-attachment-to-drive --message-id {shlex.quote(msg.message_id)}"
-        f"{fn_hint} --parent-id <FOLDER_ID>`\n"
-        if msg.attachment_filenames else ""
-    )
-    return (
-        f"# User Action Required (`USER_ACTION_REQUIRED`)\n"
-        f"{sec_banner}\n"
-        f"- **Starred email (`STARRED`)**: `{msg.message_id}` (Thread `{msg.thread_id}`)\n"
-        f"- **Sender**: `{msg.sender}`\n"
-        f"- **Recipients**: `{msg.recipient}`\n"
-        f"- **Subject**: {msg.subject}\n"
-        f"- **Reason**: {reason}\n\n"
-        f"## Full Research Brief & Gathered Context\n"
-        f"{bullets}\n"
-        f"{cal_section}"
-        f"{orch_block}\n"
-        f"## Post-Approval Execution (`Proceed`)\n"
-        f"- Target reference note: `{target_doc_id}`\n"
-        f"{att_line}"
-        f"- **Default Gmail archiving upon completion**: "
-        f"`alfred archive-email {arch_target} --unstar` "
-        f"(specify `--keep-in-inbox` in a comment if needed).\n"
-    )
-
-
-def render_silent_trace_markdown(msg: EmailMessage, reason: str) -> str:
-    """Format a concise audit summary for an auto-archived SILENT_NO_ACTION conversation.
-
-    Args:
-        msg: Processed EmailMessage.
-        reason: Classification rationale.
-    """
-    return (
-        f"### Auto-Archived Trace `SILENT_NO_ACTION`\n"
-        f"- **Message ID**: `{msg.message_id}` (Thread `{msg.thread_id}`)\n"
-        f"- **From**: `{msg.sender}`\n"
-        f"- **Subject**: {msg.subject}\n"
-        f"- **Reason**: {reason}\n"
-        f"- **Gmail Action**: Zero modifications (`0` drafts, `0` stars).\n"
-    )
 
 
 def _without_session(state: ActiveConversationsState, removed_id: str) -> ActiveConversationsState:
@@ -490,3 +371,117 @@ def backfill_silent_inbox_records(
             )
             migrated.append(created.session_id)
     return migrated
+
+
+def materialize_silent_triage_decision(
+    settings: AlfredSettings, agy_manager: AgySessionManager, msg: EmailMessage,
+    reason: str, cal_action: CalendarTriageAction | None,
+    upcoming_events: list[CalendarEventItem] | None, classifier_conv_id: str | None,
+    spawn_live: bool, directives: CognitiveTriageDirectives,
+) -> InboxTriageDecision:
+    """Persist an auto-archived silent trace and optional calendar confirm Gate.
+
+    Args:
+        settings: Runtime AlfredSettings controlling silent sessions and calendar.
+        agy_manager: Antigravity Web session manager.
+        msg: Incoming EmailMessage.
+        reason: Classification rationale.
+        cal_action: Optional CalendarTriageAction.
+        upcoming_events: Optional upcoming CalendarEventItem list.
+        classifier_conv_id: Optional classifier conversation UUID to reuse or purge.
+        spawn_live: Whether live Agy session creation is permitted.
+        directives: Validated CognitiveTriageDirectives from cognitive triage.
+    """
+    allow_live_silent = spawn_live and settings.inbox_filters.silent_creates_agy_session
+    if not spawn_live and classifier_conv_id:
+        agy_manager.purge_classifier_session(classifier_conv_id)
+        classifier_conv_id = None
+    session = agy_manager.create_and_archive_trace(
+        workspace="alfred-inbox", title=f"[SILENT] {msg.subject}",
+        trace_markdown=render_silent_trace_markdown(msg, reason),
+        source_message_id=msg.message_id, outcome=f"SILENT_NO_ACTION: {reason}",
+        existing_conv_id=classifier_conv_id, spawn_live=allow_live_silent,
+    )
+    cal_session_id: str | None = None
+    eff_action = cal_action or CalendarTriageAction()
+    if (
+        eff_action.intent == CalendarActionIntent.CONFIRM_EVENT
+        and eff_action.slots and settings.features.calendar_management
+    ):
+        gate_md = render_calendar_confirm_gate_plan(
+            msg, reason, eff_action, upcoming_events or [],
+            keep_in_inbox=directives.keep_in_inbox,
+        )
+        cal_session = agy_manager.create_session(
+            workspace="alfred-calendar", source_message_id=msg.message_id,
+            implementation_plan_md=gate_md, spawn_live=spawn_live,
+            title=f"[Calendar] {eff_action.slots[0].summary}",
+        )
+        cal_session_id = cal_session.session_id
+    return InboxTriageDecision(
+        message_id=msg.message_id, output_type=InboxOutputType.SILENT_NO_ACTION,
+        reason=reason, starred=False, session_id=session.session_id, session_archived=True,
+        calendar_session_id=cal_session_id, calendar_action_intent=eff_action.intent.value,
+        keep_in_inbox=directives.keep_in_inbox,
+        attachments_to_save=list(directives.attachments_to_save),
+    )
+
+
+def materialize_draft_reply_decision(
+    settings: AlfredSettings, gmail_service: GmailService, agy_manager: AgySessionManager,
+    msg: EmailMessage, reason: str, reply_to: str, draft_body: str,
+    cal_action: CalendarTriageAction | None, allowlist: frozenset[str],
+    spawn_live: bool, needs_orch: bool, suspicious_injection: bool,
+    directives: CognitiveTriageDirectives,
+) -> InboxTriageDecision:
+    """Create a Gmail draft reply and open its Blocking Gate session in alfred-inbox.
+
+    Args:
+        settings: Runtime AlfredSettings controlling Gmail drafts and calendar sections.
+        gmail_service: Gmail API connector.
+        agy_manager: Antigravity Web session manager.
+        msg: Incoming EmailMessage.
+        reason: Classification rationale.
+        reply_to: Firewall-pinned reply recipient header.
+        draft_body: Proposed plain-text draft body.
+        cal_action: Optional CalendarTriageAction.
+        allowlist: Effective [HOLD] allowlist emails.
+        spawn_live: Whether live Agy Gate spawning is enabled.
+        needs_orch: Whether Orchestrator Carbon study is requested.
+        suspicious_injection: Whether prompt-injection cues were detected.
+        directives: Validated CognitiveTriageDirectives from cognitive triage.
+    """
+    reply_subj = msg.subject if msg.subject.lower().startswith("re:") else f"Re: {msg.subject}"
+    parent_id, refs = msg.headers.get("message-id", ""), msg.headers.get("references", "")
+    chain = f"{refs} {parent_id}".strip() if parent_id else refs
+    draft_id = (
+        gmail_service.create_draft(
+            msg.thread_id, reply_to, reply_subj, draft_body, parent_id, chain
+        )
+        if settings.features.gmail_drafts_and_send
+        else "SKIPPED_DISABLED"
+    )
+    eff_action = cal_action or CalendarTriageAction()
+    cal_sec = (
+        render_draft_calendar_section(
+            eff_action, msg.thread_id, msg.message_id, allowlist,
+            keep_in_inbox=directives.keep_in_inbox,
+        )
+        if settings.features.calendar_management else ""
+    )
+    plan_md = render_draft_reply_plan(
+        reply_to, reply_subj, draft_id, draft_body, cal_sec,
+        msg.thread_id, needs_orch, suspicious_injection, keep_in_inbox=directives.keep_in_inbox,
+    )
+    session = agy_manager.create_session(
+        "alfred-inbox", msg.message_id, plan_md, spawn_live, title=f"[Draft] {msg.subject}"
+    )
+    return InboxTriageDecision(
+        message_id=msg.message_id, output_type=InboxOutputType.DRAFT_REPLY,
+        reason=reason, draft_id=draft_id, draft_body=draft_body, starred=False,
+        session_id=session.session_id, session_archived=False,
+        implementation_plan_markdown=plan_md, calendar_action_intent=eff_action.intent.value,
+        needs_orchestrator_study=needs_orch, suspicious_injection=suspicious_injection,
+        keep_in_inbox=directives.keep_in_inbox,
+        attachments_to_save=list(directives.attachments_to_save),
+    )

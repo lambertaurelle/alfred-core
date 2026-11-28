@@ -192,7 +192,7 @@ class DelegationService:
         if target_role == DelegationTarget.INBOX.value:
             return feats.inbox_auto_triage
         if target_role == DelegationTarget.DRIVE.value:
-            return feats.drive_knowledge_sync
+            return feats.drive_knowledge_sync or feats.drive_watcher
         return True
 
     def _enforce_inbox_to_evolve_firewall(self, source_email: EmailMessage | None) -> None:

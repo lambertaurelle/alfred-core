@@ -11,6 +11,7 @@ from email.message import EmailMessage as MimeEmailMessage
 from typing import Any
 
 from alfred.domain.models import AlfredPaths, AlfredSettings, EmailMessage
+from alfred.services.attachment_extractor import collect_message_mime_summary
 from alfred.services.google_auth import GoogleOAuthService
 
 STRICT_IGNORED_GMAIL_LABELS = frozenset({"DRAFT", "SPAM", "TRASH"})
@@ -444,20 +445,8 @@ class GmailService:
         )
 
     def _collect_mime_metadata(self, payload: dict[str, Any]) -> tuple[list[str], list[str]]:
-        """Collect all lowercase MIME types and attachment filenames across a Gmail MIME tree."""
-        mimes: list[str] = []
-        filenames: list[str] = []
-        stack = [payload]
-        while stack:
-            part = stack.pop()
-            mt = str(part.get("mimeType", "")).strip().lower()
-            if mt and mt not in mimes:
-                mimes.append(mt)
-            fname = str(part.get("filename", "")).strip()
-            if fname and fname not in filenames:
-                filenames.append(fname)
-            stack.extend(reversed(part.get("parts", [])))
-        return mimes, filenames
+        """Collect lowercase MIME types and non-inline attachment filenames via extractor."""
+        return collect_message_mime_summary(payload)
 
     def _find_mime_part_data(self, payload: dict[str, Any], target_mime: str) -> str:
         """Recursively find base64url body data for target_mime in a Gmail MIME tree."""

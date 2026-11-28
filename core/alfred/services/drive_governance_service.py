@@ -306,39 +306,33 @@ class DriveGovernanceService:
     def _upsert_index_entry(
         self, fid: str, name: str, mime: str, parents: list[str], modified_time: str
     ) -> str:
-        """Insert or update a single DriveEntry in drive_metadata_index.json and resolve paths."""
-        index = self._state_store.drive_index.load()
-        entries = dict(index.entries)
-        entries[fid] = DriveEntry(
-            file_id=fid,
-            name=name,
-            mime_type=mime,
-            parents=parents,
-            modified_time=modified_time,
-            is_folder=(mime == FOLDER_MIME),
-            trashed=False,
-        )
-        self._populate_paths(entries)
-        folders = [e for e in entries.values() if e.is_folder]
-        files = [e for e in entries.values() if not e.is_folder]
-        top_folders = sorted(
-            {
-                e.path.strip("/").split("/")[0]
-                for e in folders
-                if e.path and len(e.path.strip("/").split("/")) == 1
-            }
-        )
-        self._state_store.drive_index.save(
-            DriveMetadataIndex(
-                start_page_token=index.start_page_token,
-                last_synced_at=utc_now_iso(),
-                folder_count=len(folders),
-                file_count=len(files),
-                top_level_folders=top_folders,
-                entries=entries,
+        """Insert or update a DriveEntry atomically in drive_metadata_index.json."""
+        resolved_path = ""
+
+        def _apply(cur: DriveMetadataIndex) -> DriveMetadataIndex:
+            """Apply atomic DriveEntry update preserving concurrent entries and token."""
+            nonlocal resolved_path
+            entries = dict(cur.entries)
+            entries[fid] = DriveEntry(
+                file_id=fid, name=name, mime_type=mime, parents=parents,
+                modified_time=modified_time, is_folder=(mime == FOLDER_MIME), trashed=False,
             )
-        )
-        return entries[fid].path
+            self._populate_paths(entries)
+            resolved_path = entries[fid].path
+            folders = [e for e in entries.values() if e.is_folder]
+            files = [e for e in entries.values() if not e.is_folder]
+            top_folders = sorted({
+                e.path.strip("/").split("/")[0] for e in folders
+                if e.path and len(e.path.strip("/").split("/")) == 1
+            })
+            return DriveMetadataIndex(
+                start_page_token=cur.start_page_token, last_synced_at=utc_now_iso(),
+                folder_count=len(folders), file_count=len(files),
+                top_level_folders=top_folders, entries=entries,
+            )
+
+        self._state_store.drive_index.update(_apply)
+        return resolved_path
 
     def _populate_paths(self, entries: dict[str, DriveEntry]) -> None:
         """Recompute hierarchical '/Folder/Subfolder/Item' paths across entries."""

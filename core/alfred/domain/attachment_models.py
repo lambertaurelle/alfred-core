@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class GmailAttachmentMeta(BaseModel):
@@ -45,3 +45,25 @@ class DriveAttachmentTransferResult(BaseModel):
     path: str = ""
     deduplicated: bool = False
     updated: bool = False
+
+
+class AttachmentFilingTarget(BaseModel):
+    """Directive targeting a single Gmail attachment for Drive archival."""
+
+    model_config = ConfigDict(frozen=True)
+
+    filename: str
+    parent_id: str = ""
+    target_name: str = ""
+
+
+class CognitiveTriageDirectives(BaseModel):
+    """Validated triage directives extracted from Agy cognitive classification."""
+
+    model_config = ConfigDict(frozen=True)
+
+    keep_in_inbox: bool = False
+    needs_orchestrator_study: bool = False
+    research_brief: list[str] = Field(default_factory=list)
+    attachments_specified: bool = False
+    attachments_to_save: list[AttachmentFilingTarget] = Field(default_factory=list)

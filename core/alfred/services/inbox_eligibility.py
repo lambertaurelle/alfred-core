@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from email.utils import parseaddr
+from email.utils import getaddresses, parseaddr
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
@@ -23,6 +24,107 @@ SKIPPED_GMAIL_CATEGORIES: frozenset[str] = frozenset(
     {"CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_FORUMS"}
 )
 BULK_PRECEDENCE_VALUES: frozenset[str] = frozenset({"bulk", "list", "junk", "auto_reply"})
+DOCUMENT_ATTACHMENT_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".pdf", ".docx", ".xlsx", ".doc", ".xls", ".csv", ".tsv",
+        ".odt", ".ods", ".rtf", ".txt", ".xml", ".json", ".html", ".htm", ".md",
+    }
+)
+
+
+def _extract_valid_emails(header: str) -> list[str]:
+    """Extract normalized email addresses from an RFC 2822 header via getaddresses."""
+    valid: list[str] = []
+    for _, addr in getaddresses([header]):
+        cleaned = addr.strip().lower()
+        if not cleaned or any(ch.isspace() or ch == "," for ch in cleaned):
+            continue
+        local, sep, domain = cleaned.partition("@")
+        if sep == "@" and local and domain and not domain.startswith(".") and not domain.endswith(
+            "."
+        ):
+            valid.append(cleaned)
+    return valid
+
+
+def _matches_denylist_addrs(addrs: list[str], config: InboxFilterConfig) -> bool:
+    """Return True if any address in addrs matches configured denylist senders or domains."""
+    if not addrs:
+        return False
+    deny_senders = {
+        (parseaddr(s)[1] or s).strip().lower() for s in config.denylist_senders if s.strip()
+    }
+    deny_domains = {
+        d.strip().lower().lstrip("@.") for d in config.denylist_domains if d.strip().lstrip("@.")
+    }
+    for addr in addrs:
+        if addr in deny_senders:
+            return True
+        domain = addr.partition("@")[2]
+        if any(domain == d or domain.endswith(f".{d}") for d in deny_domains):
+            return True
+    return False
+
+
+def has_eligible_document_attachment(msg: EmailMessage) -> bool:
+    """Return True when msg lists at least one attachment with a document extension.
+
+    Args:
+        msg: Normalized incoming EmailMessage.
+
+    Returns:
+        True when any filename suffix matches DOCUMENT_ATTACHMENT_EXTENSIONS.
+    """
+    return any(
+        Path(fn.strip()).suffix.lower() in DOCUMENT_ATTACHMENT_EXTENSIONS
+        for fn in msg.attachment_filenames
+        if fn.strip()
+    )
+
+
+def is_allowlisted_automated_sender(sender: str, config: InboxFilterConfig) -> bool:
+    """Return True when all extracted sender addresses are allowlisted and not denylisted.
+
+    Args:
+        sender: Raw RFC 2822 sender header or bare email address.
+        config: InboxFilterConfig containing automated allowlist and denylist rules.
+
+    Returns:
+        True when extracted addresses are non-empty and all match allowlist without denylist hits.
+    """
+    addrs = _extract_valid_emails(sender)
+    if not addrs or _matches_denylist_addrs(addrs, config):
+        return False
+    allow_senders = {
+        (parseaddr(s)[1] or s).strip().lower()
+        for s in config.allowlist_automated_senders
+        if s.strip()
+    }
+    allow_domains = [
+        d.strip().lower().lstrip("@.") for d in config.allowlist_automated_domains if d.strip()
+    ]
+    for addr in addrs:
+        if addr in allow_senders:
+            continue
+        domain = addr.partition("@")[2]
+        if not any(domain == d or domain.endswith(f".{d}") for d in allow_domains if d):
+            return False
+    return True
+
+
+def has_allowlisted_automated_attachment(msg: EmailMessage, config: InboxFilterConfig) -> bool:
+    """Return True when msg is from an allowlisted automated sender with a document attachment.
+
+    Args:
+        msg: Normalized incoming EmailMessage.
+        config: InboxFilterConfig containing automated allowlist and denylist rules.
+
+    Returns:
+        True when sender is allowlisted and at least one document attachment is present.
+    """
+    return is_allowlisted_automated_sender(msg.sender, config) and has_eligible_document_attachment(
+        msg
+    )
 
 
 class EligibilityDecision(BaseModel):
@@ -66,26 +168,25 @@ class InboxEligibilityPolicy:
         if self._config.bypass_calendar_invites and self._is_calendar_invite_or_rsvp(msg):
             return EligibilityDecision(eligible=False, reason="BYPASS_CALENDAR_INVITE")
 
-        _, bare_sender = parseaddr(msg.sender)
-        sender_norm = bare_sender.strip().lower()
-        is_owner = sender_norm in {a.lower() for a in owner_addresses}
+        sender_addrs = _extract_valid_emails(msg.sender)
+        owner_set = {a.lower() for a in owner_addresses}
+        is_owner = bool(sender_addrs) and all(addr in owner_set for addr in sender_addrs)
 
-        if self._is_denylisted(sender_norm):
+        if self._is_denylisted(msg.sender):
             return EligibilityDecision(eligible=False, reason="SKIP_DENYLIST")
 
+        exempt_signal = has_dated_booking_signal(msg) or has_allowlisted_automated_attachment(
+            msg, self._config
+        )
         if (
             self._config.skip_promotions_social_forums
             and not is_owner
             and not SKIPPED_GMAIL_CATEGORIES.isdisjoint(labels)
-            and not has_dated_booking_signal(msg)
+            and not exempt_signal
         ):
             return EligibilityDecision(eligible=False, reason="SKIP_GMAIL_CATEGORY")
 
-        if (
-            not is_owner
-            and self._is_automated_bulk_message(msg)
-            and not has_dated_booking_signal(msg)
-        ):
+        if not is_owner and self._is_automated_bulk_message(msg) and not exempt_signal:
             return EligibilityDecision(eligible=False, reason="SKIP_BULK_AUTOMATED")
 
         return EligibilityDecision(eligible=True, reason="ELIGIBLE")
@@ -125,14 +226,8 @@ class InboxEligibilityPolicy:
         return bool(CALENDAR_SUBJECT_RE.match(msg.subject))
 
     def _is_denylisted(self, sender_norm: str) -> bool:
-        """Return True if sender email or domain matches configured inbox denylists."""
-        if not sender_norm:
-            return False
-        if sender_norm in {s.strip().lower() for s in self._config.denylist_senders}:
-            return True
-        domain = sender_norm.partition("@")[2]
-        domains_deny = {d.strip().lower().lstrip("@") for d in self._config.denylist_domains}
-        return bool(domain and domain in domains_deny)
+        """Return True if any address in sender_norm matches configured inbox denylists."""
+        return _matches_denylist_addrs(_extract_valid_emails(sender_norm), self._config)
 
     def _is_automated_bulk_message(self, msg: EmailMessage) -> bool:
         """Detect mailing-list and automated bulk headers (RFC 3834 / List-Unsubscribe)."""
