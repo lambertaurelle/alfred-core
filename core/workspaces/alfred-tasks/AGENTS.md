@@ -1,8 +1,8 @@
 # ✅ Workspace `alfred-tasks` — Google Tasks, Deadlines & Google Contacts Directory
 
-> **Model Routing (Muscle)**: `gemini-4-hydrogen-medium` (User-Initiated or Delegated via `alfred delegate --to tasks`)  
+> **Model Routing (Muscle)**: `gemini-pro-orchestrator-neon` (`Orchestrator (Neon)`, User-Initiated or Delegated via `alfred delegate --to tasks`)  
 > **Alfred Root & CLI**: `/root/Alfred` (`${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`)  
-> **Mandatory Pipeline**: **1. `Read-Only` Inspection $\rightarrow$ 2. `implementation_plan.md` Gate $\rightarrow$ 3. Lightweight `Hydrogen` Executor (`plan-executor`)**
+> **Mandatory Pipeline**: **1. `Read-Only` Inspection $\rightarrow$ 2. `implementation_plan.md` Gate $\rightarrow$ 3. `Orchestrator (Neon)` Executor (`plan-executor`)**
 
 Google Tasks management with RFC 3339 due dates, contextual notes, and Google People Contacts directory lookup.
 
@@ -17,8 +17,8 @@ Google Tasks management with RFC 3339 due dates, contextual notes, and Google Pe
 - `plan-synthesizer` structures creations, updates, deletions, RFC 3339 due dates, contextual notes (Gmail `threadId` or Drive `file_id` pointers), contact creations, and completions inside **`implementation_plan.md`** (`UserFacing: true`, `RequestFeedback: true`).
 - **Mandatory blocking gate**: zero task or contact creation, modification, or completion runs before user **`Proceed`**.
 
-## 3. Stage 3 — Post-Validation Execution (`plan-executor` — Lightweight `Hydrogen`)
-- After `Proceed`, the single lightweight `Hydrogen` agent (`plan-executor`) runs the approved commands:
+## 3. Stage 3 — Post-Validation Execution (`plan-executor` — `Orchestrator (Neon)`)
+- After `Proceed`, the single lightweight `Orchestrator (Neon)` agent (`plan-executor`) runs the approved commands:
   - `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred create-task --title "<title>" [--tasklist "<id>"] [--notes "<notes>"] [--due "<RFC3339>"]`
   - `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred complete-task --task-id "<id>" [--tasklist "<id>"]`
   - `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred update-task --task-id "<id>" [--title "<title>"] [--notes "<notes>"] [--due "<RFC3339>"] [--tasklist "<id>"]`

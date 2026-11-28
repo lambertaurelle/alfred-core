@@ -57,12 +57,12 @@ git clone https://github.com/<owner>/alfred-core.git ~/Alfred && cd ~/Alfred && 
 
 | Workspace | Role | Model | Execution After `Proceed` |
 | :--- | :--- | :--- | :--- |
-| `alfred-onboard` | Diagnostics, feature flags, OAuth2 & Drive taxonomy | `gemini-pro-orchestrator` | `plan-executor` (`Hydrogen`) |
-| `alfred-life` | Chief of Staff hub, multi-source studies & MCP bridge | `gemini-pro-orchestrator` | `plan-executor` (`Hydrogen`) |
-| `alfred-inbox` | Bilingual email triage, Drive attachments & `sendAs` drafts | `gemini-4-hydrogen-medium` | `plan-executor` (`Hydrogen`) |
-| `alfred-calendar` | Multi-calendar `[HOLD]`s, bookings & FreeBusy lookup | `gemini-4-hydrogen-medium` | `plan-executor` (`Hydrogen`) |
-| `alfred-tasks` | Google Tasks (RFC 3339) & Google Contacts | `gemini-4-hydrogen-medium` | `plan-executor` (`Hydrogen`) |
-| `alfred-drive` | Non-destructive Drive governance & delta watcher (`watch-drive`) | `gemini-4-hydrogen-medium` | `plan-executor` / `drive-custodian` (`Hydrogen`) |
+| `alfred-onboard` | Diagnostics, feature flags, OAuth2 & Drive taxonomy | `gemini-pro-orchestrator` | `plan-executor` (`Orchestrator (Neon)`) |
+| `alfred-life` | Chief of Staff hub, multi-source studies & MCP bridge | `gemini-pro-orchestrator` | `plan-executor` (`Orchestrator (Neon)`) |
+| `alfred-inbox` | Bilingual email triage, Drive attachments & `sendAs` drafts | `gemini-pro-orchestrator-neon` | `plan-executor` (`Orchestrator (Neon)`) |
+| `alfred-calendar` | Multi-calendar `[HOLD]`s, bookings & FreeBusy lookup | `gemini-pro-orchestrator-neon` | `plan-executor` (`Orchestrator (Neon)`) |
+| `alfred-tasks` | Google Tasks (RFC 3339) & Google Contacts | `gemini-pro-orchestrator-neon` | `plan-executor` (`Orchestrator (Neon)`) |
+| `alfred-drive` | Non-destructive Drive governance & delta watcher (`watch-drive`) | `gemini-pro-orchestrator-neon` | `plan-executor` / `drive-custodian` (`Orchestrator (Neon)`) |
 | `alfred-evolve` | `instance/`, `local-fork`, or `upstream-pr` PRs | `gemini-pro-orchestrator` | `tdd-red` -> `tdd-green` -> `doc-maintainer` -> `tdd-verifier` |
 
 ```bash

@@ -212,8 +212,11 @@ def is_passive_or_automated_email(
         from alfred.services.inbox_eligibility import (
             has_eligible_document_attachment,
             is_allowlisted_automated_sender,
+            is_allowlisted_priority_sender,
         )
 
+        if is_allowlisted_priority_sender(msg.sender, inbox_filters):
+            return False
         if is_allowlisted_automated_sender(msg.sender, inbox_filters):
             has_doc = (
                 has_doc_attachment_override

@@ -85,7 +85,7 @@ class DelegationService:
         target_role = self._normalize_target_role(target)
         target_project = self._settings.resolve_workspace_project(target_role)
         resolved_mode = self._resolve_mode(target_role, mode)
-        model_used, _ = self._settings.models.resolve_for_workspace(target_project)
+        model_used, _ = self._settings.models.resolve_for_workspace(target_role)
         clean_title = sanitize_annotation_title(title or f"[{target_project}] Delegation")
 
         if not self._is_target_enabled(target_role):
@@ -118,7 +118,7 @@ class DelegationService:
         )
 
     def resolve_spawn_timeout(self, target_project: str) -> int:
-        """Return CLI spawn timeout (600s for orchestrators, 180s for light workspaces).
+        """Return CLI spawn timeout (600s for brain roles, 180s for muscle workspaces).
 
         Args:
             target_project: Target specialist project slug or role.
@@ -126,8 +126,11 @@ class DelegationService:
         Returns:
             Subprocess timeout in seconds.
         """
-        model_id, _ = self._settings.models.resolve_for_workspace(target_project)
-        if "orchestrator" in model_id.lower():
+        cleaned = target_project.strip()
+        role_hint = next(
+            (r for r, p in self._settings.workspaces.items() if p == cleaned), cleaned
+        )
+        if self._settings.models.is_brain_workspace(role_hint):
             return self.BRAIN_COMMAND_TIMEOUT_SEC
         return self.DEFAULT_COMMAND_TIMEOUT_SEC
 

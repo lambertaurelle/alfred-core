@@ -391,8 +391,8 @@ def test_six_workspace_agents_md_exist_and_purge_legacy_terms() -> None:
             assert term not in lowered, f"Forbidden term in {manifest}"
 
 
-def test_evolve_and_root_agents_md_specify_tdd_triad_and_hydrogen_executor() -> None:
-    """Verify root AGENTS.md and alfred-evolve/AGENTS.md codify TDD triad & Hydrogen executor."""
+def test_evolve_and_root_agents_md_specify_tdd_triad_and_neon_executor() -> None:
+    """Verify root AGENTS.md and alfred-evolve/AGENTS.md codify TDD triad & Neon executor."""
     root_md = (REPO_ROOT / "AGENTS.md").read_text(encoding="utf-8")
     evolve_md = (REPO_ROOT / "core" / "workspaces" / "alfred-evolve" / "AGENTS.md").read_text(
         encoding="utf-8"
@@ -401,7 +401,7 @@ def test_evolve_and_root_agents_md_specify_tdd_triad_and_hydrogen_executor() -> 
         assert tdd_agent in evolve_md
         assert tdd_agent in root_md
     assert "plan-executor" in root_md
-    assert "hydrogen" in root_md.lower()
+    assert "neon" in root_md.lower()
 
 
 def test_bootstrap_script_and_concise_readme_invariants() -> None:

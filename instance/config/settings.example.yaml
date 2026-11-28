@@ -24,10 +24,10 @@ identity:
 
 models:
   orchestrator_model: "gemini-pro-orchestrator"
-  light_model: "gemini-4-hydrogen-medium"
-  light_effort: "medium"
-  trace_model: "gemini-4-hydrogen-low"
-  trace_effort: "low"
+  light_model: "gemini-pro-orchestrator-neon"
+  light_effort: ""
+  trace_model: "gemini-pro-orchestrator-neon"
+  trace_effort: ""
 
 google:
   referentiel_drive_folder_name: "_ALFRED_REFERENTIEL_"
@@ -41,6 +41,10 @@ inbox:
   silent_creates_agy_session: false
   denylist_senders: []
   denylist_domains: []
+  allowlist_senders: []
+  allowlist_domains: []
+  allowlist_automated_senders: []
+  allowlist_automated_domains: []
 
 calendar:
   include_authenticated_owners_in_hold_allowlist: false

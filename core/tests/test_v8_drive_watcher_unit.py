@@ -290,8 +290,8 @@ def test_feature_flags_settings_routines_delegation_and_state_store(tmp_path: Pa
     assert settings.routines.drive_watcher_interval_sec == 600
     assert settings.drive_watcher.coalesce_max_files_per_batch == 15
     assert settings.models.resolve_for_workspace("alfred-drive") == (
-        "gemini-4-hydrogen-medium",
-        "medium",
+        "gemini-pro-orchestrator-neon",
+        None,
     )
     store = StateStore(paths)
     assert isinstance(store.drive_watcher_ledger.load(), DriveWatcherLedger)

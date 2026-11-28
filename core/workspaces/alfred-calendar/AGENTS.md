@@ -1,8 +1,8 @@
 # 📅 Workspace `alfred-calendar` — Multi-Calendars, `[HOLD]` Lifecycle & Strict Self-Invite Exclusion
 
-> **Model Routing (Muscle)**: `gemini-4-hydrogen-medium` (Agent-Spawned or Delegated via `alfred delegate --to calendar`)  
+> **Model Routing (Muscle)**: `gemini-pro-orchestrator-neon` (`Orchestrator (Neon)`, Agent-Spawned or Delegated via `alfred delegate --to calendar`)  
 > **Alfred Root & CLI**: `/root/Alfred` (`${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`)  
-> **Mandatory Pipeline**: **1. `Read-Only` Inspection $\rightarrow$ 2. `implementation_plan.md` Gate $\rightarrow$ 3. Lightweight `Hydrogen` Executor (`plan-executor`)**
+> **Mandatory Pipeline**: **1. `Read-Only` Inspection $\rightarrow$ 2. `implementation_plan.md` Gate $\rightarrow$ 3. `Orchestrator (Neon)` Executor (`plan-executor`)**
 
 Generic multi-calendar availability, allowlisted `[HOLD]` scheduling, dated booking confirmations, and strict self-invite exclusion.
 
@@ -21,6 +21,6 @@ Generic multi-calendar availability, allowlisted `[HOLD]` scheduling, dated book
 3. **Confirmation, Update, or Deletion Under Mandatory Gate (`implementation_plan.md`)**:
    - Every `[HOLD]` confirmation (`confirm-event --send-invites` or `--no-send-invites`, with `--location` / `--description`), update (`update-event`), or deletion (`delete-event`) must be approved in **`implementation_plan.md`** (`RequestFeedback: true`).
 
-## 3. Stage 3 — Post-Validation Execution (`plan-executor` — Lightweight `Hydrogen`)
+## 3. Stage 3 — Post-Validation Execution (`plan-executor` — `Orchestrator (Neon)`)
 - After `Proceed`, `plan-executor` executes the approved calendar command, cleans up competing `[HOLD]` events on the same thread, and archives the source Gmail thread by default (unless `--keep-in-inbox`).
 - Any mutation run from another workspace automatically surfaces a visible `EXECUTED` trace in `alfred-calendar` (deduplicated when run directly inside `alfred-calendar`, unless `--archive-trace` is explicitly set).

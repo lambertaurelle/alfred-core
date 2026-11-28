@@ -35,10 +35,10 @@ def _security_and_orchestrator_banners(
         else ""
     )
     orch = (
-        "\n## 2-Speed Pipeline (`Orchestrator Carbon` -> `Hydrogen`)\n"
+        "\n## 2-Speed Pipeline (`Orchestrator Carbon` -> `Orchestrator (Neon)`)\n"
         "- After **`Proceed`**, invoke `study-orchestrator` (`Orchestrator Carbon`) "
         "for deep multi-source research (Drive Tier-3 / history), then apply "
-        "approved actions with `plan-executor` (`Hydrogen`).\n"
+        "approved actions with `plan-executor` (`Orchestrator (Neon)`).\n"
         if needs_orchestrator_study
         else ""
     )

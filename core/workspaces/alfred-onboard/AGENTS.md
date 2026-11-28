@@ -2,7 +2,7 @@
 
 > **Model Routing (Brain)**: `gemini-pro-orchestrator` (User-Initiated)  
 > **Alfred Root & CLI**: `/root/Alfred` (`${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`)  
-> **Mandatory Pipeline**: **1. `Read-Only` Diagnostic $\rightarrow$ 2. `implementation_plan.md` Gate $\rightarrow$ 3. Lightweight `Hydrogen` Executor (`plan-executor`)**
+> **Mandatory Pipeline**: **1. `Read-Only` Diagnostic $\rightarrow$ 2. `implementation_plan.md` Gate $\rightarrow$ 3. `Orchestrator (Neon)` Executor (`plan-executor`)**
 
 Interactive onboarding, modular feature flags, automated GCP OAuth2 setup, Drive taxonomy scaffolding, and workspace provisioning.
 
@@ -22,5 +22,5 @@ Interactive onboarding, modular feature flags, automated GCP OAuth2 setup, Drive
   - provisioning of the 7 Antigravity projects (`init-workspaces --prune-legacy`), `systemd --user` timers, and (when enabled) the MCP bridge (`setup-mcp`).
 - **Mandatory blocking gate**: zero final writes before user approval (`Proceed`).
 
-## 3. Stage 3 — Post-Validation Execution (`plan-executor` — Lightweight `Hydrogen`)
-- Single lightweight `plan-executor` applies the approved plan (`init-workspaces --prune-legacy`, `init-drive --execute`, `setup-mcp`, `install-routines`) without ever exposing plaintext secrets.
+## 3. Stage 3 — Post-Validation Execution (`plan-executor` — `Orchestrator (Neon)`)
+- Single lightweight `plan-executor` (`gemini-pro-orchestrator-neon`) applies the approved plan (`init-workspaces --prune-legacy`, `init-drive --execute`, `setup-mcp`, `install-routines`) without ever exposing plaintext secrets.

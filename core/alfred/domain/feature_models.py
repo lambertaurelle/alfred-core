@@ -53,6 +53,24 @@ FEATURE_GCP_APIS_MAP: dict[str, tuple[str, ...]] = {
 ORCHESTRATOR_WORKSPACE_ROLES: frozenset[str] = frozenset({"onboard", "life", "evolve"})
 
 
+def _normalize_sender_list(raw_val: object) -> list[str]:
+    """Normalize a YAML list of RFC 2822 senders into lowercase bare email addresses."""
+    if not isinstance(raw_val, list):
+        return []
+    return [
+        addr
+        for x in raw_val
+        if str(x).strip() and (addr := (parseaddr(str(x))[1] or str(x)).strip().lower())
+    ]
+
+
+def _normalize_domain_list(raw_val: object) -> list[str]:
+    """Normalize a YAML list of domains by stripping whitespace and leading '@' or '.'."""
+    if not isinstance(raw_val, list):
+        return []
+    return [dom for x in raw_val if (dom := str(x).strip().lower().lstrip("@."))]
+
+
 class FeatureFlagsConfig(BaseModel):
     """Per-capability activation flags enabling graceful skip when disabled by user."""
 
@@ -220,10 +238,10 @@ class ModelRoutingConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     orchestrator_model: str = "gemini-pro-orchestrator"
-    light_model: str = "gemini-4-hydrogen-medium"
-    light_effort: str = "medium"
-    trace_model: str = "gemini-4-hydrogen-low"
-    trace_effort: str = "low"
+    light_model: str = "gemini-pro-orchestrator-neon"
+    light_effort: str = ""
+    trace_model: str = "gemini-pro-orchestrator-neon"
+    trace_effort: str = ""
 
     @classmethod
     def from_dict(cls, raw: object) -> ModelRoutingConfig:
@@ -239,29 +257,43 @@ class ModelRoutingConfig(BaseModel):
             return cls()
         return cls(
             orchestrator_model=str(raw.get("orchestrator_model", "gemini-pro-orchestrator")),
-            light_model=str(raw.get("light_model", "gemini-4-hydrogen-medium")),
-            light_effort=str(raw.get("light_effort", "medium")),
-            trace_model=str(raw.get("trace_model", "gemini-4-hydrogen-low")),
-            trace_effort=str(raw.get("trace_effort", "low")),
+            light_model=str(raw.get("light_model", "gemini-pro-orchestrator-neon")),
+            light_effort=str(raw.get("light_effort", "")),
+            trace_model=str(raw.get("trace_model", "gemini-pro-orchestrator-neon")),
+            trace_effort=str(raw.get("trace_effort", "")),
         )
 
-    def resolve_for_workspace(self, workspace_or_role: str) -> tuple[str, str | None]:
-        """Return (model_id, effort_or_none) for a specialist workspace, omitting effort on brain.
+    def is_brain_workspace(self, workspace_or_role: str) -> bool:
+        """Return True when workspace_or_role maps to a Carbon Brain workspace role.
 
         Args:
-            workspace_or_role: Role ('life', 'evolve', 'inbox'...) or slug ('alfred-life').
+            workspace_or_role: Role ('life', 'evolve', 'onboard'...) or slug ('alfred-life').
 
         Returns:
-            Tuple of (agy_model_id, optional_effort_flag).
+            True when normalized role belongs to ORCHESTRATOR_WORKSPACE_ROLES.
         """
         role = workspace_or_role.strip().lower()
         if role.startswith("alfred-"):
             role = role[7:]
-        is_brain = role in ORCHESTRATOR_WORKSPACE_ROLES
+        return role in ORCHESTRATOR_WORKSPACE_ROLES
+
+    def resolve_for_workspace(
+        self, workspace_or_role: str, force_orchestrator: bool = False
+    ) -> tuple[str, str | None]:
+        """Return (model_id, effort_or_none) for a specialist workspace or escalated call.
+
+        Args:
+            workspace_or_role: Role ('life', 'evolve', 'inbox'...) or slug ('alfred-life').
+            force_orchestrator: When True, escalate muscle workspaces to orchestrator_model.
+
+        Returns:
+            Tuple of (agy_model_id, optional_effort_flag).
+        """
+        is_brain = force_orchestrator or self.is_brain_workspace(workspace_or_role)
         model = self.orchestrator_model if is_brain else self.light_model
         if "orchestrator" in model.lower():
             return (model, None)
-        effort = self.light_effort.strip() or None
+        effort = None if is_brain else (self.light_effort.strip() or None)
         return (model, effort)
 
     def resolve_trace(self) -> tuple[str, str | None]:
@@ -285,6 +317,8 @@ class InboxFilterConfig(BaseModel):
     silent_creates_agy_session: bool = False
     denylist_senders: list[str] = Field(default_factory=list)
     denylist_domains: list[str] = Field(default_factory=list)
+    allowlist_senders: list[str] = Field(default_factory=list)
+    allowlist_domains: list[str] = Field(default_factory=list)
     allowlist_automated_senders: list[str] = Field(default_factory=list)
     allowlist_automated_domains: list[str] = Field(default_factory=list)
 
@@ -301,19 +335,6 @@ class InboxFilterConfig(BaseModel):
         if not isinstance(raw, dict):
             return cls()
         raw_s, raw_d = raw.get("denylist_senders", []), raw.get("denylist_domains", [])
-        raw_as = raw.get("allowlist_automated_senders", [])
-        raw_ad = raw.get("allowlist_automated_domains", [])
-        allow_senders = [
-            addr
-            for x in (raw_as if isinstance(raw_as, list) else [])
-            if str(x).strip()
-            and (addr := (parseaddr(str(x))[1] or str(x)).strip().lower())
-        ]
-        allow_domains = [
-            dom
-            for x in (raw_ad if isinstance(raw_ad, list) else [])
-            if (dom := str(x).strip().lower().lstrip("@."))
-        ]
         return cls(
             bypass_calendar_invites=bool(raw.get("bypass_calendar_invites", True)),
             skip_promotions_social_forums=bool(raw.get("skip_promotions_social_forums", True)),
@@ -328,8 +349,14 @@ class InboxFilterConfig(BaseModel):
                 if isinstance(raw_d, list)
                 else []
             ),
-            allowlist_automated_senders=allow_senders,
-            allowlist_automated_domains=allow_domains,
+            allowlist_senders=_normalize_sender_list(raw.get("allowlist_senders", [])),
+            allowlist_domains=_normalize_domain_list(raw.get("allowlist_domains", [])),
+            allowlist_automated_senders=_normalize_sender_list(
+                raw.get("allowlist_automated_senders", [])
+            ),
+            allowlist_automated_domains=_normalize_domain_list(
+                raw.get("allowlist_automated_domains", [])
+            ),
         )
 
 

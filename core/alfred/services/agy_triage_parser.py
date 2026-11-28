@@ -123,7 +123,7 @@ def build_cognitive_triage_prompt(
     calendar_context: str = "",
     paths: AlfredPaths | None = None,
 ) -> str:
-    """Build a nonce-spotlighted cognitive triage prompt for agy --print (Hydrogen).
+    """Build a nonce-spotlighted cognitive triage prompt for agy --print (Orchestrator (Neon)).
 
     Args:
         msg: Sanitized incoming Gmail message.

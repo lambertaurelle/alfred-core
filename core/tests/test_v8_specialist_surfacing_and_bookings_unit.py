@@ -200,8 +200,8 @@ def test_specialist_trace_service_surfaces_visible_executed_trace(
     assert len(cmds) == 1
     cmd = cmds[0]
     assert cmd[cmd.index("--project") + 1] == expected_project
-    assert cmd[cmd.index("--model") + 1] == "gemini-4-hydrogen-low"
-    assert cmd[cmd.index("--effort") + 1] == "low"
+    assert cmd[cmd.index("--model") + 1] == "gemini-pro-orchestrator-neon"
+    assert "--effort" not in cmd
 
     pbtxt_text = (agy_dir / "annotations" / f"{conv_id}.pbtxt").read_text(encoding="utf-8")
     assert "archived:false" in pbtxt_text and "archived:true" not in pbtxt_text
@@ -471,7 +471,14 @@ def test_enrich_attendees_excludes_automated_and_owner_when_send_invites_true() 
                 end_iso="2026-12-10T11:00:00+01:00",
                 attendees=["noreply@example.com", "owner@example.com", "advisor@example.test"],
                 send_invites=True,
-            )
+            ),
+            CalendarSlotProposal(
+                summary="Suivi trimestriel",
+                start_iso="2026-12-11T10:00:00+01:00",
+                end_iso="2026-12-11T11:00:00+01:00",
+                attendees=[],
+                send_invites=True,
+            ),
         ],
     )
     res = enrich_calendar_action_attendees(
@@ -481,4 +488,5 @@ def test_enrich_attendees_excludes_automated_and_owner_when_send_invites_true() 
         frozenset({"partner@example.test"}),
         ["alias@example.com"],
     )
-    assert res.slots[0].attendees == ["advisor@example.test", "partner@example.test"]
+    assert res.slots[0].attendees == ["advisor@example.test"]
+    assert res.slots[1].attendees == ["partner@example.test"]

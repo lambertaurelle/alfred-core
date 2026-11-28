@@ -393,8 +393,8 @@ def test_workspace_seven_roles_and_delegation_to_drive(tmp_path: Path) -> None:
         mode=DelegationMode.EXECUTE_APPROVED,
     )
     assert rec.target_project == "alfred-drive" and rec.status == "EXECUTED"
-    assert rec.model_used == "gemini-4-hydrogen-medium"
-    assert "--effort" in spawned_cmds[0] and "medium" in spawned_cmds[0]
+    assert rec.model_used == "gemini-pro-orchestrator-neon"
+    assert "--effort" not in spawned_cmds[0]
 
     disabled_dlg = DelegationService(
         paths,

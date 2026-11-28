@@ -10,15 +10,15 @@
 
 | Workspace | Role | Primary Model | Stage 3 Execution |
 | :--- | :--- | :--- | :--- |
-| **`alfred-onboard`** | Interactive onboarding, modular flags, GCP OAuth2 & Drive taxonomy | `gemini-pro-orchestrator` | `plan-executor` (`Hydrogen`) |
-| **`alfred-life`** | General Family Office hub, cross-domain studies & `alfred_life_brain_dump` MCP | `gemini-pro-orchestrator` | `plan-executor` (`Hydrogen`) |
-| **`alfred-inbox`** | New email triage (0-token pre-filter + SPF/DKIM firewall + 3 outputs) | `gemini-4-hydrogen-medium` | `plan-executor` (`Hydrogen`) |
-| **`alfred-calendar`** | Multi-calendars, allowlisted `[HOLD]`s & strict self-invite exclusion | `gemini-4-hydrogen-medium` | `plan-executor` (`Hydrogen`) |
-| **`alfred-tasks`** | Google Tasks, RFC 3339 due dates & Google People Contacts directory | `gemini-4-hydrogen-medium` | `plan-executor` (`Hydrogen`) |
-| **`alfred-drive`** | Non-destructive Drive governance, 2-speed delta watcher & `_ALFRED_REFERENTIEL_` | `gemini-4-hydrogen-medium` | `plan-executor` / `drive-custodian` (`Hydrogen`) |
-| **`alfred-evolve`** | Isolated `git worktree` Mono-Repo evolution & `instance/` extensions | `gemini-pro-orchestrator` | `tdd-red` $\rightarrow$ `tdd-green` $\rightarrow$ `doc-maintainer` $\rightarrow$ `tdd-verifier` |
+| **`alfred-onboard`** | Interactive onboarding, modular flags, GCP OAuth2 & Drive taxonomy | `gemini-pro-orchestrator` (`Orchestrator (Carbon)`) | `plan-executor` (`Orchestrator (Neon)`) |
+| **`alfred-life`** | General Family Office hub, cross-domain studies & `alfred_life_brain_dump` MCP | `gemini-pro-orchestrator` (`Orchestrator (Carbon)`) | `plan-executor` (`Orchestrator (Neon)`) |
+| **`alfred-inbox`** | New email triage (0-token pre-filter + SPF/DKIM firewall + 3 outputs) | `gemini-pro-orchestrator-neon` (`Orchestrator (Neon)`) | `plan-executor` (`Orchestrator (Neon)`) |
+| **`alfred-calendar`** | Multi-calendars, allowlisted `[HOLD]`s & strict self-invite exclusion | `gemini-pro-orchestrator-neon` (`Orchestrator (Neon)`) | `plan-executor` (`Orchestrator (Neon)`) |
+| **`alfred-tasks`** | Google Tasks, RFC 3339 due dates & Google People Contacts directory | `gemini-pro-orchestrator-neon` (`Orchestrator (Neon)`) | `plan-executor` (`Orchestrator (Neon)`) |
+| **`alfred-drive`** | Non-destructive Drive governance, 2-speed delta watcher & `_ALFRED_REFERENTIEL_` | `gemini-pro-orchestrator-neon` (`Orchestrator (Neon)`) | `plan-executor` / `drive-custodian` (`Orchestrator (Neon)`) |
+| **`alfred-evolve`** | Isolated `git worktree` Mono-Repo evolution & `instance/` extensions | `gemini-pro-orchestrator` (`Orchestrator (Carbon)`) | `tdd-red` $\rightarrow$ `tdd-green` $\rightarrow$ `doc-maintainer` $\rightarrow$ `tdd-verifier` |
 
-*`agy` CLI note: never pass `--effort` when the selected model contains `orchestrator`. Auto-archived `[SILENT]` audit traces use `gemini-4-hydrogen-low`.*
+*`agy` CLI note: never pass `--effort` when the selected model contains `orchestrator`. Auto-archived `[SILENT]` audit traces use `gemini-pro-orchestrator-neon`.*
 
 ---
 
@@ -31,7 +31,7 @@
    - `plan-synthesizer` generates **`implementation_plan.md`** (`UserFacing: true`, `RequestFeedback: true`).
    - **BLOCKING STOP**: zero Gmail, Calendar, Tasks, Drive, or code mutations run before the user clicks **`Proceed`**.
 3. **Stage 3 — Asymmetric Post-Validation Execution**:
-   - **Operational workspaces (`onboard`, `life`, `inbox`, `calendar`, `tasks`, `drive`)**: fast execution by a single lightweight **`Hydrogen`** subagent (**`plan-executor`** or **`drive-custodian`**) calling exclusively `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`. By default, every interactively processed email thread is archived in Gmail (`INBOX` removed unless `--keep-in-inbox`).
+   - **Operational workspaces (`onboard`, `life`, `inbox`, `calendar`, `tasks`, `drive`)**: fast execution by a single lightweight **`Orchestrator (Neon)`** subagent (**`plan-executor`** or **`drive-custodian`**) calling exclusively `${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`. By default, every interactively processed email thread is archived in Gmail (`INBOX` removed unless `--keep-in-inbox`).
    - **Engineering workspace (`alfred-evolve`)**: routed per qualification (`--mode instance` for `instance/` without PR, `--mode local-fork` on a local branch without PR, or `--mode upstream-pr` to `alfred-core` with `docs/SPEC.md` synced via `alfred sync-spec`, `--hybrid --core-complete`, `--breaking`). All `core/` engineering runs inside an isolated `git worktree` (`worktrees/<proposal_id>`) through separated-context subagents enforcing the **3 mandatory quality pillars** (3 test tiers: **unit**, **functional**, and **e2e**; explicit **regression** analysis and tests; **adversarial testing** coordinated via **`swarm`**):
      1. **`tdd-red`**: writes only failing tests under `core/tests/` covering unit, functional, e2e, non-regression, and `swarm` adversarial checks (zero write access to `core/alfred/`).
      2. **`tdd-green`**: implements only production code (strictly forbidden from editing, weakening, or skipping `core/tests/`).
