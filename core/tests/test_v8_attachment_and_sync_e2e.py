@@ -448,7 +448,7 @@ def test_e2e_evolve_governance_pillars_and_manifests_contract(tmp_path: Path) ->
     )
     for required in ("tdd-red", "tdd-green", "tdd-verifier", "implementation_plan.md"):
         assert required in root_md and required in evolve_md
-    assert "plan-executor" in root_md and "hydrogen" in root_md.lower()
+    assert "plan-executor" in root_md and "neon" in root_md.lower()
     for banned in ("nou" + "nou", "pajem" + "ploi"):
         assert banned not in root_md.lower() and banned not in evolve_md.lower()
 

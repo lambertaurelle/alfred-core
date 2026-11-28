@@ -82,6 +82,44 @@ def has_eligible_document_attachment(msg: EmailMessage) -> bool:
     )
 
 
+def _matches_allowlist_addrs(
+    sender: str,
+    raw_senders: list[str],
+    raw_domains: list[str],
+    config: InboxFilterConfig,
+) -> bool:
+    """Return True when all extracted sender addresses match allowlists without denylist hits."""
+    addrs = _extract_valid_emails(sender)
+    if not addrs or _matches_denylist_addrs(addrs, config):
+        return False
+    allow_senders = {
+        (parseaddr(s)[1] or s).strip().lower() for s in raw_senders if s.strip()
+    }
+    allow_domains = [dom for d in raw_domains if (dom := d.strip().lower().lstrip("@."))]
+    for addr in addrs:
+        if addr in allow_senders:
+            continue
+        domain = addr.partition("@")[2]
+        if not any(domain == d or domain.endswith(f".{d}") for d in allow_domains):
+            return False
+    return True
+
+
+def is_allowlisted_priority_sender(sender: str, config: InboxFilterConfig) -> bool:
+    """Return True when all extracted sender addresses match priority allowlists and no denylist.
+
+    Args:
+        sender: Raw RFC 2822 sender header or bare email address.
+        config: InboxFilterConfig containing priority allowlist and denylist rules.
+
+    Returns:
+        True when extracted addresses are non-empty and all match priority allowlist rules.
+    """
+    return _matches_allowlist_addrs(
+        sender, config.allowlist_senders, config.allowlist_domains, config
+    )
+
+
 def is_allowlisted_automated_sender(sender: str, config: InboxFilterConfig) -> bool:
     """Return True when all extracted sender addresses are allowlisted and not denylisted.
 
@@ -92,24 +130,9 @@ def is_allowlisted_automated_sender(sender: str, config: InboxFilterConfig) -> b
     Returns:
         True when extracted addresses are non-empty and all match allowlist without denylist hits.
     """
-    addrs = _extract_valid_emails(sender)
-    if not addrs or _matches_denylist_addrs(addrs, config):
-        return False
-    allow_senders = {
-        (parseaddr(s)[1] or s).strip().lower()
-        for s in config.allowlist_automated_senders
-        if s.strip()
-    }
-    allow_domains = [
-        d.strip().lower().lstrip("@.") for d in config.allowlist_automated_domains if d.strip()
-    ]
-    for addr in addrs:
-        if addr in allow_senders:
-            continue
-        domain = addr.partition("@")[2]
-        if not any(domain == d or domain.endswith(f".{d}") for d in allow_domains if d):
-            return False
-    return True
+    return _matches_allowlist_addrs(
+        sender, config.allowlist_automated_senders, config.allowlist_automated_domains, config
+    )
 
 
 def has_allowlisted_automated_attachment(msg: EmailMessage, config: InboxFilterConfig) -> bool:
@@ -175,8 +198,10 @@ class InboxEligibilityPolicy:
         if self._is_denylisted(msg.sender):
             return EligibilityDecision(eligible=False, reason="SKIP_DENYLIST")
 
-        exempt_signal = has_dated_booking_signal(msg) or has_allowlisted_automated_attachment(
-            msg, self._config
+        exempt_signal = (
+            is_allowlisted_priority_sender(msg.sender, self._config)
+            or has_dated_booking_signal(msg)
+            or has_allowlisted_automated_attachment(msg, self._config)
         )
         if (
             self._config.skip_promotions_social_forums

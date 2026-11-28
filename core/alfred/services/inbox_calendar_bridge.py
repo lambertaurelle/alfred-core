@@ -27,7 +27,10 @@ from alfred.services.agy_session_manager import AgySessionManager
 from alfred.services.calendar_helpers import format_unlimited_calendar_snapshot
 from alfred.services.calendar_service import CalendarService
 from alfred.services.gmail_service import GmailService
-from alfred.services.inbox_booking_detector import is_automated_correspondent_address
+from alfred.services.inbox_booking_detector import (
+    has_automated_bulk_headers_without_human_reply_to,
+    is_automated_correspondent_address,
+)
 from alfred.services.inbox_plan_renderer import (
     render_action_required_plan as render_action_required_plan,
 )
@@ -45,8 +48,7 @@ def _extract_email_set(raw_header: str) -> set[str]:
 
 
 def resolve_self_email_context(
-    msg: EmailMessage,
-    raw_owner_addrs: object,
+    msg: EmailMessage, raw_owner_addrs: object
 ) -> tuple[bool, bool, frozenset[str]]:
     """Detect whether msg was sent by the user and whether exclusively to user addresses.
 
@@ -67,9 +69,7 @@ def resolve_self_email_context(
 
 
 def extract_correspondent_emails(
-    msg: EmailMessage,
-    owner_addresses: frozenset[str],
-    allowlist: frozenset[str],
+    msg: EmailMessage, owner_addresses: frozenset[str], allowlist: frozenset[str]
 ) -> list[str]:
     """Extract external thread participant emails excluding self/never-invite addresses.
 
@@ -78,6 +78,8 @@ def extract_correspondent_emails(
         owner_addresses: Lowercase email addresses owned by the mailbox owner.
         allowlist: Lowercase emails allowlisted for immediate [HOLD] blocks.
     """
+    if has_automated_bulk_headers_without_human_reply_to(msg):
+        return []
     lower_hdrs = {k.strip().lower(): v for k, v in msg.headers.items()}
     raw_headers = [
         lower_hdrs.get("reply-to", ""), msg.sender, msg.recipient, lower_hdrs.get("cc", ""),
@@ -93,6 +95,19 @@ def extract_correspondent_emails(
         seen.add(norm)
         participants.append(norm)
     return participants
+
+
+def _filter_guest_emails(candidates: list[str], blocked: set[str]) -> list[str]:
+    """Deduplicate lowercase valid emails excluding blocked and automated addresses."""
+    cleaned: list[str] = []
+    for email in candidates:
+        norm = email.strip().lower()
+        if (
+            "@" in norm and norm not in cleaned and norm not in blocked
+            and not is_automated_correspondent_address(norm)
+        ):
+            cleaned.append(norm)
+    return cleaned
 
 
 def enrich_calendar_action_attendees(
@@ -117,24 +132,17 @@ def enrich_calendar_action_attendees(
         return action
     blocked = {e.strip().lower() for e in (never_invite_emails or []) if "@" in e}
     blocked.update(e.strip().lower() for e in owner_addresses if "@" in e)
-    fallback_guests = extract_correspondent_emails(msg, owner_addresses, allowlist)
+    fallback_guests = _filter_guest_emails(
+        extract_correspondent_emails(msg, owner_addresses, allowlist), blocked
+    )
     updated_slots: list[CalendarSlotProposal] = []
     for slot in action.slots:
         if is_dated_booking and not slot.attendees:
             updated_slots.append(slot.model_copy(update={"attendees": [], "send_invites": False}))
             continue
-        candidates = (
-            [*slot.attendees, *fallback_guests] if slot.send_invites else list(slot.attendees)
-        )
-        merged: list[str] = []
-        for email in candidates:
-            norm = email.strip().lower()
-            if (
-                "@" in norm and norm not in merged and norm not in blocked
-                and not is_automated_correspondent_address(norm)
-            ):
-                merged.append(norm)
-        updated_slots.append(slot.model_copy(update={"attendees": merged}))
+        explicit_guests = _filter_guest_emails(slot.attendees, blocked)
+        merged = explicit_guests or (fallback_guests if slot.send_invites else [])
+        updated_slots.append(slot.model_copy(update={"attendees": list(merged)}))
     return action.model_copy(update={"slots": updated_slots})
 
 
@@ -474,7 +482,8 @@ def materialize_draft_reply_decision(
         msg.thread_id, needs_orch, suspicious_injection, keep_in_inbox=directives.keep_in_inbox,
     )
     session = agy_manager.create_session(
-        "alfred-inbox", msg.message_id, plan_md, spawn_live, title=f"[Draft] {msg.subject}"
+        "alfred-inbox", msg.message_id, plan_md, spawn_live,
+        title=f"[Draft] {msg.subject}", force_orchestrator=needs_orch,
     )
     return InboxTriageDecision(
         message_id=msg.message_id, output_type=InboxOutputType.DRAFT_REPLY,

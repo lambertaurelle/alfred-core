@@ -102,10 +102,10 @@ def test_delegation_cross_project_spawning_cwd_title_and_parent_link(
     assert persisted.parent_session_id == "parent-life-conv-01"
 
 
-def test_delegation_model_routing_orchestrator_vs_hydrogen(
+def test_delegation_model_routing_orchestrator_vs_neon(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verify orchestrator targets omit --effort while light targets pass hydrogen + medium."""
+    """Verify Carbon brain and Neon muscle targets omit --effort under default routing."""
     svc, _, _, agy_calls = _prepare_delegation_stack(tmp_path, monkeypatch)
 
     for brain_role in ("evolve", "life", "onboard"):
@@ -130,9 +130,9 @@ def test_delegation_model_routing_orchestrator_vs_hydrogen(
             mode=DelegationMode.OPEN_GATE,
         )
         cmd, _ = agy_calls[idx]
-        assert cmd[cmd.index("--model") + 1] == "gemini-4-hydrogen-medium"
-        assert cmd[cmd.index("--effort") + 1] == "medium"
-        assert rec.model_used == "gemini-4-hydrogen-medium"
+        assert cmd[cmd.index("--model") + 1] == "gemini-pro-orchestrator-neon"
+        assert "--effort" not in cmd
+        assert rec.model_used == "gemini-pro-orchestrator-neon"
 
 
 def test_delegation_evolve_always_forces_open_gate(

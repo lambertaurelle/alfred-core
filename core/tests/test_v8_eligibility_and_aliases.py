@@ -387,7 +387,7 @@ def test_calendar_service_strips_self_aliases_on_hold_confirm_and_freebusy(tmp_p
 
 
 def test_agy_model_cli_flags_and_repair_session_titles(tmp_path: Path) -> None:
-    """AgySessionManager omits --effort on orchestrator, sets medium/low, and repairs titles."""
+    """AgySessionManager omits --effort on Carbon/Neon orchestrators and repairs titles."""
     paths = AlfredPaths.from_env(tmp_path)
     store = StateStore(paths)
     agy_dir = tmp_path / "agy_data"
@@ -415,16 +415,12 @@ def test_agy_model_cli_flags_and_repair_session_titles(tmp_path: Path) -> None:
     for role in ("inbox", "calendar", "tasks", "alfred-inbox", "alfred-calendar", "alfred-tasks"):
         assert agy.build_model_cli_flags(role) == [
             "--model",
-            "gemini-4-hydrogen-medium",
-            "--effort",
-            "medium",
+            "gemini-pro-orchestrator-neon",
         ]
 
     assert agy.build_model_cli_flags("alfred-inbox", trace=True) == [
         "--model",
-        "gemini-4-hydrogen-low",
-        "--effort",
-        "low",
+        "gemini-pro-orchestrator-neon",
     ]
 
     plan_file = tmp_path / "plan.md"

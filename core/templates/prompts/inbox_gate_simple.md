@@ -1,4 +1,4 @@
-# Action Plan `alfred-inbox` — {{output_type}} (`Hydrogen`)
+# Action Plan `alfred-inbox` — {{output_type}} (`Orchestrator (Neon)`)
 
 ## 1. Email Summary
 - **From**: `{{sender}}`
@@ -13,5 +13,5 @@
 ## 3. Proposal Pending Approval (`Proceed`)
 {{action_section}}
 
-## 4. Post-Validation Execution (Lightweight `Hydrogen`)
-Upon clicking **`Proceed`**, `plan-executor` will run only the approved commands above (automatically archiving the Gmail thread unless `--keep-in-inbox` is requested).
+## 4. Post-Validation Execution (`Orchestrator (Neon)`)
+Upon clicking **`Proceed`**, `plan-executor` (`gemini-pro-orchestrator-neon`, without `--effort`) will run only the approved commands above (automatically archiving the Gmail thread unless `--keep-in-inbox` is requested).

@@ -438,7 +438,8 @@ class InboxTriageService:
         )
         prefix = "[Action · Carbon Study]" if needs_orch else "[Action]"
         session = self._agy.create_session(
-            "alfred-inbox", msg.message_id, plan_md, spawn_live, title=f"{prefix} {msg.subject}"
+            "alfred-inbox", msg.message_id, plan_md, spawn_live,
+            title=f"{prefix} {msg.subject}", force_orchestrator=needs_orch,
         )
         return InboxTriageDecision(
             message_id=msg.message_id, output_type=InboxOutputType.USER_ACTION_REQUIRED,

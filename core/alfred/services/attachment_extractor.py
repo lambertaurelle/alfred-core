@@ -299,16 +299,29 @@ def _read_zip_xml_safe(
     return ET.fromstring(raw_xml), new_total
 
 
+def _extract_pdf_page_layout(page: Any) -> str:
+    """Extract single-page PDF text in layout mode, falling back to plain extraction."""
+    raw_page = ""
+    try:
+        raw_page = page.extract_text(extraction_mode="layout") or ""
+    except Exception:
+        raw_page = ""
+    if not raw_page.strip():
+        raw_page = page.extract_text() or ""
+    return "\n".join(line.rstrip(" \t\r") for line in raw_page.splitlines())
+
+
 def _extract_pdf_text(raw_bytes: bytes, max_chars: int) -> tuple[str, str, bool]:
-    """Extract text from an in-memory PDF via pypdf."""
+    """Extract layout-preserving text from an in-memory PDF via pypdf."""
     try:
         reader = PdfReader(io.BytesIO(raw_bytes))
-        extracted = "\n".join((page.extract_text() or "") for page in reader.pages).strip()
+        joined = "\n".join(_extract_pdf_page_layout(page) for page in reader.pages)
     except Exception:
         return ("corrupted_pdf", "", False)
-    if not extracted:
+    normalized = re.sub(r"\n{3,}", "\n\n", joined).strip("\r\n")
+    if not normalized.strip():
         return ("empty_or_scanned_pdf", "", False)
-    out, trunc = _apply_truncation(extracted, max_chars)
+    out, trunc = _apply_truncation(normalized, max_chars)
     return ("pypdf_native_text", out, trunc)
 
 

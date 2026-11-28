@@ -42,10 +42,7 @@ class AgySessionManager:
     """Manage Antigravity Web conversation lifecycle, model routing, and readable titles."""
 
     def __init__(
-        self,
-        paths: AlfredPaths,
-        settings: AlfredSettings,
-        state_store: StateStore,
+        self, paths: AlfredPaths, settings: AlfredSettings, state_store: StateStore,
         archive_hook: Callable[[str], None] | None = None,
         runner_fn: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
         agy_locator_fn: Callable[[], str | None] | None = None,
@@ -119,19 +116,27 @@ class AgySessionManager:
         """Return structured triage directives from the most recent cognitive triage."""
         return self._last_triage_directives
 
-    def build_model_cli_flags(self, workspace: str, trace: bool = False) -> list[str]:
+    def _resolve_role_hint(self, workspace: str) -> str:
+        """Resolve a custom workspace project name back to its canonical role when mapped."""
+        cleaned = workspace.strip()
+        return next((r for r, p in self._settings.workspaces.items() if p == cleaned), cleaned)
+
+    def build_model_cli_flags(
+        self, workspace: str, trace: bool = False, force_orchestrator: bool = False
+    ) -> list[str]:
         """Build --model (and --effort ONLY on non-orchestrator models) CLI flags.
 
         Args:
             workspace: Target specialist workspace role or slug.
             trace: When True, use lightweight trace model routing.
-
-        Returns:
-            CLI argument list (omits --effort whenever model is an orchestrator).
+            force_orchestrator: When True, escalate workspace routing to orchestrator_model.
         """
         models = self._settings.models
+        role_hint = self._resolve_role_hint(workspace)
         model_id, effort = (
-            models.resolve_trace() if trace else models.resolve_for_workspace(workspace)
+            models.resolve_trace()
+            if trace
+            else models.resolve_for_workspace(role_hint, force_orchestrator=force_orchestrator)
         )
         flags = ["--model", model_id]
         if effort is not None:
@@ -157,7 +162,7 @@ class AgySessionManager:
     def create_session(
         self, workspace: str, source_message_id: str = "",
         implementation_plan_md: str | None = None, spawn_live: bool = False,
-        title: str = "", parent_session_id: str = "",
+        title: str = "", parent_session_id: str = "", force_orchestrator: bool = False,
     ) -> ActiveSessionRecord:
         """Spawn a tracked Antigravity Web conversation with a clean sidebar title and Gate plan.
 
@@ -168,6 +173,7 @@ class AgySessionManager:
             spawn_live: When True and a plan is given, spawn a live agy Web Gate conversation.
             title: Optional explicit human-readable conversation title.
             parent_session_id: Optional originating parent conversation UUID.
+            force_orchestrator: When True, escalate live Gate session to orchestrator_model.
         """
         raw_title = title or f"[{workspace}] {source_message_id or 'Validation Gate'}"
         clean_title = sanitize_annotation_title(raw_title)
@@ -176,6 +182,7 @@ class AgySessionManager:
             live_id = self._spawn_live_plan_session(
                 workspace=workspace, source_message_id=source_message_id,
                 implementation_plan_md=implementation_plan_md, title=clean_title,
+                force_orchestrator=force_orchestrator,
             )
 
         session_id = live_id or f"agy_{workspace.replace('-', '_')}_{uuid.uuid4().hex[:10]}"
@@ -259,7 +266,7 @@ class AgySessionManager:
         self, msg: EmailMessage, docs: list[KnowledgeDocument],
         user_addresses: frozenset[str] = frozenset(), calendar_context: str = "",
     ) -> tuple[InboxOutputType, str, str | None, CalendarTriageAction, str | None]:
-        """Classify an email inside project alfred-inbox using Hydrogen light model routing.
+        """Classify an email inside project alfred-inbox using Orchestrator (Neon) model routing.
 
         Args:
             msg: Normalized incoming Gmail message.
@@ -450,7 +457,8 @@ class AgySessionManager:
         return extract_conversation_id(parsed) if parsed is not None else None
 
     def _spawn_live_plan_session(
-        self, workspace: str, source_message_id: str, implementation_plan_md: str, title: str = ""
+        self, workspace: str, source_message_id: str, implementation_plan_md: str,
+        title: str = "", force_orchestrator: bool = False,
     ) -> str | None:
         """Spawn a live Antigravity Web Gate session via agy CLI and return conversation ID."""
         agy_bin = self._locate_agy_binary()
@@ -464,14 +472,17 @@ class AgySessionManager:
             "`UserFacing: true` and `RequestFeedback: true` using the following exact Markdown, "
             f"then stop immediately:\n\n{implementation_plan_md}"
         )
+        cli_flags = self.build_model_cli_flags(workspace, force_orchestrator=force_orchestrator)
         cmd = [
             agy_bin, "--project", self._settings.resolve_workspace_project(workspace),
-            *self.build_model_cli_flags(workspace), "--add-dir", str(self._paths.root_dir),
+            *cli_flags, "--add-dir", str(self._paths.root_dir),
             "--agent", "plan-synthesizer", "--mode", "plan",
             "--output-format", "json", "-p", prompt,
         ]
-        model_id, _ = self._settings.models.resolve_for_workspace(workspace)
-        timeout_sec = 600 if "orchestrator" in model_id.lower() else 180
+        is_brain = force_orchestrator or self._settings.models.is_brain_workspace(
+            self._resolve_role_hint(workspace)
+        )
+        timeout_sec = 600 if is_brain else 180
         before_ids = self._archive_store.snapshot_summary_conversation_ids()
         completed = self._run_agy_command(
             cmd, cwd=self.resolve_workspace_cwd(workspace), timeout=timeout_sec

@@ -1,8 +1,8 @@
 # 🗂️ Workspace `alfred-drive` — Non-Destructive Google Drive Governance & 2-Speed Watcher
 
-> **Model Routing (Muscle)**: `gemini-4-hydrogen-medium` (`watch-drive` or delegated via `alfred delegate --to drive`, `[SILENT]` traces in `gemini-4-hydrogen-low`)  
+> **Model Routing (Muscle)**: `gemini-pro-orchestrator-neon` (`Orchestrator (Neon)`, `watch-drive` or delegated via `alfred delegate --to drive`, `[SILENT]` traces in `gemini-pro-orchestrator-neon`)  
 > **Alfred Root & CLI**: `/root/Alfred` (`${ALFRED_ROOT_DIR:-/root/Alfred}/.venv/bin/alfred`)  
-> **Mandatory Pipeline**: **1. 0-Token Filter (Speed 1) $\rightarrow$ 2. `drive-custodian` / `implementation_plan.md` Gate (Speed 2) $\rightarrow$ 3. Non-Destructive Execution (`plan-executor`)**
+> **Mandatory Pipeline**: **1. 0-Token Filter (Speed 1) $\rightarrow$ 2. `drive-custodian` / `implementation_plan.md` Gate (Speed 2) $\rightarrow$ 3. Non-Destructive Execution (`plan-executor`, `Orchestrator (Neon)`)**
 
 Non-destructive Google Drive document governance, automatic or gated filing, cross-domain shortcuts, and concise synthesis into `_ALFRED_REFERENTIEL_`.
 
